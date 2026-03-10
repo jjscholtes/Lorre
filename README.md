@@ -62,3 +62,5 @@ Each session is kept in its own folder and can contain:
 - Markdown
 - Plain text
 - JSON
+
+<img width="1750" height="672" alt="image" src="https://github.com/user-attachments/assets/40a23c5c-093f-4363-aa1d-c42d88ddb98c" />
