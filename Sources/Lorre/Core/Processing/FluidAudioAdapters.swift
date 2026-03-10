@@ -772,7 +772,7 @@ actor FluidAudioOfflineDiarizationService: SpeakerDiarizationService {
         }
         do {
             _ = try await manager.process(audio: Array(repeating: 0, count: 32_000))
-        } catch let error as OfflineDiarizationError where error == .noSpeechDetected {
+        } catch OfflineDiarizationError.noSpeechDetected {
             // Expected for silence-only warmup audio; the model graph has still been exercised.
         } catch {
             throw error

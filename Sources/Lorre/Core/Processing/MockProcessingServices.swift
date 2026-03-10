@@ -202,7 +202,8 @@ enum TranscriptAssembler {
                 last = DiarizationSpan(
                     startMs: min(last.startMs, span.startMs),
                     endMs: max(last.endMs, span.endMs),
-                    speakerId: last.speakerId
+                    speakerId: last.speakerId,
+                    sourceSpeakerId: last.sourceSpeakerId ?? span.sourceSpeakerId
                 )
                 merged.append(last)
             } else {
@@ -962,11 +963,13 @@ private struct DiarizationDebugArtifact: Encodable {
         let startMs: Int
         let endMs: Int
         let speakerId: String
+        let sourceSpeakerId: String?
 
         init(_ span: DiarizationSpan) {
             self.startMs = span.startMs
             self.endMs = span.endMs
             self.speakerId = span.speakerId
+            self.sourceSpeakerId = span.sourceSpeakerId
         }
     }
 

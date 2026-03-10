@@ -6,6 +6,7 @@ struct AppDependencies {
     let settings: AppSettingsStore
     let recorder: any RecorderService
     let transcription: any TranscriptionService
+    let diarization: any SpeakerDiarizationService
     let speakerEnrollment: any SpeakerEnrollmentService
     let playback: any AudioPlaybackService
     let exporter: any ExportService
@@ -42,7 +43,10 @@ struct AppDependencies {
 
         #if canImport(AVFoundation)
         let recorder: any RecorderService = AVFoundationRecorderService(
-            speakerEnrollmentService: speakerEnrollmentService
+            speakerEnrollmentService: speakerEnrollmentService,
+            knownSpeakerReferenceAudioProvider: { speaker in
+                await knownSpeakerStore.referenceAudioURL(for: speaker)
+            }
         )
         let playback: any AudioPlaybackService = AVFoundationAudioPlaybackService()
         #else
@@ -61,6 +65,7 @@ struct AppDependencies {
             settings: settings,
             recorder: recorder,
             transcription: transcriptionService,
+            diarization: diarizationService,
             speakerEnrollment: speakerEnrollmentService,
             playback: playback,
             exporter: MarkdownExportService(),

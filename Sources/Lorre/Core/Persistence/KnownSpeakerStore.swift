@@ -18,7 +18,7 @@ actor KnownSpeakerStore {
 
         let data = try Data(contentsOf: fileURL)
         let speakers = try Self.decoder.decode([KnownSpeaker].self, from: data)
-        return speakers.sorted(using: Self.sortComparator)
+        return speakers.sorted(by: Self.sortComparator)
     }
 
     @discardableResult
@@ -94,7 +94,7 @@ actor KnownSpeakerStore {
             at: fileURL.deletingLastPathComponent(),
             withIntermediateDirectories: true
         )
-        let encoded = try Self.encoder.encode(speakers.sorted(using: Self.sortComparator))
+        let encoded = try Self.encoder.encode(speakers.sorted(by: Self.sortComparator))
         try AtomicFileWriter.write(encoded, to: fileURL)
     }
 
