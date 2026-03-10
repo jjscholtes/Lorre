@@ -510,6 +510,7 @@ struct DiarizationSpeakerCountHint: Codable, Equatable, Hashable, Sendable {
     static var tuningPresets: [DiarizationSpeakerCountHint] {
         [
             .auto,
+            .exact(1),
             .exact(2),
             .exact(3),
             .exact(4),

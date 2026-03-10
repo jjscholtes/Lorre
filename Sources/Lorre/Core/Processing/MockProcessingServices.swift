@@ -121,6 +121,54 @@ struct MockSpeakerDiarizationService: SpeakerDiarizationService {
     }
 }
 
+extension DiarizationResult {
+    func applyingSpeakerCountHint(_ hint: DiarizationSpeakerCountHint) -> DiarizationResult {
+        let normalizedHint = hint.normalized()
+        guard normalizedHint.mode == .exact, normalizedHint.exactCount == 1 else { return self }
+        guard !spans.isEmpty else { return self }
+
+        struct SpeakerStats {
+            var totalDurationMs: Int = 0
+            var firstStartMs: Int = .max
+        }
+
+        var statsBySpeaker: [String: SpeakerStats] = [:]
+        for span in spans {
+            let durationMs = max(1, span.endMs - span.startMs)
+            var stats = statsBySpeaker[span.speakerId, default: SpeakerStats()]
+            stats.totalDurationMs += durationMs
+            stats.firstStartMs = min(stats.firstStartMs, span.startMs)
+            statsBySpeaker[span.speakerId] = stats
+        }
+
+        guard let dominantSpeakerID = statsBySpeaker.max(by: { lhs, rhs in
+            if lhs.value.totalDurationMs == rhs.value.totalDurationMs {
+                if lhs.value.firstStartMs == rhs.value.firstStartMs {
+                    return lhs.key > rhs.key
+                }
+                return lhs.value.firstStartMs > rhs.value.firstStartMs
+            }
+            return lhs.value.totalDurationMs < rhs.value.totalDurationMs
+        })?.key else {
+            return self
+        }
+
+        let collapsedSpans = spans.map { span in
+            DiarizationSpan(
+                startMs: span.startMs,
+                endMs: span.endMs,
+                speakerId: dominantSpeakerID,
+                sourceSpeakerId: span.sourceSpeakerId ?? span.speakerId
+            )
+        }
+        let collapsedProfiles = [
+            speakerProfiles.first(where: { $0.id == dominantSpeakerID }) ?? SpeakerProfile.defaultProfile(id: dominantSpeakerID)
+        ]
+
+        return DiarizationResult(spans: collapsedSpans, speakerProfiles: collapsedProfiles)
+    }
+}
+
 enum TranscriptAssembler {
     private struct SpeakerAssignment {
         let speakerId: String
@@ -781,17 +829,22 @@ actor ProcessingCoordinator {
                 await onProgress(ProcessingUpdate(phase: .diarizing, label: "Skipping speaker diarization", fraction: 0.6))
                 diarization = nil
             }
+            let adjustedDiarization = diarization?.applyingSpeakerCountHint(diarizationExpectedSpeakers)
 
             try await updateSession(&session, status: .processing, phase: .assembling, label: "Assembling transcript", fraction: 0.82)
             await onProgress(ProcessingUpdate(phase: .assembling, label: "Assembling transcript", fraction: 0.82))
-            let transcript = TranscriptAssembler.assemble(sessionId: sessionId, transcription: transcription, diarization: diarization)
+            let transcript = TranscriptAssembler.assemble(
+                sessionId: sessionId,
+                transcription: transcription,
+                diarization: adjustedDiarization
+            )
 
             if exportDiarizationDebugArtifact {
                 try await writeDiarizationDebugArtifact(
                     sessionId: sessionId,
                     sourceEngine: transcription.engineName,
                     transcription: transcription,
-                    diarization: diarization,
+                    diarization: adjustedDiarization,
                     transcript: transcript,
                     expectedSpeakers: diarizationExpectedSpeakers
                 )

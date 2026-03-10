@@ -576,4 +576,35 @@ final class LorreCoreTests: XCTestCase {
         XCTAssertEqual(transcript.segments[0].sourceSpeakerId, "S2")
         XCTAssertEqual(transcript.speaker(for: "K1").safeDisplayName, "Alice")
     }
+
+    func testDiarizationSpeakerCountHintPresetsIncludeExactOne() {
+        XCTAssertTrue(DiarizationSpeakerCountHint.tuningPresets.contains(.exact(1)))
+    }
+
+    func testDiarizationResultCollapsesToDominantSpeakerWhenExactOneIsRequested() {
+        let diarization = DiarizationResult(
+            spans: [
+                DiarizationSpan(startMs: 0, endMs: 9_840, speakerId: "S5"),
+                DiarizationSpan(startMs: 9_840, endMs: 12_112, speakerId: "S5"),
+                DiarizationSpan(startMs: 19_200, endMs: 19_600, speakerId: "S7"),
+                DiarizationSpan(startMs: 19_600, endMs: 21_040, speakerId: "S3"),
+                DiarizationSpan(startMs: 21_040, endMs: 22_080, speakerId: "S6"),
+                DiarizationSpan(startMs: 22_080, endMs: 23_119, speakerId: "S3")
+            ],
+            speakerProfiles: [
+                SpeakerProfile.defaultProfile(id: "S3"),
+                SpeakerProfile.defaultProfile(id: "S5"),
+                SpeakerProfile.defaultProfile(id: "S6"),
+                SpeakerProfile.defaultProfile(id: "S7")
+            ]
+        )
+
+        let collapsed = diarization.applyingSpeakerCountHint(.exact(1))
+
+        XCTAssertEqual(Set(collapsed.spans.map(\.speakerId)), ["S5"])
+        XCTAssertEqual(collapsed.spans[0].sourceSpeakerId, "S5")
+        XCTAssertEqual(collapsed.spans[2].sourceSpeakerId, "S7")
+        XCTAssertEqual(collapsed.spans[3].sourceSpeakerId, "S3")
+        XCTAssertEqual(collapsed.speakerProfiles.map(\.id), ["S5"])
+    }
 }
