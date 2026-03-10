@@ -5,7 +5,7 @@ struct SpeakerRecognitionQuickAccessView: View {
     let scopeNote: String
 
     var body: some View {
-        VStack(alignment: .leading, spacing: DS.Space.x2) {
+        VStack(alignment: .leading, spacing: DS.Space.x3) {
             ViewThatFits(in: .horizontal) {
                 HStack(alignment: .center, spacing: DS.Space.x2) {
                     titleLabel
@@ -24,6 +24,8 @@ struct SpeakerRecognitionQuickAccessView: View {
                 .foregroundStyle(DS.ColorToken.fgSecondary)
                 .fixedSize(horizontal: false, vertical: true)
 
+            knownSpeakerLibrary
+
             Text(scopeNote)
                 .font(DS.FontStyle.helper)
                 .foregroundStyle(DS.ColorToken.fgTertiary)
@@ -37,15 +39,9 @@ struct SpeakerRecognitionQuickAccessView: View {
     private var titleLabel: some View {
         HStack(spacing: DS.Space.x2) {
             CapsLabel(text: "Speaker Recognition")
-            if viewModel.isSpeakerDiarizationEnabled {
-                Text("ON")
-                    .font(DS.FontStyle.control)
-                    .foregroundStyle(DS.ColorToken.fgSecondary)
-            } else {
-                Text("OFF")
-                    .font(DS.FontStyle.control)
-                    .foregroundStyle(DS.ColorToken.fgSecondary)
-            }
+            Text(viewModel.isSpeakerDiarizationEnabled ? "ON" : "OFF")
+                .font(DS.FontStyle.control)
+                .foregroundStyle(DS.ColorToken.fgSecondary)
         }
     }
 
@@ -104,10 +100,135 @@ struct SpeakerRecognitionQuickAccessView: View {
         .help("Hint the diarizer with an expected speaker count")
     }
 
+    private var knownSpeakerLibrary: some View {
+        VStack(alignment: .leading, spacing: DS.Space.x2) {
+            HStack(alignment: .firstTextBaseline, spacing: DS.Space.x2) {
+                CapsLabel(text: "Known Speakers")
+                Spacer()
+                Text("\(viewModel.knownSpeakers.count)")
+                    .font(DS.FontStyle.mono)
+                    .foregroundStyle(DS.ColorToken.fgSecondary)
+            }
+
+            HStack(spacing: DS.Space.x2) {
+                TextField("Speaker name", text: $viewModel.knownSpeakerDraftName)
+                    .textFieldStyle(.plain)
+                    .font(DS.FontStyle.body)
+                    .padding(.horizontal, DS.Space.x2)
+                    .padding(.vertical, DS.Space.x2)
+                    .background(DS.ColorToken.fieldBg)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: DS.Radius.sm)
+                            .stroke(DS.ColorToken.fieldBorder, lineWidth: 1)
+                    )
+
+                Button("Add Sample") {
+                    viewModel.importKnownSpeaker()
+                }
+                .buttonStyle(SecondaryControlButtonStyle())
+                .disabled(viewModel.isKnownSpeakerOperationInFlight)
+            }
+
+            Text(viewModel.knownSpeakerOperationDescription ?? viewModel.knownSpeakerLibraryStatusLine)
+                .font(DS.FontStyle.helper)
+                .foregroundStyle(
+                    viewModel.isKnownSpeakerOperationInFlight
+                        ? DS.ColorToken.fgSecondary
+                        : DS.ColorToken.fgTertiary
+                )
+                .fixedSize(horizontal: false, vertical: true)
+
+            if viewModel.knownSpeakers.isEmpty {
+                Text("Import a clean clip from a single voice. Lorre stores the clip locally, extracts a speaker embedding, and uses it for offline relabeling plus live speaker hints.")
+                    .font(DS.FontStyle.helper)
+                    .foregroundStyle(DS.ColorToken.fgSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                VStack(alignment: .leading, spacing: DS.Space.x2) {
+                    ForEach(viewModel.knownSpeakers) { speaker in
+                        knownSpeakerRow(speaker)
+                    }
+                }
+                .padding(.top, DS.Space.x1)
+            }
+        }
+        .padding(DS.Space.x2_5)
+        .background(
+            RoundedRectangle(cornerRadius: DS.Radius.sm, style: .continuous)
+                .fill(DS.ColorToken.bgPanelAlt)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: DS.Radius.sm, style: .continuous)
+                .stroke(DS.ColorToken.borderSoft, lineWidth: 1)
+        )
+    }
+
+    @ViewBuilder
+    private func knownSpeakerRow(_ speaker: KnownSpeaker) -> some View {
+        VStack(alignment: .leading, spacing: DS.Space.x1_5) {
+            HStack(alignment: .top, spacing: DS.Space.x2) {
+                SpeakerBadgeView(speakerID: speaker.id, variant: speaker.styleVariant)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(speaker.safeDisplayName)
+                        .font(DS.FontStyle.bodyStrong)
+                        .foregroundStyle(DS.ColorToken.fgPrimary)
+
+                    Text(referenceClipSummary(for: speaker))
+                        .font(DS.FontStyle.helper)
+                        .foregroundStyle(DS.ColorToken.fgSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                Spacer(minLength: DS.Space.x2)
+
+                HStack(spacing: DS.Space.x2) {
+                    Button("Re-enroll") {
+                        viewModel.reenrollKnownSpeaker(speaker.id)
+                    }
+                    .buttonStyle(SecondaryControlButtonStyle())
+                    .disabled(viewModel.isKnownSpeakerOperationInFlight)
+
+                    Button("Remove", role: .destructive) {
+                        viewModel.deleteKnownSpeaker(speaker.id)
+                    }
+                    .buttonStyle(SecondaryControlButtonStyle())
+                    .disabled(viewModel.isKnownSpeakerOperationInFlight)
+                }
+            }
+
+            Text(enrollmentSummary(for: speaker))
+                .font(DS.FontStyle.mono)
+                .foregroundStyle(DS.ColorToken.fgTertiary)
+        }
+        .padding(.horizontal, DS.Space.x2)
+        .padding(.vertical, DS.Space.x2)
+        .background(
+            RoundedRectangle(cornerRadius: DS.Radius.sm, style: .continuous)
+                .fill(DS.ColorToken.bgPanel)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: DS.Radius.sm, style: .continuous)
+                .stroke(DS.ColorToken.borderSoft, lineWidth: 1)
+        )
+    }
+
+    private func referenceClipSummary(for speaker: KnownSpeaker) -> String {
+        guard let clip = speaker.referenceClip else {
+            return "Reference clip metadata unavailable."
+        }
+        return "\(clip.sourceFileName) • \(Formatters.duration(clip.durationSeconds)) • \(clip.sampleRate) Hz"
+    }
+
+    private func enrollmentSummary(for speaker: KnownSpeaker) -> String {
+        let updated = speaker.updatedAt.formatted(date: .abbreviated, time: .shortened)
+        return "\(speaker.enrollmentCount) enrollment\(speaker.enrollmentCount == 1 ? "" : "s") • updated \(updated)"
+    }
+
     private var statusDescription: String {
         if viewModel.isSpeakerDiarizationEnabled {
-            return "Automatic speaker labels are enabled. Expected speaker hint: \(viewModel.diarizationExpectedSpeakerCountHint.detailLabel)."
+            return "Automatic speaker labels are enabled. Expected speaker hint: \(viewModel.diarizationExpectedSpeakerCountHint.detailLabel). Enrolled speakers are used to relabel diarization clusters and warm-start the live recorder."
         }
-        return "Automatic speaker labels are off for faster processing. You can still assign speakers manually in the transcript."
+        return "Automatic speaker labels are off for faster processing. The speaker library is still kept locally so you can re-enable automatic labeling later."
     }
 }

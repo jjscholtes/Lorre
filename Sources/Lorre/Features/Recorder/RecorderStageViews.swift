@@ -280,7 +280,23 @@ private struct LiveTranscriptPreviewCard: View {
                     .font(DS.FontStyle.helper)
                     .foregroundStyle(DS.ColorToken.fgSecondary)
                     .fixedSize(horizontal: false, vertical: true)
-            } else if let preview = viewModel.liveTranscriptPreview, preview.hasContent {
+            } else if let preview = viewModel.liveTranscriptPreview, preview.hasContent || preview.hasSpeakerHint {
+                if preview.hasSpeakerHint {
+                    HStack(spacing: DS.Space.x2) {
+                        Image(systemName: "person.wave.2")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(DS.ColorToken.fgSecondary)
+                        Text(preview.activeSpeakerDisplayName ?? "Known speaker")
+                            .font(DS.FontStyle.bodyStrong)
+                            .foregroundStyle(DS.ColorToken.fgPrimary)
+                        if let confidence = preview.activeSpeakerConfidence {
+                            Text("\(Int((confidence * 100).rounded()))%")
+                                .font(DS.FontStyle.mono)
+                                .foregroundStyle(DS.ColorToken.fgTertiary)
+                        }
+                    }
+                }
+
                 if !preview.confirmedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     Text(preview.confirmedText)
                         .font(DS.FontStyle.body)

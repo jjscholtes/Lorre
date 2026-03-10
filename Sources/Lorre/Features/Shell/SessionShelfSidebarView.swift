@@ -370,6 +370,11 @@ private struct ModelStatusCompactPanelView: View {
                         .font(DS.FontStyle.mono)
                         .foregroundStyle(DS.ColorToken.fgSecondary)
                 }
+                if viewModel.isCustomModelRegistryConfigured {
+                    Text("Mirror")
+                        .font(DS.FontStyle.mono)
+                        .foregroundStyle(DS.ColorToken.fgSecondary)
+                }
                 Spacer(minLength: 0)
             }
             .lineLimit(1)
@@ -472,6 +477,8 @@ private struct ModelStatusPanelView: View {
             }
 
             modelReadinessSummary
+
+            modelRegistryConfigurationPanel
 
             VStack(alignment: .leading, spacing: DS.Space.x3) {
                 toggleSettingsRow(
@@ -614,6 +621,7 @@ private struct ModelStatusPanelView: View {
                 modelInfoRow(label: "Last prepared", value: modelLastPreparedText)
                 modelInfoRow(label: "Includes", value: modelCapabilitiesText)
                 modelInfoRow(label: "Processing", value: modelProcessingModeText)
+                modelInfoRow(label: "Registry", value: viewModel.modelRegistrySummaryLabel)
             }
 
             VStack(alignment: .leading, spacing: 4) {
@@ -654,6 +662,57 @@ private struct ModelStatusPanelView: View {
                 .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
+    }
+
+    private var modelRegistryConfigurationPanel: some View {
+        VStack(alignment: .leading, spacing: DS.Space.x2) {
+            HStack(spacing: DS.Space.x2) {
+                CapsLabel(text: "Model Registry")
+                Spacer()
+                Text(viewModel.isCustomModelRegistryConfigured ? "CUSTOM" : "DEFAULT")
+                    .font(DS.FontStyle.control)
+                    .foregroundStyle(DS.ColorToken.fgSecondary)
+            }
+
+            TextField("https://huggingface.co", text: $viewModel.modelRegistryCustomBaseURL)
+                .textFieldStyle(.plain)
+                .font(DS.FontStyle.body)
+                .foregroundStyle(DS.ColorToken.fgPrimary)
+                .padding(.horizontal, DS.Space.x2)
+                .padding(.vertical, DS.Space.x2)
+                .background(DS.ColorToken.fieldBg)
+                .overlay(
+                    RoundedRectangle(cornerRadius: DS.Radius.sm)
+                        .stroke(DS.ColorToken.fieldBorder, lineWidth: 1)
+                )
+
+            HStack(spacing: DS.Space.x2) {
+                Button("Save Registry") {
+                    viewModel.saveModelRegistryConfiguration()
+                }
+                .buttonStyle(SecondaryControlButtonStyle())
+
+                Button("Use Default") {
+                    viewModel.resetModelRegistryConfiguration()
+                }
+                .buttonStyle(SecondaryControlButtonStyle())
+                .disabled(!viewModel.isCustomModelRegistryConfigured)
+            }
+
+            Text("Set a mirror or private registry base URL before downloading models. Leave blank to use the default Hugging Face registry.")
+                .font(DS.FontStyle.helper)
+                .foregroundStyle(DS.ColorToken.fgSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(DS.Space.x2)
+        .background(
+            RoundedRectangle(cornerRadius: DS.Radius.sm, style: .continuous)
+                .fill(DS.ColorToken.bgPanelAlt)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: DS.Radius.sm, style: .continuous)
+                .stroke(DS.ColorToken.borderSoft, lineWidth: 1)
+        )
     }
 
     private var modelSummaryTitle: String {

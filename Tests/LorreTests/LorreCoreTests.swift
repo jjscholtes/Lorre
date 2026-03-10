@@ -215,6 +215,23 @@ final class LorreCoreTests: XCTestCase {
         XCTAssertEqual(loaded.schemaVersion, 1)
     }
 
+    func testAppSettingsStorePersistsModelRegistryConfiguration() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("LorreRegistrySettingsTests-\(UUID().uuidString)", isDirectory: true)
+        let store = AppSettingsStore(baseURL: root)
+
+        let initial = try await store.load()
+        XCTAssertTrue(initial.modelRegistryConfiguration.isDefault)
+
+        _ = try await store.setModelRegistryConfiguration(
+            ModelRegistryConfiguration(customBaseURL: "https://models.internal.example.com///")
+        )
+
+        let loaded = try await store.load()
+        XCTAssertEqual(loaded.modelRegistryConfiguration.normalizedBaseURL, "https://models.internal.example.com")
+        XCTAssertEqual(loaded.modelRegistryConfiguration.summaryLabel, "https://models.internal.example.com")
+    }
+
     func testFileSessionStoreDeleteRemovesSessionDirectory() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("LorreDeleteTests-\(UUID().uuidString)", isDirectory: true)
@@ -273,8 +290,93 @@ final class LorreCoreTests: XCTestCase {
         XCTAssertTrue(settings.isSpeakerDiarizationEnabled)
         XCTAssertEqual(settings.diarizationExpectedSpeakerCountHint, .auto)
         XCTAssertFalse(settings.isDiarizationDebugExportEnabled)
+        XCTAssertTrue(settings.modelRegistryConfiguration.isDefault)
         XCTAssertFalse(settings.vocabularyBoosting.isEnabled)
         XCTAssertEqual(settings.vocabularyBoosting.simpleFormatTerms, "")
+    }
+
+    func testKnownSpeakerStoreRoundTripCopiesReferenceClipAndDeletesIt() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("LorreKnownSpeakerTests-\(UUID().uuidString)", isDirectory: true)
+        let store = KnownSpeakerStore(baseURL: root)
+
+        let sourceURL = root.appendingPathComponent("alice.m4a")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try Data("speaker-sample".utf8).write(to: sourceURL)
+
+        let saved = try await store.saveNewSpeaker(
+            displayName: "Alice",
+            embedding: [0.1, 0.2, 0.3],
+            referenceAudioURL: sourceURL,
+            enrollmentData: KnownSpeakerEnrollmentData(
+                embedding: [0.1, 0.2, 0.3],
+                durationSeconds: 3.5,
+                sampleRate: 16_000
+            )
+        )
+
+        let loaded = try await store.load()
+        XCTAssertEqual(loaded.count, 1)
+        XCTAssertEqual(loaded.first?.safeDisplayName, "Alice")
+        XCTAssertEqual(loaded.first?.referenceClip?.sourceFileName, "alice.m4a")
+        XCTAssertEqual(loaded.first?.referenceClip?.durationSeconds, 3.5)
+
+        let storedReferenceURL = await store.referenceAudioURL(for: saved)
+        XCTAssertNotNil(storedReferenceURL)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: storedReferenceURL!.path(percentEncoded: false)))
+
+        try await store.deleteSpeaker(id: saved.id)
+
+        let afterDelete = try await store.load()
+        XCTAssertTrue(afterDelete.isEmpty)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: storedReferenceURL!.path(percentEncoded: false)))
+    }
+
+    func testKnownSpeakerStoreUpdateReplacesEmbeddingAndReferenceClip() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("LorreKnownSpeakerUpdateTests-\(UUID().uuidString)", isDirectory: true)
+        let store = KnownSpeakerStore(baseURL: root)
+
+        let originalURL = root.appendingPathComponent("bob-original.m4a")
+        let updatedURL = root.appendingPathComponent("bob-updated.wav")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try Data("original".utf8).write(to: originalURL)
+        try Data("updated".utf8).write(to: updatedURL)
+
+        let saved = try await store.saveNewSpeaker(
+            displayName: "Bob",
+            embedding: [0.1, 0.0, 0.9],
+            referenceAudioURL: originalURL,
+            enrollmentData: KnownSpeakerEnrollmentData(
+                embedding: [0.1, 0.0, 0.9],
+                durationSeconds: 2.0,
+                sampleRate: 16_000
+            )
+        )
+
+        var updatedSpeaker = saved
+        updatedSpeaker.embedding = [0.9, 0.0, 0.1]
+        updatedSpeaker.enrollmentCount = 2
+        updatedSpeaker.updatedAt = Date(timeIntervalSince1970: 1_700_000_200)
+        let updated = try await store.updateSpeaker(
+            updatedSpeaker,
+            replacingReferenceAudioAt: updatedURL,
+            enrollmentData: KnownSpeakerEnrollmentData(
+                embedding: [0.9, 0.0, 0.1],
+                durationSeconds: 4.0,
+                sampleRate: 16_000
+            )
+        )
+
+        XCTAssertEqual(updated.embedding, [0.9, 0.0, 0.1])
+        XCTAssertEqual(updated.enrollmentCount, 2)
+        XCTAssertEqual(updated.referenceClip?.sourceFileName, "bob-updated.wav")
+        XCTAssertEqual(updated.referenceClip?.durationSeconds, 4.0)
+
+        let storedReferenceURL = await store.referenceAudioURL(for: updated)
+        XCTAssertNotNil(storedReferenceURL)
+        let storedData = try Data(contentsOf: storedReferenceURL!)
+        XCTAssertEqual(String(decoding: storedData, as: UTF8.self), "updated")
     }
 
     func testAppSettingsStoreRenameDeleteFolderAndPersistSidebarExpansion() async throws {
@@ -439,5 +541,39 @@ final class LorreCoreTests: XCTestCase {
         XCTAssertTrue(text.contains("\"mode\" : \"exact\""))
         XCTAssertTrue(text.contains("\"transcriptSegments\""))
         XCTAssertTrue(text.contains("\"diarizationSpans\""))
+    }
+
+    func testTranscriptAssemblerPreservesRelabeledSpeakerAndSourceSpeakerID() {
+        let sessionID = UUID()
+        let transcription = TranscriptionResult(
+            engineName: "TestEngine",
+            utterances: [
+                TranscriptionUtterance(startMs: 0, endMs: 2_000, text: "Hello there", confidence: 0.95)
+            ]
+        )
+        let diarization = DiarizationResult(
+            spans: [
+                DiarizationSpan(startMs: 0, endMs: 2_000, speakerId: "K1", sourceSpeakerId: "S2")
+            ],
+            speakerProfiles: [
+                SpeakerProfile(
+                    id: "K1",
+                    displayName: "Alice",
+                    styleVariant: .outline,
+                    isUserRenamed: true
+                )
+            ]
+        )
+
+        let transcript = TranscriptAssembler.assemble(
+            sessionId: sessionID,
+            transcription: transcription,
+            diarization: diarization
+        )
+
+        XCTAssertEqual(transcript.segments.count, 1)
+        XCTAssertEqual(transcript.segments[0].speakerId, "K1")
+        XCTAssertEqual(transcript.segments[0].sourceSpeakerId, "S2")
+        XCTAssertEqual(transcript.speaker(for: "K1").safeDisplayName, "Alice")
     }
 }

@@ -1353,7 +1353,13 @@ final class AppViewModel: ObservableObject {
 
     func saveModelRegistryConfiguration() {
         let previous = modelRegistryCustomBaseURL
-        let configuration = currentModelRegistryConfiguration()
+        let configuration: ModelRegistryConfiguration
+        do {
+            configuration = try validatedModelRegistryConfiguration()
+        } catch {
+            presentError(error, defaultTitle: "Invalid model registry")
+            return
+        }
         modelRegistryCustomBaseURL = configuration.normalizedBaseURL ?? ""
         applyCurrentRuntimeConfiguration()
 
@@ -2052,6 +2058,22 @@ final class AppViewModel: ObservableObject {
 
     private func currentModelRegistryConfiguration() -> ModelRegistryConfiguration {
         ModelRegistryConfiguration(customBaseURL: modelRegistryCustomBaseURL)
+    }
+
+    private func validatedModelRegistryConfiguration() throws -> ModelRegistryConfiguration {
+        let configuration = currentModelRegistryConfiguration()
+        guard let normalizedBaseURL = configuration.normalizedBaseURL else {
+            return configuration
+        }
+
+        guard let url = URL(string: normalizedBaseURL),
+              let scheme = url.scheme,
+              !scheme.isEmpty,
+              let host = url.host,
+              !host.isEmpty else {
+            throw LorreError.persistenceFailed("Enter a full registry base URL, for example https://huggingface.co.")
+        }
+        return configuration
     }
 
     private func applyCurrentRuntimeConfiguration() {

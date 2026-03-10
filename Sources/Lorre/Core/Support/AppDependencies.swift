@@ -32,7 +32,7 @@ struct AppDependencies {
         transcriptionService = FluidAudioTranscriptionService()
         diarizationService = FluidAudioOfflineDiarizationService(enrollmentService: enrollmentService)
         fluidAudioStatus = FluidAudioIntegrationProbe.statusSummary
-        modelPreparationComponentsSummary = "ASR v3 • Silero VAD • Offline diarizer"
+        modelPreparationComponentsSummary = "ASR v3 • Silero VAD • Speaker enrollment • Offline diarizer • Live diarizer"
         #else
         speakerEnrollmentService = FluidAudioSpeakerEnrollmentService()
         transcriptionService = MockTranscriptionService()
