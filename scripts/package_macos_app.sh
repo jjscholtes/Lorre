@@ -3,6 +3,8 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 APP_NAME="Lorre"
+APP_VERSION="0.1.1"
+BUILD_NUMBER="2"
 CONFIGURATION="debug" # debug | release
 SKIP_BUILD="0"
 DIST_DIR="$ROOT_DIR/dist"
@@ -80,9 +82,9 @@ cat > "$CONTENTS_DIR/Info.plist" <<PLIST
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>
-  <string>0.1.0</string>
+  <string>$APP_VERSION</string>
   <key>CFBundleVersion</key>
-  <string>1</string>
+  <string>$BUILD_NUMBER</string>
   <key>CFBundleIconFile</key>
   <string>$APP_NAME</string>
   <key>LSMinimumSystemVersion</key>
