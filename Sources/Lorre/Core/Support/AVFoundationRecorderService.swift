@@ -204,9 +204,20 @@ actor AVFoundationRecorderService: RecorderService {
     private var activeRecordingToken: UUID?
     private var isLiveTranscriptionEnabled = false
     private var livePreviewFallback: LiveTranscriptPreview?
+    private let speakerEnrollmentService: any SpeakerEnrollmentService
+    private let knownSpeakerReferenceAudioProvider: (@Sendable (KnownSpeaker) async -> URL?)?
+    private var knownSpeakers: [KnownSpeaker] = []
     #if canImport(FluidAudio)
     private var liveRecognizer: FluidAudioLiveStreamingRecognizer?
     #endif
+
+    init(
+        speakerEnrollmentService: any SpeakerEnrollmentService,
+        knownSpeakerReferenceAudioProvider: (@Sendable (KnownSpeaker) async -> URL?)? = nil
+    ) {
+        self.speakerEnrollmentService = speakerEnrollmentService
+        self.knownSpeakerReferenceAudioProvider = knownSpeakerReferenceAudioProvider
+    }
 
     func requestMicrophonePermission() async -> Bool {
         switch AVCaptureDevice.authorizationStatus(for: .audio) {
@@ -233,12 +244,39 @@ actor AVFoundationRecorderService: RecorderService {
         #endif
     }
 
-    func prepareLiveTranscriptionEngine() async throws {
+    func prepareLiveTranscriptionEngine(
+        onProgress: (@Sendable (ProcessingUpdate) async -> Void)?
+    ) async throws {
         #if canImport(FluidAudio)
         guard await supportsLiveTranscription() else { return }
-        let recognizer = liveRecognizer ?? FluidAudioLiveStreamingRecognizer()
-        try await recognizer.prepareModels()
+        let recognizer = liveRecognizer ?? FluidAudioLiveStreamingRecognizer(
+            speakerEnrollmentService: speakerEnrollmentService,
+            knownSpeakerReferenceAudioProvider: knownSpeakerReferenceAudioProvider
+        )
+        await recognizer.setKnownSpeakers(knownSpeakers)
+        try await recognizer.prepareModels(onProgress: onProgress)
         self.liveRecognizer = recognizer
+        #else
+        if let onProgress {
+            await onProgress(
+                ProcessingUpdate(
+                    phase: .preparing,
+                    component: .livePreview,
+                    label: "Live preview unavailable",
+                    detail: "This build does not include the live preview engine.",
+                    fraction: 1.0
+                )
+            )
+        }
+        #endif
+    }
+
+    func setKnownSpeakers(_ speakers: [KnownSpeaker]) async {
+        knownSpeakers = speakers.sorted {
+            $0.safeDisplayName.localizedCaseInsensitiveCompare($1.safeDisplayName) == .orderedAscending
+        }
+        #if canImport(FluidAudio)
+        await liveRecognizer?.setKnownSpeakers(knownSpeakers)
         #endif
     }
 
@@ -493,7 +531,11 @@ actor AVFoundationRecorderService: RecorderService {
         guard isLiveTranscriptionEnabled else { return }
         try Task.checkCancellation()
 
-        let recognizer = liveRecognizer ?? FluidAudioLiveStreamingRecognizer()
+        let recognizer = liveRecognizer ?? FluidAudioLiveStreamingRecognizer(
+            speakerEnrollmentService: speakerEnrollmentService,
+            knownSpeakerReferenceAudioProvider: knownSpeakerReferenceAudioProvider
+        )
+        await recognizer.setKnownSpeakers(knownSpeakers)
         let tapBridge = self.liveCaptureTapBridge
         try await recognizer.start { [weak tapBridge] preview in
             tapBridge?.setPreview(preview)

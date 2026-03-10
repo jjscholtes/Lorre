@@ -96,6 +96,7 @@ final class AppViewModel: ObservableObject {
     @Published private(set) var modelPreparationStatusLine: String = "Models not prepared yet"
     @Published private(set) var modelPreparationDetailLine: String = "Models may download on first transcription."
     @Published private(set) var modelPreparationProgress: Double?
+    @Published var modelRegistryCustomBaseURL: String = ""
     @Published private(set) var isSpeakerDiarizationEnabled: Bool = true
     @Published private(set) var diarizationExpectedSpeakerCountHint: DiarizationSpeakerCountHint = .auto
     @Published private(set) var isDiarizationDebugExportEnabled: Bool = false
@@ -105,6 +106,11 @@ final class AppViewModel: ObservableObject {
     @Published private(set) var isLiveTranscriptionEnabled: Bool = false
     @Published private(set) var isTranscriptConfidenceVisible: Bool = false
     @Published private(set) var liveTranscriptPreview: LiveTranscriptPreview?
+    @Published private(set) var knownSpeakers: [KnownSpeaker] = []
+    @Published var knownSpeakerDraftName: String = ""
+    @Published private(set) var knownSpeakerLibraryStatusLine: String = "No known speakers enrolled yet."
+    @Published private(set) var knownSpeakerOperationDescription: String?
+    @Published private(set) var isKnownSpeakerOperationInFlight = false
 
     private let dependencies: AppDependencies
     private var started = false
@@ -147,6 +153,7 @@ final class AppViewModel: ObservableObject {
         started = true
         isLiveTranscriptionSupported = await dependencies.recorder.supportsLiveTranscription()
         await restoreModelPreparationStateFromSettings()
+        await reloadKnownSpeakers()
         await reloadFolders()
         await reloadSessions(selectMostRecentIfNeeded: true)
         isLoading = false
@@ -154,6 +161,14 @@ final class AppViewModel: ObservableObject {
     }
 
     var filteredSessions: [SessionManifest] { cachedFilteredSessions }
+
+    var modelRegistrySummaryLabel: String {
+        currentModelRegistryConfiguration().summaryLabel
+    }
+
+    var isCustomModelRegistryConfigured: Bool {
+        !currentModelRegistryConfiguration().isDefault
+    }
 
     var customVocabularyTermLineCount: Int {
         customVocabularySimpleFormatTerms
@@ -397,6 +412,10 @@ final class AppViewModel: ObservableObject {
                 let enableLiveTranscript = await MainActor.run {
                     self.isLiveTranscriptionSupported && self.isLiveTranscriptionEnabled
                 }
+                await MainActor.run {
+                    self.applyCurrentRuntimeConfiguration()
+                }
+                await self.pushKnownSpeakersToServices()
                 await self.dependencies.recorder.setLiveTranscriptionEnabled(enableLiveTranscript)
                 try await self.dependencies.recorder.startRecording()
                 await self.dependencies.metrics.log(name: "record_started")
@@ -974,7 +993,7 @@ final class AppViewModel: ObservableObject {
 
         modelPreparationState = .preparing
         modelPreparationStatusLine = "Preparing models"
-        modelPreparationDetailLine = "Downloading and warming ASR, VAD, and diarization models if needed…"
+        modelPreparationDetailLine = "Downloading and warming ASR, VAD, speaker enrollment, and live preview models if needed…"
         modelPreparationProgress = 0.02
 
         Task { [weak self] in
@@ -982,14 +1001,34 @@ final class AppViewModel: ObservableObject {
             await self.dependencies.metrics.log(name: "models_prepare_started")
 
             do {
+                await MainActor.run {
+                    self.applyCurrentRuntimeConfiguration()
+                }
+                await self.pushKnownSpeakersToServices()
                 let includeDiarization = await MainActor.run { self.isSpeakerDiarizationEnabled }
                 try await self.dependencies.processingCoordinator.prepareModels(includeDiarization: includeDiarization) { [weak self] update in
                     guard let self else { return }
                     await MainActor.run {
                         self.modelPreparationState = .preparing
                         self.modelPreparationStatusLine = update.label
-                        self.modelPreparationDetailLine = self.fluidAudioStatus
-                        self.modelPreparationProgress = update.fraction
+                        self.modelPreparationDetailLine = update.detail ?? self.fluidAudioStatus
+                        self.modelPreparationProgress = min(0.78, (update.fraction ?? 0) * 0.78)
+                    }
+                }
+
+                if self.supportsAdvancedFluidAudioFeatures {
+                    try await self.dependencies.speakerEnrollment.ensureModelsReady { [weak self] update in
+                        guard let self else { return }
+                        await MainActor.run {
+                            self.modelPreparationState = .preparing
+                            self.modelPreparationStatusLine = update.label
+                            self.modelPreparationDetailLine = update.detail ?? self.fluidAudioStatus
+                            self.modelPreparationProgress = 0.78 + ((update.fraction ?? 0) * 0.12)
+                        }
+                    }
+                } else {
+                    await MainActor.run {
+                        self.modelPreparationProgress = max(self.modelPreparationProgress ?? 0.0, 0.90)
                     }
                 }
 
@@ -998,9 +1037,17 @@ final class AppViewModel: ObservableObject {
                         self.modelPreparationState = .preparing
                         self.modelPreparationStatusLine = "Warming live transcription"
                         self.modelPreparationDetailLine = "Preparing Parakeet EOU streaming models for fast recorder startup…"
-                        self.modelPreparationProgress = max(self.modelPreparationProgress ?? 0.0, 0.92)
+                        self.modelPreparationProgress = max(self.modelPreparationProgress ?? 0.0, 0.90)
                     }
-                    try await self.dependencies.recorder.prepareLiveTranscriptionEngine()
+                    try await self.dependencies.recorder.prepareLiveTranscriptionEngine { [weak self] update in
+                        guard let self else { return }
+                        await MainActor.run {
+                            self.modelPreparationState = .preparing
+                            self.modelPreparationStatusLine = update.label
+                            self.modelPreparationDetailLine = update.detail ?? self.fluidAudioStatus
+                            self.modelPreparationProgress = 0.90 + ((update.fraction ?? 0) * 0.10)
+                        }
+                    }
                 }
 
                 let snapshot = self.makeModelPreparationSnapshot(preparedAt: Date())
@@ -1304,6 +1351,107 @@ final class AppViewModel: ObservableObject {
         }
     }
 
+    func saveModelRegistryConfiguration() {
+        let previous = modelRegistryCustomBaseURL
+        let configuration = currentModelRegistryConfiguration()
+        modelRegistryCustomBaseURL = configuration.normalizedBaseURL ?? ""
+        applyCurrentRuntimeConfiguration()
+
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                _ = try await self.dependencies.settings.setModelRegistryConfiguration(configuration)
+                await self.dependencies.metrics.log(
+                    name: "model_registry_configuration_saved",
+                    attributes: ["custom_base_url": configuration.normalizedBaseURL ?? "default"]
+                )
+                await MainActor.run {
+                    self.banner = AppBanner(
+                        kind: .success,
+                        title: configuration.isDefault ? "Model registry reset" : "Model registry updated",
+                        message: configuration.isDefault
+                            ? "Lorre will use the default Hugging Face registry."
+                            : "Lorre will download models from \(configuration.summaryLabel)."
+                    )
+                }
+            } catch {
+                await MainActor.run {
+                    self.modelRegistryCustomBaseURL = previous
+                    self.applyCurrentRuntimeConfiguration()
+                    self.presentError(error, defaultTitle: "Could not save model registry")
+                }
+            }
+        }
+    }
+
+    func resetModelRegistryConfiguration() {
+        modelRegistryCustomBaseURL = ""
+        saveModelRegistryConfiguration()
+    }
+
+    func importKnownSpeaker() {
+        guard let sourceURL = chooseKnownSpeakerSampleURL(title: "Choose Speaker Enrollment Clip") else {
+            return
+        }
+        let fallbackName = sourceURL.deletingPathExtension().lastPathComponent.trimmingCharacters(in: .whitespacesAndNewlines)
+        let selectedName = normalizedKnownSpeakerName(
+            from: knownSpeakerDraftName,
+            fallback: fallbackName.isEmpty ? "Known Speaker" : fallbackName
+        )
+        enrollKnownSpeaker(
+            displayName: selectedName,
+            sourceURL: sourceURL,
+            replacing: nil
+        )
+    }
+
+    func reenrollKnownSpeaker(_ speakerID: String) {
+        guard let speaker = knownSpeakers.first(where: { $0.id == speakerID }) else { return }
+        guard let sourceURL = chooseKnownSpeakerSampleURL(
+            title: "Choose Updated Enrollment Clip for \(speaker.safeDisplayName)"
+        ) else {
+            return
+        }
+        enrollKnownSpeaker(
+            displayName: speaker.safeDisplayName,
+            sourceURL: sourceURL,
+            replacing: speaker
+        )
+    }
+
+    func deleteKnownSpeaker(_ speakerID: String) {
+        guard let speaker = knownSpeakers.first(where: { $0.id == speakerID }) else { return }
+        isKnownSpeakerOperationInFlight = true
+        knownSpeakerOperationDescription = "Removing \(speaker.safeDisplayName)…"
+
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await self.dependencies.knownSpeakerStore.deleteSpeaker(id: speakerID)
+                await self.reloadKnownSpeakers()
+                await self.dependencies.metrics.log(
+                    name: "known_speaker_deleted",
+                    attributes: ["speaker_id": speakerID]
+                )
+                await MainActor.run {
+                    self.banner = AppBanner(
+                        kind: .success,
+                        title: "Speaker removed",
+                        message: "\(speaker.safeDisplayName) will no longer be used for automatic labeling."
+                    )
+                    self.isKnownSpeakerOperationInFlight = false
+                    self.knownSpeakerOperationDescription = nil
+                }
+            } catch {
+                await MainActor.run {
+                    self.isKnownSpeakerOperationInFlight = false
+                    self.knownSpeakerOperationDescription = nil
+                    self.presentError(error, defaultTitle: "Could not remove speaker")
+                }
+            }
+        }
+    }
+
     func speakerSummaryBins(for transcript: TranscriptDocument?) -> [IndexRailSpeakerBin] {
         guard let transcript else { return [] }
         let counts = Dictionary(grouping: transcript.segments, by: { $0.speakerId ?? "UNK" })
@@ -1319,6 +1467,10 @@ final class AppViewModel: ObservableObject {
         currentProcessingTasks[sessionID] = Task { [weak self] in
             guard let self else { return }
             do {
+                await MainActor.run {
+                    self.applyCurrentRuntimeConfiguration()
+                }
+                await self.pushKnownSpeakersToServices()
                 let transcript = try await self.dependencies.processingCoordinator.process(
                     sessionId: sessionID,
                     enableDiarization: self.isSpeakerDiarizationEnabled,
@@ -1382,6 +1534,7 @@ final class AppViewModel: ObservableObject {
         banner = nil
         exportMessage = nil
         recorderStatusText = "Importing audio…"
+        applyCurrentRuntimeConfiguration()
 
         Task { [weak self] in
             guard let self else { return }
@@ -1856,9 +2009,12 @@ final class AppViewModel: ObservableObject {
             let settings = try await dependencies.settings.load()
             let restoredLiveEnabled = settings.isLiveTranscriptionEnabled && isLiveTranscriptionSupported
             let restoredVocabularyBoosting = settings.vocabularyBoosting
+            let restoredModelRegistry = settings.modelRegistryConfiguration
+            FluidAudioRuntimeConfiguration.apply(modelRegistry: restoredModelRegistry)
             await dependencies.recorder.setLiveTranscriptionEnabled(restoredLiveEnabled)
             await dependencies.transcription.setVocabularyBoostingConfiguration(restoredVocabularyBoosting)
             await MainActor.run {
+                self.modelRegistryCustomBaseURL = restoredModelRegistry.normalizedBaseURL ?? ""
                 self.isSpeakerDiarizationEnabled = settings.isSpeakerDiarizationEnabled
                 self.diarizationExpectedSpeakerCountHint = settings.diarizationExpectedSpeakerCountHint.normalized()
                 self.isDiarizationDebugExportEnabled = settings.isDiarizationDebugExportEnabled
@@ -1892,6 +2048,144 @@ final class AppViewModel: ObservableObject {
             isEnabled: isVocabularyBoostingEnabled,
             simpleFormatTerms: customVocabularySimpleFormatTerms
         )
+    }
+
+    private func currentModelRegistryConfiguration() -> ModelRegistryConfiguration {
+        ModelRegistryConfiguration(customBaseURL: modelRegistryCustomBaseURL)
+    }
+
+    private func applyCurrentRuntimeConfiguration() {
+        FluidAudioRuntimeConfiguration.apply(modelRegistry: currentModelRegistryConfiguration())
+    }
+
+    private func reloadKnownSpeakers() async {
+        do {
+            let speakers = try await dependencies.knownSpeakerStore.load()
+            self.knownSpeakers = speakers
+            self.knownSpeakerLibraryStatusLine = knownSpeakerLibrarySummary(for: speakers)
+            await pushKnownSpeakersToServices()
+        } catch {
+            presentError(error, defaultTitle: "Could not load speaker library")
+            self.knownSpeakers = []
+            self.knownSpeakerLibraryStatusLine = knownSpeakerLibrarySummary(for: [])
+            await pushKnownSpeakersToServices()
+        }
+    }
+
+    private func pushKnownSpeakersToServices() async {
+        await dependencies.diarization.setKnownSpeakers(knownSpeakers)
+        await dependencies.recorder.setKnownSpeakers(knownSpeakers)
+    }
+
+    private func knownSpeakerLibrarySummary(for speakers: [KnownSpeaker]) -> String {
+        guard !speakers.isEmpty else {
+            return "No enrolled speakers yet. Add a short clean voice sample to relabel recurring speakers automatically."
+        }
+
+        let totalEnrollments = speakers.reduce(0) { $0 + $1.enrollmentCount }
+        return "\(speakers.count) enrolled speaker\(speakers.count == 1 ? "" : "s") available for offline relabeling and live speaker hints (\(totalEnrollments) enrollment clip\(totalEnrollments == 1 ? "" : "s"))."
+    }
+
+    private func normalizedKnownSpeakerName(from rawValue: String, fallback: String) -> String {
+        let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? fallback : trimmed
+    }
+
+    private func enrollKnownSpeaker(
+        displayName: String,
+        sourceURL: URL,
+        replacing existingSpeaker: KnownSpeaker?
+    ) {
+        isKnownSpeakerOperationInFlight = true
+        knownSpeakerOperationDescription = existingSpeaker == nil
+            ? "Enrolling \(displayName)…"
+            : "Updating \(displayName)…"
+        applyCurrentRuntimeConfiguration()
+
+        Task { [weak self] in
+            guard let self else { return }
+            let hasScopedAccess = sourceURL.startAccessingSecurityScopedResource()
+            defer {
+                if hasScopedAccess {
+                    sourceURL.stopAccessingSecurityScopedResource()
+                }
+            }
+
+            do {
+                if self.supportsAdvancedFluidAudioFeatures {
+                    try await self.dependencies.speakerEnrollment.ensureModelsReady { [weak self] update in
+                        guard let self else { return }
+                        await MainActor.run {
+                            self.knownSpeakerOperationDescription = update.detail ?? update.label
+                        }
+                    }
+                }
+
+                let enrollment = try await self.dependencies.speakerEnrollment.makeEnrollment(from: sourceURL)
+                if let existingSpeaker {
+                    var updatedSpeaker = existingSpeaker
+                    updatedSpeaker.displayName = displayName
+                    updatedSpeaker.embedding = enrollment.embedding
+                    updatedSpeaker.updatedAt = Date()
+                    updatedSpeaker.enrollmentCount += 1
+                    _ = try await self.dependencies.knownSpeakerStore.updateSpeaker(
+                        updatedSpeaker,
+                        replacingReferenceAudioAt: sourceURL,
+                        enrollmentData: enrollment
+                    )
+                } else {
+                    _ = try await self.dependencies.knownSpeakerStore.saveNewSpeaker(
+                        displayName: displayName,
+                        embedding: enrollment.embedding,
+                        referenceAudioURL: sourceURL,
+                        enrollmentData: enrollment
+                    )
+                }
+
+                await self.reloadKnownSpeakers()
+                await self.dependencies.metrics.log(
+                    name: existingSpeaker == nil ? "known_speaker_enrolled" : "known_speaker_reenrolled",
+                    attributes: ["speaker_name": displayName]
+                )
+
+                await MainActor.run {
+                    self.knownSpeakerDraftName = existingSpeaker == nil ? "" : self.knownSpeakerDraftName
+                    self.isKnownSpeakerOperationInFlight = false
+                    self.knownSpeakerOperationDescription = nil
+                    self.banner = AppBanner(
+                        kind: .success,
+                        title: existingSpeaker == nil ? "Speaker enrolled" : "Speaker updated",
+                        message: "\(displayName) is now available for automatic speaker labeling."
+                    )
+                }
+            } catch {
+                await MainActor.run {
+                    self.isKnownSpeakerOperationInFlight = false
+                    self.knownSpeakerOperationDescription = nil
+                    self.presentError(error, defaultTitle: existingSpeaker == nil ? "Could not enroll speaker" : "Could not update speaker")
+                }
+            }
+        }
+    }
+
+    private var supportsAdvancedFluidAudioFeatures: Bool {
+        let normalized = fluidAudioStatus.lowercased()
+        return normalized.contains("available") && !normalized.contains("unavailable") && !normalized.contains("mock")
+    }
+
+    private func chooseKnownSpeakerSampleURL(title: String) -> URL? {
+        #if canImport(AppKit)
+        let panel = NSOpenPanel()
+        panel.title = title
+        panel.prompt = "Use Clip"
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        panel.allowsMultipleSelection = false
+        panel.allowedContentTypes = [.audio]
+        return panel.runModal() == .OK ? panel.url : nil
+        #else
+        return nil
+        #endif
     }
 
     private func applyModelPreparationReadyState(snapshot: ModelPreparationSnapshot) {

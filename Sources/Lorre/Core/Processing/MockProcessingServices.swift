@@ -696,7 +696,7 @@ actor ProcessingCoordinator {
         enableDiarization: Bool = true,
         diarizationExpectedSpeakers: DiarizationSpeakerCountHint = .auto,
         exportDiarizationDebugArtifact: Bool = false,
-        onProgress: @Sendable (ProcessingUpdate) async -> Void
+        onProgress: @escaping @Sendable (ProcessingUpdate) async -> Void
     ) async throws -> TranscriptDocument {
         guard var session = try await store.loadSession(id: sessionId) else {
             throw LorreError.sessionNotFound
@@ -835,7 +835,7 @@ actor ProcessingCoordinator {
 
     func prepareModels(
         includeDiarization: Bool = true,
-        onProgress: @Sendable (ProcessingUpdate) async -> Void
+        onProgress: @escaping @Sendable (ProcessingUpdate) async -> Void
     ) async throws {
         await onProgress(
             ProcessingUpdate(
