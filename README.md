@@ -4,13 +4,15 @@ Lorre is a macOS transcription workspace for capturing or importing audio, proce
 
 ## Key features
 
-- Record from `Microphone`, `System audio`, or `Microphone + system audio`.
-- Show live transcription while recording, including mixed mic + system capture.
-- Keep recordings on-device and process them locally with `FluidAudio`.
-- Turn on privacy mode to delete source audio automatically after the transcript is saved.
-- Import existing audio files into the same transcription workflow.
-- Review transcripts with speaker labels, playback, speaker reassignment, and inline text edits.
-- Export finished sessions as Markdown, plain text, or JSON.
+- Capture any conversation your way with `Microphone`, `System audio`, or `Microphone + system audio`.
+- See live transcription as you record, including mixed mic + system audio sessions.
+- Powered by `Parakeet` running on Apple's `Neural Engine (ANE)` for fast, efficient on-device transcription.
+- Built on `FluidAudio` for local speech recognition, voice activity detection, and speaker diarization.
+- Keep your recordings and transcripts on your Mac for a private, offline-first workflow.
+- Enable `Privacy Mode` to automatically delete source audio after the transcript is saved.
+- Import existing audio files and run them through the same transcription pipeline.
+- Review transcripts with speaker labels, playback, speaker reassignment, and inline text editing.
+- Export finished sessions as `Markdown`, `plain text`, or `JSON`.
 
 ## What is FluidAudio?
 
