@@ -335,7 +335,7 @@ private struct ModelStatusCompactPanelView: View {
                         .frame(width: 16, height: 16)
                 }
                 .buttonStyle(SecondaryControlButtonStyle())
-                .help("Transcription and recording settings")
+                .help("Model and app settings")
             }
 
             Text(viewModel.modelPreparationStatusLine)
@@ -352,32 +352,33 @@ private struct ModelStatusCompactPanelView: View {
                         .font(DS.FontStyle.mono)
                         .foregroundStyle(DS.ColorToken.fgSecondary)
                 }
-                if viewModel.isDiarizationDebugExportEnabled {
-                    Text("DiarDbg")
-                        .font(DS.FontStyle.mono)
-                        .foregroundStyle(DS.ColorToken.fgSecondary)
-                }
                 Text("Live \(viewModel.isLiveTranscriptionEnabled ? "On" : "Off")")
                     .font(DS.FontStyle.mono)
                     .foregroundStyle(DS.ColorToken.fgSecondary)
-                if viewModel.isTranscriptConfidenceVisible {
-                    Text("Conf On")
-                        .font(DS.FontStyle.mono)
-                        .foregroundStyle(DS.ColorToken.fgSecondary)
-                }
-                if viewModel.isVocabularyBoostingEnabled {
-                    Text("Vocab On")
-                        .font(DS.FontStyle.mono)
-                        .foregroundStyle(DS.ColorToken.fgSecondary)
-                }
-                if viewModel.isCustomModelRegistryConfigured {
-                    Text("Mirror")
-                        .font(DS.FontStyle.mono)
-                        .foregroundStyle(DS.ColorToken.fgSecondary)
-                }
                 Spacer(minLength: 0)
             }
             .lineLimit(1)
+
+            if hasAppFlags {
+                HStack(spacing: DS.Space.x2) {
+                    if viewModel.isDiarizationDebugExportEnabled {
+                        Text("DiarDbg")
+                    }
+                    if viewModel.isTranscriptConfidenceVisible {
+                        Text("Conf On")
+                    }
+                    if viewModel.isVocabularyBoostingEnabled {
+                        Text("Vocab On")
+                    }
+                    if viewModel.isCustomModelRegistryConfigured {
+                        Text("Mirror")
+                    }
+                    Spacer(minLength: 0)
+                }
+                .font(DS.FontStyle.mono)
+                .foregroundStyle(DS.ColorToken.fgTertiary)
+                .lineLimit(1)
+            }
 
             IndexRailView(mode: railMode, height: 7)
         }
@@ -388,7 +389,7 @@ private struct ModelStatusCompactPanelView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: DS.Space.x3) {
                     HStack {
-                        Text("Transcription Settings")
+                        Text("Model & App Settings")
                             .font(DS.FontStyle.panelTitle)
                             .foregroundStyle(DS.ColorToken.fgPrimary)
                         Spacer()
@@ -413,6 +414,13 @@ private struct ModelStatusCompactPanelView: View {
             return .progress(progress)
         }
         return .idleTicks
+    }
+
+    private var hasAppFlags: Bool {
+        viewModel.isDiarizationDebugExportEnabled
+            || viewModel.isTranscriptConfidenceVisible
+            || viewModel.isVocabularyBoostingEnabled
+            || viewModel.isCustomModelRegistryConfigured
     }
 
     private var statusBadge: some View {

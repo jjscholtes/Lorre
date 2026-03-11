@@ -92,38 +92,15 @@ struct RecorderConsoleView: View {
             RecorderSetupHeaderView(viewModel: viewModel)
             RecorderSectionDivider()
             RecorderSourceQuickAccessView(viewModel: viewModel)
-            RecorderSectionDivider()
-
-            ViewThatFits(in: .horizontal) {
-                HStack(alignment: .top, spacing: DS.Space.x3) {
-                    RecorderInsetPanel {
-                        RecorderPrivacyQuickAccessView(viewModel: viewModel)
-                    }
-
-                    RecorderInsetPanel {
-                        RecorderProcessingProfileView(
-                            viewModel: viewModel,
-                            isShowingKnownSpeakerLibrary: $isShowingKnownSpeakerLibrary
-                        )
-                    }
-                }
-
+            RecorderInsetPanel {
                 VStack(alignment: .leading, spacing: DS.Space.x3) {
-                    RecorderInsetPanel {
-                        RecorderPrivacyQuickAccessView(viewModel: viewModel)
-                    }
-
-                    RecorderInsetPanel {
-                        RecorderProcessingProfileView(
-                            viewModel: viewModel,
-                            isShowingKnownSpeakerLibrary: $isShowingKnownSpeakerLibrary
-                        )
-                    }
+                    RecorderPrivacyQuickAccessView(viewModel: viewModel)
+                    RecorderSectionDivider()
+                    RecorderProcessingProfileView(
+                        viewModel: viewModel,
+                        isShowingKnownSpeakerLibrary: $isShowingKnownSpeakerLibrary
+                    )
                 }
-            }
-
-            if isShowingKnownSpeakerLibrary {
-                KnownSpeakerLibraryQuickAccessView(viewModel: viewModel)
             }
 
             RecorderStartDockView(viewModel: viewModel) {
@@ -141,18 +118,7 @@ private struct RecorderSetupHeaderView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: DS.Space.x3) {
-            ViewThatFits(in: .horizontal) {
-                HStack(alignment: .top, spacing: DS.Space.x3) {
-                    titleBlock
-                    Spacer(minLength: DS.Space.x3)
-                    statusBadges
-                }
-
-                VStack(alignment: .leading, spacing: DS.Space.x2) {
-                    titleBlock
-                    statusBadges
-                }
-            }
+            titleBlock
 
             IndexRailView(mode: .idleTicks, height: 8)
                 .frame(maxWidth: .infinity)
@@ -165,28 +131,6 @@ private struct RecorderSetupHeaderView: View {
             Text("Arm the capture, then start.")
                 .font(DS.FontStyle.panelTitle)
                 .foregroundStyle(DS.ColorToken.fgPrimary)
-            Text(headerSummary)
-                .font(DS.FontStyle.body)
-                .foregroundStyle(DS.ColorToken.fgSecondary)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-    }
-
-    private var statusBadges: some View {
-        HStack(spacing: DS.Space.x2) {
-            RecorderSummaryBadge(text: "Local Only")
-            RecorderSummaryBadge(text: viewModel.isDeleteAudioAfterTranscriptionEnabled ? "Transcript Only" : "Keep Audio")
-        }
-    }
-
-    private var headerSummary: String {
-        switch viewModel.selectedRecordingSource {
-        case .microphone:
-            return "Microphone capture stays on-device and stays ready for playback, speaker labeling, and export."
-        case .systemAudio:
-            return "System audio capture stays on-device. After start, Lorre opens the native picker for the app, window, or display you want to capture."
-        case .microphoneAndSystemAudio:
-            return "Lorre records your microphone plus the selected Mac audio, keeps the stems local, and prepares one transcript workflow."
         }
     }
 }
@@ -220,18 +164,7 @@ private struct RecorderStartDockView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: DS.Space.x3) {
-            ViewThatFits(in: .horizontal) {
-                HStack(alignment: .center, spacing: DS.Space.x4) {
-                    summaryPanel
-                    Spacer(minLength: DS.Space.x3)
-                    startButton
-                }
-
-                VStack(alignment: .leading, spacing: DS.Space.x3) {
-                    summaryPanel
-                    startButton
-                }
-            }
+            startButton
 
             if viewModel.selectedRecordingSource.includesSystemAudio {
                 Text("Lorre will show the native picker after you press Start Recording so you can choose the app, window, or display audio.")
@@ -246,36 +179,6 @@ private struct RecorderStartDockView: View {
         .padding(DS.Space.x4)
         .frame(maxWidth: .infinity, alignment: .leading)
         .dsPanelSurface(alt: true, cornerRadius: DS.Radius.lg)
-    }
-
-    private var summaryPanel: some View {
-        VStack(alignment: .leading, spacing: DS.Space.x2) {
-            CapsLabel(text: "Ready")
-            Text(primarySummary)
-                .font(DS.FontStyle.panelTitle)
-                .foregroundStyle(DS.ColorToken.fgPrimary)
-                .fixedSize(horizontal: false, vertical: true)
-
-            Text(secondarySummary)
-                .font(DS.FontStyle.body)
-                .foregroundStyle(DS.ColorToken.fgSecondary)
-                .fixedSize(horizontal: false, vertical: true)
-
-            ViewThatFits(in: .horizontal) {
-                HStack(spacing: DS.Space.x2) {
-                    RecorderSummaryBadge(text: captureBadge)
-                    RecorderSummaryBadge(text: retentionBadge)
-                    RecorderSummaryBadge(text: liveBadge)
-                }
-
-                VStack(alignment: .leading, spacing: DS.Space.x2) {
-                    RecorderSummaryBadge(text: captureBadge)
-                    RecorderSummaryBadge(text: retentionBadge)
-                    RecorderSummaryBadge(text: liveBadge)
-                }
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var startButton: some View {
@@ -301,62 +204,11 @@ private struct RecorderStartDockView: View {
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(DS.ColorToken.white.opacity(0.76))
             }
-            .frame(minWidth: 220, idealWidth: 280, maxWidth: 320, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .leading)
             .contentShape(Rectangle())
         }
         .buttonStyle(RecorderStartActionButtonStyle())
         .accessibilityHint("Starts \(viewModel.selectedRecordingSource.label.lowercased()) recording with the current privacy and processing profile")
-    }
-
-    private var primarySummary: String {
-        "Record \(viewModel.selectedRecordingSource.label.lowercased())"
-    }
-
-    private var secondarySummary: String {
-        "\(retentionSummary) \(profileSummary)"
-    }
-
-    private var captureBadge: String {
-        switch viewModel.selectedRecordingSource {
-        case .microphone:
-            return "Mic"
-        case .systemAudio:
-            return "System Audio"
-        case .microphoneAndSystemAudio:
-            return "Mic + System"
-        }
-    }
-
-    private var retentionSummary: String {
-        viewModel.isDeleteAudioAfterTranscriptionEnabled
-            ? "Lorre deletes the source audio after the transcript is saved."
-            : "Lorre keeps the source audio for playback and waveform review."
-    }
-
-    private var retentionBadge: String {
-        viewModel.isDeleteAudioAfterTranscriptionEnabled ? "Transcript Only" : "Keep Audio"
-    }
-
-    private var profileSummary: String {
-        let speaker = viewModel.isSpeakerDiarizationEnabled
-            ? "Speaker labeling is on with \(viewModel.diarizationExpectedSpeakerCountHint.detailLabel.lowercased())."
-            : "Speaker labeling stays manual."
-        let live: String
-        if !viewModel.isLiveTranscriptionSupported {
-            live = "Live preview is unavailable in this build."
-        } else if viewModel.isLiveTranscriptionEnabled {
-            live = "Live preview is on."
-        } else {
-            live = "Live preview is off."
-        }
-        return "\(speaker) \(live)"
-    }
-
-    private var liveBadge: String {
-        if !viewModel.isLiveTranscriptionSupported {
-            return "Post-Pass Only"
-        }
-        return viewModel.isLiveTranscriptionEnabled ? "Live Preview" : "Post-Pass"
     }
 }
 
@@ -906,37 +758,43 @@ private struct RecorderProcessingProfileView: View {
                 )
             }
 
-            Button {
-                withAnimation(.easeInOut(duration: 0.18)) {
-                    isShowingKnownSpeakerLibrary.toggle()
+            if viewModel.isSpeakerDiarizationEnabled {
+                Button {
+                    withAnimation(.easeInOut(duration: 0.18)) {
+                        isShowingKnownSpeakerLibrary.toggle()
+                    }
+                } label: {
+                    HStack(spacing: DS.Space.x2) {
+                        CapsLabel(text: "Speaker Library")
+                        Text("\(viewModel.knownSpeakers.count) enrolled")
+                            .font(DS.FontStyle.mono)
+                            .foregroundStyle(DS.ColorToken.fgSecondary)
+                        Spacer()
+                        Text(isShowingKnownSpeakerLibrary ? "Hide" : "Manage")
+                            .font(DS.FontStyle.control)
+                            .foregroundStyle(DS.ColorToken.fgSecondary)
+                        Image(systemName: isShowingKnownSpeakerLibrary ? "chevron.up" : "chevron.down")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(DS.ColorToken.fgSecondary)
+                    }
+                    .padding(.horizontal, DS.Space.x3)
+                    .padding(.vertical, DS.Space.x1_5)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(
+                        RoundedRectangle(cornerRadius: DS.Radius.md, style: .continuous)
+                            .fill(DS.ColorToken.bgPanelAlt)
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: DS.Radius.md, style: .continuous)
+                            .stroke(DS.ColorToken.borderSoft, lineWidth: 1)
+                    )
                 }
-            } label: {
-                HStack(spacing: DS.Space.x2) {
-                    CapsLabel(text: "Speaker Library")
-                    Text("\(viewModel.knownSpeakers.count) enrolled")
-                        .font(DS.FontStyle.mono)
-                        .foregroundStyle(DS.ColorToken.fgSecondary)
-                    Spacer()
-                    Text(isShowingKnownSpeakerLibrary ? "Hide" : "Manage")
-                        .font(DS.FontStyle.control)
-                        .foregroundStyle(DS.ColorToken.fgSecondary)
-                    Image(systemName: isShowingKnownSpeakerLibrary ? "chevron.up" : "chevron.down")
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(DS.ColorToken.fgSecondary)
+                .buttonStyle(.plain)
+
+                if isShowingKnownSpeakerLibrary {
+                    KnownSpeakerLibraryQuickAccessView(viewModel: viewModel)
                 }
-                .padding(.horizontal, DS.Space.x3)
-                .padding(.vertical, DS.Space.x1_5)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(
-                    RoundedRectangle(cornerRadius: DS.Radius.md, style: .continuous)
-                        .fill(DS.ColorToken.bgPanelAlt)
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: DS.Radius.md, style: .continuous)
-                        .stroke(DS.ColorToken.borderSoft, lineWidth: 1)
-                )
             }
-            .buttonStyle(.plain)
         }
     }
 
