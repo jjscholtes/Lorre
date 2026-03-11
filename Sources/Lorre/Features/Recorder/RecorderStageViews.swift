@@ -38,6 +38,12 @@ struct RecorderConsoleView: View {
                         .font(DS.FontStyle.body)
                         .foregroundStyle(DS.ColorToken.fgSecondary)
 
+                    if viewModel.isDeleteAudioAfterTranscriptionEnabled {
+                        Text("Privacy mode is on. After the transcript is saved, Lorre will delete the source audio and keep the transcript and exports.")
+                            .font(DS.FontStyle.helper)
+                            .foregroundStyle(DS.ColorToken.fgSecondary)
+                    }
+
                     IndexRailView(
                         mode: .live(viewModel.liveMeterSamples),
                         height: 24
@@ -95,6 +101,7 @@ struct RecorderConsoleView: View {
                 )
 
                 RecorderLivePreviewQuickAccessView(viewModel: viewModel)
+                RecorderPrivacyQuickAccessView(viewModel: viewModel)
 
                 if !(viewModel.isRecording || viewModel.isStoppingRecording) {
                     RecorderStartActionButton(
@@ -511,6 +518,84 @@ private struct RecorderLivePreviewQuickAccessView: View {
             return "Shows a live transcript while recording (English only). After you stop, Lorre runs the full final transcript."
         }
         return "English-only Live Preview is off. Lorre will transcribe the audio after you stop."
+    }
+}
+
+private struct RecorderPrivacyQuickAccessView: View {
+    @ObservedObject var viewModel: AppViewModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: DS.Space.x2) {
+            ViewThatFits(in: .horizontal) {
+                HStack(alignment: .center, spacing: DS.Space.x2) {
+                    titleRow
+                    toggleControl
+                }
+
+                VStack(alignment: .leading, spacing: DS.Space.x2) {
+                    titleRow
+                    toggleControl
+                }
+            }
+
+            Text(statusDescription)
+                .font(DS.FontStyle.helper)
+                .foregroundStyle(DS.ColorToken.fgSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            if isLockedDuringCapture {
+                Text("Finish or cancel the current recording to change this privacy setting.")
+                    .font(DS.FontStyle.helper)
+                    .foregroundStyle(DS.ColorToken.fgTertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(DS.Space.x3)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .dsPanelSurface(alt: true, cornerRadius: DS.Radius.md)
+    }
+
+    private var titleRow: some View {
+        HStack(spacing: DS.Space.x2) {
+            CapsLabel(text: "Privacy")
+            Text(viewModel.isDeleteAudioAfterTranscriptionEnabled ? "DELETE AUDIO" : "KEEP AUDIO")
+                .font(DS.FontStyle.control)
+                .foregroundStyle(DS.ColorToken.fgSecondary)
+        }
+    }
+
+    private var toggleControl: some View {
+        Toggle(
+            "Delete source audio after the transcript is saved",
+            isOn: Binding(
+                get: { viewModel.isDeleteAudioAfterTranscriptionEnabled },
+                set: { viewModel.setDeleteAudioAfterTranscriptionEnabled($0) }
+            )
+        )
+        .labelsHidden()
+        .accessibilityLabel("Delete source audio after the transcript is saved")
+        .toggleStyle(.switch)
+        .tint(DS.ColorToken.fgPrimary)
+        .disabled(isLockedDuringCapture)
+        .help(toggleHelpText)
+    }
+
+    private var isLockedDuringCapture: Bool {
+        viewModel.isRecording || viewModel.isStoppingRecording
+    }
+
+    private var toggleHelpText: String {
+        if isLockedDuringCapture {
+            return "Finish or cancel the current recording to change the privacy setting"
+        }
+        return "Delete the recorded audio after transcription completes and keep only the transcript and exports"
+    }
+
+    private var statusDescription: String {
+        if viewModel.isDeleteAudioAfterTranscriptionEnabled {
+            return "After transcription finishes, Lorre deletes the source audio and any stored stems. Playback and waveform review will no longer be available for those sessions."
+        }
+        return "Lorre keeps the recorded audio after transcription so you can play it back, review the waveform, and export later."
     }
 }
 

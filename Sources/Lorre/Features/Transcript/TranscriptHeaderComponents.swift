@@ -242,6 +242,16 @@ struct TranscriptHeaderView: View {
                 .help("Show this folder in the session shelf")
             }
 
+            if let audioDeletedAt = session.audioDeletedAt {
+                HStack(alignment: .top, spacing: DS.Space.x2) {
+                    CapsLabel(text: "Privacy")
+                    Text("Source audio deleted on \(audioDeletedAt.formatted(date: .abbreviated, time: .shortened)). Playback and waveform review are unavailable for this session.")
+                        .font(DS.FontStyle.helper)
+                        .foregroundStyle(DS.ColorToken.fgSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+
             if let transcript {
                 IndexRailView(
                     mode: .speakerSummary(viewModel.speakerSummaryBins(for: transcript)),

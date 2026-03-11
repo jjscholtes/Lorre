@@ -188,6 +188,7 @@ struct SessionManifest: Identifiable, Codable, Equatable, Sendable {
     var notes: String?
     var recordingSource: RecordingSource
     var audioFileName: String
+    var audioDeletedAt: Date?
     var microphoneStemFileName: String?
     var systemAudioStemFileName: String?
     var transcriptFileName: String?
@@ -208,6 +209,7 @@ struct SessionManifest: Identifiable, Codable, Equatable, Sendable {
         notes: String? = nil,
         recordingSource: RecordingSource = .microphone,
         audioFileName: String,
+        audioDeletedAt: Date? = nil,
         microphoneStemFileName: String? = nil,
         systemAudioStemFileName: String? = nil,
         transcriptFileName: String? = nil,
@@ -227,6 +229,7 @@ struct SessionManifest: Identifiable, Codable, Equatable, Sendable {
         self.notes = notes
         self.recordingSource = recordingSource
         self.audioFileName = audioFileName
+        self.audioDeletedAt = audioDeletedAt
         self.microphoneStemFileName = microphoneStemFileName
         self.systemAudioStemFileName = systemAudioStemFileName
         self.transcriptFileName = transcriptFileName
@@ -245,6 +248,10 @@ struct SessionManifest: Identifiable, Codable, Equatable, Sendable {
         notes?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
     }
 
+    var hasRetainedAudio: Bool {
+        audioDeletedAt == nil
+    }
+
     private enum CodingKeys: String, CodingKey {
         case id
         case title
@@ -257,6 +264,7 @@ struct SessionManifest: Identifiable, Codable, Equatable, Sendable {
         case notes
         case recordingSource
         case audioFileName
+        case audioDeletedAt
         case microphoneStemFileName
         case systemAudioStemFileName
         case transcriptFileName
@@ -279,6 +287,7 @@ struct SessionManifest: Identifiable, Codable, Equatable, Sendable {
         self.notes = try container.decodeIfPresent(String.self, forKey: .notes)
         self.recordingSource = try container.decodeIfPresent(RecordingSource.self, forKey: .recordingSource) ?? .microphone
         self.audioFileName = try container.decode(String.self, forKey: .audioFileName)
+        self.audioDeletedAt = try container.decodeIfPresent(Date.self, forKey: .audioDeletedAt)
         self.microphoneStemFileName = try container.decodeIfPresent(String.self, forKey: .microphoneStemFileName)
         self.systemAudioStemFileName = try container.decodeIfPresent(String.self, forKey: .systemAudioStemFileName)
         self.transcriptFileName = try container.decodeIfPresent(String.self, forKey: .transcriptFileName)
@@ -301,6 +310,7 @@ struct SessionManifest: Identifiable, Codable, Equatable, Sendable {
         try container.encodeIfPresent(notes, forKey: .notes)
         try container.encode(recordingSource, forKey: .recordingSource)
         try container.encode(audioFileName, forKey: .audioFileName)
+        try container.encodeIfPresent(audioDeletedAt, forKey: .audioDeletedAt)
         try container.encodeIfPresent(microphoneStemFileName, forKey: .microphoneStemFileName)
         try container.encodeIfPresent(systemAudioStemFileName, forKey: .systemAudioStemFileName)
         try container.encodeIfPresent(transcriptFileName, forKey: .transcriptFileName)
@@ -778,6 +788,7 @@ struct AppSettings: Codable, Equatable, Sendable {
     var diarizationExpectedSpeakerCountHint: DiarizationSpeakerCountHint
     var isDiarizationDebugExportEnabled: Bool
     var isLiveTranscriptionEnabled: Bool
+    var isDeleteAudioAfterTranscriptionEnabled: Bool
     var isTranscriptConfidenceVisible: Bool
     var vocabularyBoosting: VocabularyBoostingConfiguration
     var folders: [SessionFolder]
@@ -794,6 +805,7 @@ struct AppSettings: Codable, Equatable, Sendable {
         diarizationExpectedSpeakerCountHint: DiarizationSpeakerCountHint = .auto,
         isDiarizationDebugExportEnabled: Bool = false,
         isLiveTranscriptionEnabled: Bool = false,
+        isDeleteAudioAfterTranscriptionEnabled: Bool = false,
         isTranscriptConfidenceVisible: Bool = false,
         vocabularyBoosting: VocabularyBoostingConfiguration = .init(),
         folders: [SessionFolder] = [],
@@ -809,6 +821,7 @@ struct AppSettings: Codable, Equatable, Sendable {
         self.diarizationExpectedSpeakerCountHint = diarizationExpectedSpeakerCountHint.normalized()
         self.isDiarizationDebugExportEnabled = isDiarizationDebugExportEnabled
         self.isLiveTranscriptionEnabled = isLiveTranscriptionEnabled
+        self.isDeleteAudioAfterTranscriptionEnabled = isDeleteAudioAfterTranscriptionEnabled
         self.isTranscriptConfidenceVisible = isTranscriptConfidenceVisible
         self.vocabularyBoosting = vocabularyBoosting
         self.folders = folders
@@ -826,6 +839,7 @@ struct AppSettings: Codable, Equatable, Sendable {
         case diarizationExpectedSpeakerCountHint
         case isDiarizationDebugExportEnabled
         case isLiveTranscriptionEnabled
+        case isDeleteAudioAfterTranscriptionEnabled
         case isTranscriptConfidenceVisible
         case vocabularyBoosting
         case folders
@@ -846,6 +860,7 @@ struct AppSettings: Codable, Equatable, Sendable {
         )?.normalized() ?? .auto
         self.isDiarizationDebugExportEnabled = try container.decodeIfPresent(Bool.self, forKey: .isDiarizationDebugExportEnabled) ?? false
         self.isLiveTranscriptionEnabled = try container.decodeIfPresent(Bool.self, forKey: .isLiveTranscriptionEnabled) ?? false
+        self.isDeleteAudioAfterTranscriptionEnabled = try container.decodeIfPresent(Bool.self, forKey: .isDeleteAudioAfterTranscriptionEnabled) ?? false
         self.isTranscriptConfidenceVisible = try container.decodeIfPresent(Bool.self, forKey: .isTranscriptConfidenceVisible) ?? false
         self.vocabularyBoosting = try container.decodeIfPresent(VocabularyBoostingConfiguration.self, forKey: .vocabularyBoosting) ?? .init()
         self.folders = try container.decodeIfPresent([SessionFolder].self, forKey: .folders) ?? []
@@ -864,6 +879,7 @@ struct AppSettings: Codable, Equatable, Sendable {
         try container.encode(diarizationExpectedSpeakerCountHint.normalized(), forKey: .diarizationExpectedSpeakerCountHint)
         try container.encode(isDiarizationDebugExportEnabled, forKey: .isDiarizationDebugExportEnabled)
         try container.encode(isLiveTranscriptionEnabled, forKey: .isLiveTranscriptionEnabled)
+        try container.encode(isDeleteAudioAfterTranscriptionEnabled, forKey: .isDeleteAudioAfterTranscriptionEnabled)
         try container.encode(isTranscriptConfidenceVisible, forKey: .isTranscriptConfidenceVisible)
         try container.encode(vocabularyBoosting, forKey: .vocabularyBoosting)
         try container.encode(folders, forKey: .folders)

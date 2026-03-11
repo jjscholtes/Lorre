@@ -82,6 +82,15 @@ actor AppSettingsStore {
     }
 
     @discardableResult
+    func setDeleteAudioAfterTranscriptionEnabled(_ isEnabled: Bool) async throws -> AppSettings {
+        var settings = try await load()
+        settings.isDeleteAudioAfterTranscriptionEnabled = isEnabled
+        settings.updatedAt = Date()
+        try save(settings)
+        return settings
+    }
+
+    @discardableResult
     func setTranscriptConfidenceVisible(_ isVisible: Bool) async throws -> AppSettings {
         var settings = try await load()
         settings.isTranscriptConfidenceVisible = isVisible

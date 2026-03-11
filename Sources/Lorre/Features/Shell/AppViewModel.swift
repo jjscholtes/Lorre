@@ -105,6 +105,7 @@ final class AppViewModel: ObservableObject {
     @Published private(set) var selectedRecordingSource: RecordingSource = .microphone
     @Published private(set) var isLiveTranscriptionSupported: Bool = false
     @Published private(set) var isLiveTranscriptionEnabled: Bool = false
+    @Published private(set) var isDeleteAudioAfterTranscriptionEnabled: Bool = false
     @Published private(set) var isTranscriptConfidenceVisible: Bool = false
     @Published private(set) var liveTranscriptPreview: LiveTranscriptPreview?
     @Published private(set) var knownSpeakers: [KnownSpeaker] = []
@@ -212,6 +213,9 @@ final class AppViewModel: ObservableObject {
                 return session.lastErrorMessage ?? "Processing failed"
             }
             if session.status == .ready {
+                if !session.hasRetainedAudio {
+                    return "Transcript ready • source audio deleted for privacy"
+                }
                 return activeTranscript?.segments.isEmpty == false
                     ? "Transcript ready for review"
                     : "Session ready"
@@ -224,6 +228,7 @@ final class AppViewModel: ObservableObject {
     var canControlPlayback: Bool {
         guard !isRecording, !isStoppingRecording else { return false }
         guard let session = selectedSession else { return false }
+        guard session.hasRetainedAudio else { return false }
         return session.status == .ready || session.status == .error
     }
 
@@ -1357,6 +1362,38 @@ final class AppViewModel: ObservableObject {
         }
     }
 
+    func setDeleteAudioAfterTranscriptionEnabled(_ isEnabled: Bool) {
+        guard isDeleteAudioAfterTranscriptionEnabled != isEnabled else { return }
+
+        let previous = isDeleteAudioAfterTranscriptionEnabled
+        isDeleteAudioAfterTranscriptionEnabled = isEnabled
+
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                _ = try await self.dependencies.settings.setDeleteAudioAfterTranscriptionEnabled(isEnabled)
+                await self.dependencies.metrics.log(
+                    name: "delete_audio_after_transcription_changed",
+                    attributes: ["enabled": isEnabled ? "true" : "false"]
+                )
+                await MainActor.run {
+                    self.banner = AppBanner(
+                        kind: .info,
+                        title: isEnabled ? "Privacy mode enabled" : "Privacy mode disabled",
+                        message: isEnabled
+                            ? "After the transcript finishes saving, Lorre will delete the source audio and keep only the transcript and exports."
+                            : "Lorre will keep the recorded audio after transcription so playback and waveform review stay available."
+                    )
+                }
+            } catch {
+                await MainActor.run {
+                    self.isDeleteAudioAfterTranscriptionEnabled = previous
+                    self.presentError(error, defaultTitle: "Could not save recording option")
+                }
+            }
+        }
+    }
+
     func setRecordingSource(_ source: RecordingSource) {
         guard !isRecording, !isStoppingRecording else { return }
         guard selectedRecordingSource != source else { return }
@@ -1539,11 +1576,13 @@ final class AppViewModel: ObservableObject {
                     self.applyCurrentRuntimeConfiguration()
                 }
                 await self.pushKnownSpeakersToServices()
+                let deleteAudioAfterTranscription = self.isDeleteAudioAfterTranscriptionEnabled
                 let transcript = try await self.dependencies.processingCoordinator.process(
                     sessionId: sessionID,
                     enableDiarization: self.isSpeakerDiarizationEnabled,
                     diarizationExpectedSpeakers: self.diarizationExpectedSpeakerCountHint,
                     exportDiarizationDebugArtifact: self.isDiarizationDebugExportEnabled,
+                    deleteAudioAfterTranscription: deleteAudioAfterTranscription,
                     onProgress: { [weak self] update in
                         guard let self else { return }
                         await MainActor.run {
@@ -1565,7 +1604,10 @@ final class AppViewModel: ObservableObject {
                 await self.dependencies.metrics.log(
                     name: "processing_succeeded",
                     sessionId: sessionID,
-                    attributes: ["segments": "\(transcript.segments.count)"]
+                    attributes: [
+                        "segments": "\(transcript.segments.count)",
+                        "audio_retained": deleteAudioAfterTranscription ? "false" : "true"
+                    ]
                 )
                 await self.reloadSessions(selectMostRecentIfNeeded: false)
                 await MainActor.run {
@@ -1810,6 +1852,9 @@ final class AppViewModel: ObservableObject {
     }
 
     private func preparePlaybackIfNeeded(for session: SessionManifest) async throws {
+        guard session.hasRetainedAudio else {
+            throw LorreError.playbackFailed("This session deleted its source audio after transcription for privacy.")
+        }
         let sessionDirectory = await dependencies.store.sessionDirectoryURL(for: session.id)
         let audioURL = sessionDirectory.appendingPathComponent(session.audioFileName)
         guard FileManager.default.fileExists(atPath: audioURL.path(percentEncoded: false)) else {
@@ -1889,6 +1934,12 @@ final class AppViewModel: ObservableObject {
         isPlaybackWaveformLoading = false
 
         guard let session else {
+            playbackWaveformBins = []
+            return
+        }
+
+        guard session.hasRetainedAudio else {
+            waveformCache.removeValue(forKey: session.id)
             playbackWaveformBins = []
             return
         }
@@ -2096,6 +2147,7 @@ final class AppViewModel: ObservableObject {
                 self.isVocabularyBoostingEnabled = restoredVocabularyBoosting.isEnabled
                 self.customVocabularySimpleFormatTerms = restoredVocabularyBoosting.simpleFormatTerms
                 self.isLiveTranscriptionEnabled = restoredLiveEnabled
+                self.isDeleteAudioAfterTranscriptionEnabled = settings.isDeleteAudioAfterTranscriptionEnabled
                 self.isTranscriptConfidenceVisible = settings.isTranscriptConfidenceVisible
                 if let snapshot = settings.modelPreparation {
                     self.applyModelPreparationReadyState(snapshot: snapshot)

@@ -781,6 +781,7 @@ actor ProcessingCoordinator {
         enableDiarization: Bool = true,
         diarizationExpectedSpeakers: DiarizationSpeakerCountHint = .auto,
         exportDiarizationDebugArtifact: Bool = false,
+        deleteAudioAfterTranscription: Bool = false,
         onProgress: @escaping @Sendable (ProcessingUpdate) async -> Void
     ) async throws -> TranscriptDocument {
         guard var session = try await store.loadSession(id: sessionId) else {
@@ -894,6 +895,12 @@ actor ProcessingCoordinator {
             try await updateSession(&session, status: .processing, phase: .saving, label: "Saving transcript", fraction: 0.95)
             await onProgress(ProcessingUpdate(phase: .saving, label: "Saving transcript", fraction: 0.95))
             try await store.saveTranscript(transcript)
+            if deleteAudioAfterTranscription {
+                try await deleteAudioArtifacts(for: session, in: sessionDir)
+                session.audioDeletedAt = Date()
+            } else {
+                session.audioDeletedAt = nil
+            }
 
             session.status = .ready
             session.transcriptFileName = "transcript.json"
@@ -924,6 +931,28 @@ actor ProcessingCoordinator {
             )
             try? await store.updateSession(session)
             throw LorreError.processingFailed(error.localizedDescription)
+        }
+    }
+
+    private func deleteAudioArtifacts(for session: SessionManifest, in sessionDir: URL) async throws {
+        let fileManager = FileManager.default
+        let fileNames = Set(
+            [
+                session.audioFileName,
+                session.microphoneStemFileName,
+                session.systemAudioStemFileName
+            ]
+            .compactMap { $0 }
+        )
+
+        for fileName in fileNames {
+            let fileURL = sessionDir.appendingPathComponent(fileName)
+            guard fileManager.fileExists(atPath: fileURL.path(percentEncoded: false)) else { continue }
+            do {
+                try fileManager.removeItem(at: fileURL)
+            } catch {
+                throw LorreError.persistenceFailed("The transcript was saved, but Lorre could not delete \(fileName).")
+            }
         }
     }
 

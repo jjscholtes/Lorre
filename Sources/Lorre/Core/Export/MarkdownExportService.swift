@@ -34,6 +34,11 @@ struct MarkdownExportService: ExportService {
         if let duration = session.durationSeconds {
             lines.append("- Duration: \(Formatters.duration(duration))")
         }
+        if let audioDeletedAt = session.audioDeletedAt {
+            lines.append("- Audio retained: No (deleted \(audioDeletedAt.formatted(date: .abbreviated, time: .shortened)))")
+        } else {
+            lines.append("- Audio retained: Yes")
+        }
         lines.append("- Exported: \(Date().formatted(date: .abbreviated, time: .shortened))")
         lines.append("")
         lines.append("## Transcript")
@@ -65,6 +70,11 @@ struct MarkdownExportService: ExportService {
         }
         if let duration = session.durationSeconds {
             lines.append("Duration: \(Formatters.duration(duration))")
+        }
+        if let audioDeletedAt = session.audioDeletedAt {
+            lines.append("Audio retained: No (deleted \(audioDeletedAt.formatted(date: .abbreviated, time: .shortened)))")
+        } else {
+            lines.append("Audio retained: Yes")
         }
         lines.append("")
 

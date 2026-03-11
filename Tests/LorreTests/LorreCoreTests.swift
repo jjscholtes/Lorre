@@ -48,6 +48,8 @@ final class LorreCoreTests: XCTestCase {
         XCTAssertEqual(loadedSessions.first?.audioFileName, "audio.caf")
         XCTAssertEqual(loadedSessions.first?.microphoneStemFileName, "microphone.caf")
         XCTAssertEqual(loadedSessions.first?.systemAudioStemFileName, "system-audio.caf")
+        XCTAssertNil(loadedSessions.first?.audioDeletedAt)
+        XCTAssertEqual(loadedSessions.first?.hasRetainedAudio, true)
 
         let loadedTranscript = try await store.loadTranscript(sessionId: created.id)
         XCTAssertEqual(loadedTranscript?.segments.first?.text, "Hello world")
@@ -80,6 +82,7 @@ final class LorreCoreTests: XCTestCase {
         let markdown = exporter.render(session: session, transcript: transcript)
         XCTAssertTrue(markdown.contains("# Export Session"))
         XCTAssertTrue(markdown.contains("- Source: System audio"))
+        XCTAssertTrue(markdown.contains("- Audio retained: Yes"))
         XCTAssertTrue(markdown.contains("Speaker S1"))
         XCTAssertTrue(markdown.contains("`00:00.000 - 00:01.234`"))
         XCTAssertTrue(markdown.contains("Second line"))
@@ -356,6 +359,7 @@ final class LorreCoreTests: XCTestCase {
         XCTAssertFalse(settings.isDiarizationDebugExportEnabled)
         XCTAssertTrue(settings.modelRegistryConfiguration.isDefault)
         XCTAssertEqual(settings.selectedRecordingSource, .microphone)
+        XCTAssertFalse(settings.isDeleteAudioAfterTranscriptionEnabled)
         XCTAssertFalse(settings.vocabularyBoosting.isEnabled)
         XCTAssertEqual(settings.vocabularyBoosting.simpleFormatTerms, "")
     }
@@ -388,6 +392,8 @@ final class LorreCoreTests: XCTestCase {
         XCTAssertNil(session.microphoneStemFileName)
         XCTAssertNil(session.systemAudioStemFileName)
         XCTAssertEqual(session.audioFileName, "audio.m4a")
+        XCTAssertNil(session.audioDeletedAt)
+        XCTAssertTrue(session.hasRetainedAudio)
     }
 
     func testKnownSpeakerStoreRoundTripCopiesReferenceClipAndDeletesIt() async throws {
@@ -571,6 +577,23 @@ final class LorreCoreTests: XCTestCase {
         XCTAssertFalse(disabled.isLiveTranscriptionEnabled)
     }
 
+    func testAppSettingsStorePersistsDeleteAudioAfterTranscriptionToggle() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("LorreDeleteAudioSettingTests-\(UUID().uuidString)", isDirectory: true)
+        let store = AppSettingsStore(baseURL: root)
+
+        let initial = try await store.load()
+        XCTAssertFalse(initial.isDeleteAudioAfterTranscriptionEnabled)
+
+        _ = try await store.setDeleteAudioAfterTranscriptionEnabled(true)
+        let enabled = try await store.load()
+        XCTAssertTrue(enabled.isDeleteAudioAfterTranscriptionEnabled)
+
+        _ = try await store.setDeleteAudioAfterTranscriptionEnabled(false)
+        let disabled = try await store.load()
+        XCTAssertFalse(disabled.isDeleteAudioAfterTranscriptionEnabled)
+    }
+
     func testAppSettingsStorePersistsVocabularyBoostingConfiguration() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("LorreVocabularyBoostingSettingTests-\(UUID().uuidString)", isDirectory: true)
@@ -639,6 +662,55 @@ final class LorreCoreTests: XCTestCase {
         XCTAssertTrue(text.contains("\"mode\" : \"exact\""))
         XCTAssertTrue(text.contains("\"transcriptSegments\""))
         XCTAssertTrue(text.contains("\"diarizationSpans\""))
+    }
+
+    func testProcessingCoordinatorDeletesAudioArtifactsAfterSuccessfulTranscriptionWhenEnabled() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("LorreDeleteAudioAfterProcessingTests-\(UUID().uuidString)", isDirectory: true)
+        let store = FileSessionStore(baseURL: root)
+        let session = try await store.createSession(
+            NewSessionDraft(
+                title: "Privacy Session",
+                folderId: nil,
+                status: .processing,
+                durationSeconds: 8.0,
+                recordingSource: .microphoneAndSystemAudio,
+                audioFileName: "audio.m4a",
+                microphoneStemFileName: "microphone.m4a",
+                systemAudioStemFileName: "system-audio.m4a",
+                recordedAt: Date()
+            )
+        )
+
+        let sessionDir = await store.sessionDirectoryURL(for: session.id)
+        try FileManager.default.createDirectory(at: sessionDir, withIntermediateDirectories: true)
+        try Data("audio".utf8).write(to: sessionDir.appendingPathComponent("audio.m4a"))
+        try Data("mic".utf8).write(to: sessionDir.appendingPathComponent("microphone.m4a"))
+        try Data("sys".utf8).write(to: sessionDir.appendingPathComponent("system-audio.m4a"))
+
+        let coordinator = ProcessingCoordinator(
+            store: store,
+            transcriptionService: MockTranscriptionService(),
+            diarizationService: MockSpeakerDiarizationService()
+        )
+
+        _ = try await coordinator.process(
+            sessionId: session.id,
+            enableDiarization: true,
+            diarizationExpectedSpeakers: .exact(2),
+            exportDiarizationDebugArtifact: false,
+            deleteAudioAfterTranscription: true,
+            onProgress: { _ in }
+        )
+
+        let updated = try await store.loadSession(id: session.id)
+        XCTAssertEqual(updated?.status, .ready)
+        XCTAssertNotNil(updated?.audioDeletedAt)
+        XCTAssertEqual(updated?.hasRetainedAudio, false)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: sessionDir.appendingPathComponent("audio.m4a").path(percentEncoded: false)))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: sessionDir.appendingPathComponent("microphone.m4a").path(percentEncoded: false)))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: sessionDir.appendingPathComponent("system-audio.m4a").path(percentEncoded: false)))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: sessionDir.appendingPathComponent("transcript.json").path(percentEncoded: false)))
     }
 
     func testTranscriptAssemblerPreservesRelabeledSpeakerAndSourceSpeakerID() {
