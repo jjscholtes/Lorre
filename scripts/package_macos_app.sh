@@ -3,8 +3,8 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 APP_NAME="Lorre"
-APP_VERSION="0.1.1"
-BUILD_NUMBER="2"
+APP_VERSION="0.1.2"
+BUILD_NUMBER="3"
 CONFIGURATION="debug" # debug | release
 SKIP_BUILD="0"
 DIST_DIR="$ROOT_DIR/dist"
