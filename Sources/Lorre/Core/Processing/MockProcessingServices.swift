@@ -22,8 +22,9 @@ struct MockTranscriptionService: TranscriptionService {
         _ = configuration
     }
 
-    func transcribe(url: URL, sessionTitle: String) async throws -> TranscriptionResult {
+    func transcribe(url: URL, sessionTitle: String, source: RecordingSource) async throws -> TranscriptionResult {
         _ = url
+        _ = source
         try await Task.sleep(for: .milliseconds(500))
 
         let base = [
@@ -777,7 +778,11 @@ actor ProcessingCoordinator {
 
             try await updateSession(&session, status: .processing, phase: .transcribing, label: "Transcribing audio", fraction: 0.3)
             await onProgress(ProcessingUpdate(phase: .transcribing, label: "Transcribing audio", fraction: 0.3))
-            let transcription = try await transcriptionService.transcribe(url: audioURL, sessionTitle: session.displayTitle)
+            let transcription = try await transcriptionService.transcribe(
+                url: audioURL,
+                sessionTitle: session.displayTitle,
+                source: session.recordingSource
+            )
 
             if enableDiarization {
                 try await updateSession(

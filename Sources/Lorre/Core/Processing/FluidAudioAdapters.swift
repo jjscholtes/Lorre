@@ -170,14 +170,14 @@ actor FluidAudioTranscriptionService: TranscriptionService {
         vocabularyBoostingConfiguration = configuration
     }
 
-    func transcribe(url: URL, sessionTitle: String) async throws -> TranscriptionResult {
+    func transcribe(url: URL, sessionTitle: String, source: RecordingSource) async throws -> TranscriptionResult {
         try await ensureModelsReady(onProgress: nil)
         guard let managerBox else {
             throw LorreError.processingFailed("ASR manager is not initialized.")
         }
 
         try await configureVocabularyBoostingIfNeeded(sessionTitle: sessionTitle, managerBox: managerBox)
-        let result = try await managerBox.transcribe(url, source: .microphone)
+        let result = try await managerBox.transcribe(url, source: fluidAudioSource(for: source))
         let speechWindows = await loadSpeechWindowsIfAvailable(from: url)
         let utterances = buildUtterances(from: result, speechWindows: speechWindows)
 
@@ -227,6 +227,15 @@ actor FluidAudioTranscriptionService: TranscriptionService {
 
         try await managerBox.configureVocabularyBoosting(vocabulary: context, ctcModels: ctcModels)
         configuredVocabularySignature = signature
+    }
+
+    private func fluidAudioSource(for source: RecordingSource) -> AudioSource {
+        switch source {
+        case .microphone:
+            return .microphone
+        case .systemAudio, .microphoneAndSystemAudio:
+            return .system
+        }
     }
 
     private func vocabularySignature(for context: CustomVocabularyContext) -> String {

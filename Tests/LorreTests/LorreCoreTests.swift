@@ -14,7 +14,10 @@ final class LorreCoreTests: XCTestCase {
                 folderId: nil,
                 status: .processing,
                 durationSeconds: 12.5,
-                audioFileName: "audio.m4a",
+                recordingSource: .microphoneAndSystemAudio,
+                audioFileName: "audio.caf",
+                microphoneStemFileName: "microphone.caf",
+                systemAudioStemFileName: "system-audio.caf",
                 recordedAt: Date()
             )
         )
@@ -41,6 +44,10 @@ final class LorreCoreTests: XCTestCase {
         let loadedSessions = try await store.loadSessions()
         XCTAssertEqual(loadedSessions.count, 1)
         XCTAssertEqual(loadedSessions.first?.status, .ready)
+        XCTAssertEqual(loadedSessions.first?.recordingSource, .microphoneAndSystemAudio)
+        XCTAssertEqual(loadedSessions.first?.audioFileName, "audio.caf")
+        XCTAssertEqual(loadedSessions.first?.microphoneStemFileName, "microphone.caf")
+        XCTAssertEqual(loadedSessions.first?.systemAudioStemFileName, "system-audio.caf")
 
         let loadedTranscript = try await store.loadTranscript(sessionId: created.id)
         XCTAssertEqual(loadedTranscript?.segments.first?.text, "Hello world")
@@ -52,6 +59,7 @@ final class LorreCoreTests: XCTestCase {
         let session = SessionManifest(
             title: "Export Session",
             status: .ready,
+            recordingSource: .systemAudio,
             audioFileName: "audio.m4a",
             transcriptFileName: "transcript.json"
         )
@@ -71,6 +79,7 @@ final class LorreCoreTests: XCTestCase {
 
         let markdown = exporter.render(session: session, transcript: transcript)
         XCTAssertTrue(markdown.contains("# Export Session"))
+        XCTAssertTrue(markdown.contains("- Source: System audio"))
         XCTAssertTrue(markdown.contains("Speaker S1"))
         XCTAssertTrue(markdown.contains("`00:00.000 - 00:01.234`"))
         XCTAssertTrue(markdown.contains("Second line"))
@@ -232,6 +241,20 @@ final class LorreCoreTests: XCTestCase {
         XCTAssertEqual(loaded.modelRegistryConfiguration.summaryLabel, "https://models.internal.example.com")
     }
 
+    func testAppSettingsStorePersistsSelectedRecordingSource() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("LorreRecordingSourceSettingTests-\(UUID().uuidString)", isDirectory: true)
+        let store = AppSettingsStore(baseURL: root)
+
+        let initial = try await store.load()
+        XCTAssertEqual(initial.selectedRecordingSource, .microphone)
+
+        _ = try await store.setSelectedRecordingSource(.microphoneAndSystemAudio)
+
+        let loaded = try await store.load()
+        XCTAssertEqual(loaded.selectedRecordingSource, .microphoneAndSystemAudio)
+    }
+
     func testFileSessionStoreDeleteRemovesSessionDirectory() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("LorreDeleteTests-\(UUID().uuidString)", isDirectory: true)
@@ -243,7 +266,10 @@ final class LorreCoreTests: XCTestCase {
                 folderId: nil,
                 status: .ready,
                 durationSeconds: nil,
+                recordingSource: .microphone,
                 audioFileName: "audio.m4a",
+                microphoneStemFileName: nil,
+                systemAudioStemFileName: nil,
                 recordedAt: nil
             )
         )
@@ -291,8 +317,39 @@ final class LorreCoreTests: XCTestCase {
         XCTAssertEqual(settings.diarizationExpectedSpeakerCountHint, .auto)
         XCTAssertFalse(settings.isDiarizationDebugExportEnabled)
         XCTAssertTrue(settings.modelRegistryConfiguration.isDefault)
+        XCTAssertEqual(settings.selectedRecordingSource, .microphone)
         XCTAssertFalse(settings.vocabularyBoosting.isEnabled)
         XCTAssertEqual(settings.vocabularyBoosting.simpleFormatTerms, "")
+    }
+
+    func testSessionManifestDecodesLegacyJSONWithoutRecordingSourceMetadata() throws {
+        let legacyJSON = """
+        {
+          "audioFileName" : "audio.m4a",
+          "createdAt" : "2026-02-23T10:20:01Z",
+          "dirtyFlags" : {
+            "speakerEdited" : false,
+            "titleEdited" : false,
+            "transcriptEdited" : false
+          },
+          "exports" : [],
+          "id" : "5E3D20E5-D3B3-430D-980B-8699A28EC4C0",
+          "processing" : {},
+          "status" : "ready",
+          "title" : "Legacy Session",
+          "updatedAt" : "2026-02-23T10:21:01Z"
+        }
+        """
+
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+
+        let session = try decoder.decode(SessionManifest.self, from: Data(legacyJSON.utf8))
+
+        XCTAssertEqual(session.recordingSource, .microphone)
+        XCTAssertNil(session.microphoneStemFileName)
+        XCTAssertNil(session.systemAudioStemFileName)
+        XCTAssertEqual(session.audioFileName, "audio.m4a")
     }
 
     func testKnownSpeakerStoreRoundTripCopiesReferenceClipAndDeletesIt() async throws {
@@ -512,7 +569,10 @@ final class LorreCoreTests: XCTestCase {
                 folderId: nil,
                 status: .processing,
                 durationSeconds: 8.0,
+                recordingSource: .microphone,
                 audioFileName: "audio.m4a",
+                microphoneStemFileName: nil,
+                systemAudioStemFileName: nil,
                 recordedAt: Date()
             )
         )

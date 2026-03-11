@@ -69,7 +69,10 @@ actor FileSessionStore: SessionStore {
             updatedAt: now,
             recordedAt: draft.recordedAt,
             durationSeconds: draft.durationSeconds,
+            recordingSource: draft.recordingSource,
             audioFileName: draft.audioFileName,
+            microphoneStemFileName: draft.microphoneStemFileName,
+            systemAudioStemFileName: draft.systemAudioStemFileName,
             transcriptFileName: nil,
             exports: [],
             processing: draft.status == .processing

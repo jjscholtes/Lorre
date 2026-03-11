@@ -27,6 +27,7 @@ struct MarkdownExportService: ExportService {
         lines.append("# \(session.displayTitle)")
         lines.append("")
         lines.append("- Status: \(session.status.label)")
+        lines.append("- Source: \(session.recordingSource.label)")
         if let recordedAt = session.recordedAt {
             lines.append("- Recorded: \(recordedAt.formatted(date: .abbreviated, time: .shortened))")
         }
@@ -58,6 +59,7 @@ struct MarkdownExportService: ExportService {
         lines.append(String(repeating: "=", count: max(8, session.displayTitle.count)))
         lines.append("")
         lines.append("Status: \(session.status.label)")
+        lines.append("Source: \(session.recordingSource.label)")
         if let recordedAt = session.recordedAt {
             lines.append("Recorded: \(recordedAt.formatted(date: .abbreviated, time: .shortened))")
         }

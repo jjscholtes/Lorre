@@ -37,6 +37,15 @@ actor AppSettingsStore {
     }
 
     @discardableResult
+    func setSelectedRecordingSource(_ source: RecordingSource) async throws -> AppSettings {
+        var settings = try await load()
+        settings.selectedRecordingSource = source
+        settings.updatedAt = Date()
+        try save(settings)
+        return settings
+    }
+
+    @discardableResult
     func setSpeakerDiarizationEnabled(_ isEnabled: Bool) async throws -> AppSettings {
         var settings = try await load()
         settings.isSpeakerDiarizationEnabled = isEnabled

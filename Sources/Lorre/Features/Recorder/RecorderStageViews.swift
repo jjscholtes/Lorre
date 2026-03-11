@@ -22,7 +22,7 @@ struct RecorderConsoleView: View {
                     HStack(alignment: .center, spacing: DS.Space.x4) {
                         VStack(alignment: .leading, spacing: DS.Space.x1) {
                             CapsLabel(text: "Record")
-                            Text(viewModel.isStoppingRecording ? "Stopping…" : "Recording Live")
+                            Text(viewModel.isStoppingRecording ? "Stopping…" : "Recording \(viewModel.selectedRecordingSource.label)")
                                 .font(DS.FontStyle.panelTitle)
                                 .foregroundStyle(DS.ColorToken.fgPrimary)
                         }
@@ -70,7 +70,7 @@ struct RecorderConsoleView: View {
                             .foregroundStyle(DS.ColorToken.fgPrimary)
                             .fixedSize(horizontal: false, vertical: true)
 
-                        Text("Audio stays local. After processing, you can review the transcript, assign speakers, and export from the same workspace.")
+                        Text(setupDescription)
                             .font(DS.FontStyle.body)
                             .foregroundStyle(DS.ColorToken.fgSecondary)
                             .fixedSize(horizontal: false, vertical: true)
@@ -87,6 +87,8 @@ struct RecorderConsoleView: View {
                     }
                 }
 
+                RecorderSourceQuickAccessView(viewModel: viewModel)
+
                 SpeakerRecognitionQuickAccessView(
                     viewModel: viewModel,
                     scopeNote: "Changes here apply when the next recording or imported audio is processed."
@@ -96,6 +98,7 @@ struct RecorderConsoleView: View {
 
                 if !(viewModel.isRecording || viewModel.isStoppingRecording) {
                     RecorderStartActionButton(
+                        recordingSource: viewModel.selectedRecordingSource,
                         isSpeakerRecognitionEnabled: viewModel.isSpeakerDiarizationEnabled,
                         isLivePreviewSupported: viewModel.isLiveTranscriptionSupported,
                         isLivePreviewEnabled: viewModel.isLiveTranscriptionEnabled,
@@ -124,9 +127,21 @@ struct RecorderConsoleView: View {
             Text("This will stop recording immediately. The in-progress session and audio will be deleted.")
         }
     }
+
+    private var setupDescription: String {
+        switch viewModel.selectedRecordingSource {
+        case .microphone:
+            return "Audio stays local. Record your microphone, then review the transcript, assign speakers, and export from the same workspace."
+        case .systemAudio:
+            return "Audio stays local. Capture the selected app, window, or display audio, then review and export from the same workspace."
+        case .microphoneAndSystemAudio:
+            return "Audio stays local. Capture your microphone plus the selected app, window, or display audio. Lorre stores separate stems and a mixed track for review."
+        }
+    }
 }
 
 private struct RecorderStartActionButton: View {
+    let recordingSource: RecordingSource
     let isSpeakerRecognitionEnabled: Bool
     let isLivePreviewSupported: Bool
     let isLivePreviewEnabled: Bool
@@ -155,7 +170,7 @@ private struct RecorderStartActionButton: View {
         }
         .buttonStyle(RecorderStartActionButtonStyle())
         .disabled(isDisabled)
-        .accessibilityHint("Starts microphone recording using the selected speaker recognition and live preview settings")
+        .accessibilityHint("Starts \(recordingSource.label.lowercased()) recording using the selected speaker recognition and live preview settings")
     }
 
     private var primaryTextColor: Color {
@@ -167,6 +182,7 @@ private struct RecorderStartActionButton: View {
     }
 
     private var modeSummary: String {
+        let source = recordingSource.shortLabel
         let speaker = isSpeakerRecognitionEnabled ? "Spk On" : "Spk Off"
         let live: String
         if !isLivePreviewSupported {
@@ -176,7 +192,7 @@ private struct RecorderStartActionButton: View {
         } else {
             live = "Live Off"
         }
-        return "\(speaker) • \(live)"
+        return "\(source) • \(speaker) • \(live)"
     }
 
     private var modeChip: some View {
@@ -224,6 +240,87 @@ private struct RecorderStartActionButton: View {
 
     private var indicatorFill: Color {
         isDisabled ? DS.ColorToken.fgSecondary : DS.ColorToken.white
+    }
+}
+
+private struct RecorderSourceQuickAccessView: View {
+    @ObservedObject var viewModel: AppViewModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: DS.Space.x2) {
+            HStack(spacing: DS.Space.x2) {
+                CapsLabel(text: "Source")
+                Text(viewModel.selectedRecordingSource.shortLabel.uppercased())
+                    .font(DS.FontStyle.control)
+                    .foregroundStyle(DS.ColorToken.fgSecondary)
+            }
+
+            Text(sourceDescription)
+                .font(DS.FontStyle.helper)
+                .foregroundStyle(DS.ColorToken.fgSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            HStack(spacing: DS.Space.x2) {
+                ForEach(RecordingSource.allCases) { source in
+                    Button(source.label) {
+                        viewModel.setRecordingSource(source)
+                    }
+                    .buttonStyle(RecorderSourceOptionButtonStyle(isSelected: viewModel.selectedRecordingSource == source))
+                    .disabled(isLockedDuringCapture)
+                }
+            }
+
+            if isLockedDuringCapture {
+                Text("Finish or cancel the current recording to change the source.")
+                    .font(DS.FontStyle.helper)
+                    .foregroundStyle(DS.ColorToken.fgTertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(DS.Space.x3)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .dsPanelSurface(alt: true, cornerRadius: DS.Radius.md)
+    }
+
+    private var isLockedDuringCapture: Bool {
+        viewModel.isRecording || viewModel.isStoppingRecording
+    }
+
+    private var sourceDescription: String {
+        switch viewModel.selectedRecordingSource {
+        case .microphone:
+            return "Records your microphone only."
+        case .systemAudio:
+            return "Uses the native ScreenCaptureKit picker to capture system audio from a selected app, window, or display."
+        case .microphoneAndSystemAudio:
+            return "Captures your microphone and the selected app, window, or display audio together. Lorre stores separate stems and a mixed session track."
+        }
+    }
+}
+
+private struct RecorderSourceOptionButtonStyle: PrimitiveButtonStyle {
+    let isSelected: Bool
+
+    func makeBody(configuration: Configuration) -> some View {
+        Button(role: configuration.role, action: configuration.trigger) {
+            configuration.label
+                .font(DS.FontStyle.control)
+                .foregroundStyle(isSelected ? DS.ColorToken.white : DS.ColorToken.fgPrimary)
+                .padding(.horizontal, DS.Space.x2_5)
+                .padding(.vertical, DS.Space.x1_5)
+                .frame(maxWidth: .infinity)
+                .background(
+                    RoundedRectangle(cornerRadius: DS.Radius.md, style: .continuous)
+                        .fill(isSelected ? DS.ColorToken.black : DS.ColorToken.bgPanel)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: DS.Radius.md, style: .continuous)
+                        .stroke(
+                            isSelected ? DS.ColorToken.white.opacity(0.12) : DS.ColorToken.borderStrong,
+                            lineWidth: 1
+                        )
+                )
+        }
     }
 }
 

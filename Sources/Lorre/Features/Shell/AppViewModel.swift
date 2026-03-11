@@ -102,6 +102,7 @@ final class AppViewModel: ObservableObject {
     @Published private(set) var isDiarizationDebugExportEnabled: Bool = false
     @Published private(set) var isVocabularyBoostingEnabled: Bool = false
     @Published var customVocabularySimpleFormatTerms: String = ""
+    @Published private(set) var selectedRecordingSource: RecordingSource = .microphone
     @Published private(set) var isLiveTranscriptionSupported: Bool = false
     @Published private(set) var isLiveTranscriptionEnabled: Bool = false
     @Published private(set) var isTranscriptConfidenceVisible: Bool = false
@@ -151,7 +152,7 @@ final class AppViewModel: ObservableObject {
     func start() async {
         guard !started else { return }
         started = true
-        isLiveTranscriptionSupported = await dependencies.recorder.supportsLiveTranscription()
+        await refreshLiveTranscriptionSupport(for: selectedRecordingSource)
         await restoreModelPreparationStateFromSettings()
         await reloadKnownSpeakers()
         await reloadFolders()
@@ -402,13 +403,6 @@ final class AppViewModel: ObservableObject {
         Task { [weak self] in
             guard let self else { return }
             do {
-                let granted = await self.dependencies.recorder.requestMicrophonePermission()
-                guard granted else {
-                    self.presentError(LorreError.microphonePermissionDenied, defaultTitle: "Microphone access required")
-                    await self.dependencies.metrics.log(name: "record_permission_denied")
-                    return
-                }
-
                 let enableLiveTranscript = await MainActor.run {
                     self.isLiveTranscriptionSupported && self.isLiveTranscriptionEnabled
                 }
@@ -417,8 +411,11 @@ final class AppViewModel: ObservableObject {
                 }
                 await self.pushKnownSpeakersToServices()
                 await self.dependencies.recorder.setLiveTranscriptionEnabled(enableLiveTranscript)
-                try await self.dependencies.recorder.startRecording()
-                await self.dependencies.metrics.log(name: "record_started")
+                try await self.dependencies.recorder.startRecording(RecordingRequest(source: self.selectedRecordingSource))
+                await self.dependencies.metrics.log(
+                    name: "record_started",
+                    attributes: ["source": self.selectedRecordingSource.rawValue]
+                )
                 self.selectedSessionID = nil
                 self.activeTranscript = nil
                 self.liveTranscriptPreview = nil
@@ -429,8 +426,24 @@ final class AppViewModel: ObservableObject {
                 self.recorderStatusText = "Recording live"
                 self.startRecordingTimers()
             } catch {
+                if let lorreError = error as? LorreError {
+                    if case .recordingSourceSelectionCancelled = lorreError {
+                        self.recorderStatusText = "Ready to record"
+                        await self.dependencies.metrics.log(
+                            name: "record_source_selection_cancelled",
+                            attributes: ["source": self.selectedRecordingSource.rawValue]
+                        )
+                        return
+                    }
+                }
                 self.presentError(error, defaultTitle: "Could not start recording")
-                await self.dependencies.metrics.log(name: "record_start_failed", attributes: ["error": error.localizedDescription])
+                await self.dependencies.metrics.log(
+                    name: "record_start_failed",
+                    attributes: [
+                        "source": self.selectedRecordingSource.rawValue,
+                        "error": error.localizedDescription
+                    ]
+                )
             }
         }
     }
@@ -489,21 +502,27 @@ final class AppViewModel: ObservableObject {
         Task { [weak self] in
             guard let self else { return }
             do {
+                let source = self.selectedRecordingSource
                 let now = Date()
-                let recordingExtension = await self.dependencies.recorder.preferredRecordingFileExtension()
+                let fileLayout = await self.dependencies.recorder.recordingFileLayout(for: source)
                 let title = "Session \(now.formatted(date: .abbreviated, time: .shortened))"
                 let draft = NewSessionDraft(
                     title: title,
                     folderId: self.currentDraftFolderID(),
                     status: .processing,
                     durationSeconds: self.recordingElapsedSeconds,
-                    audioFileName: "audio.\(recordingExtension)",
+                    recordingSource: source,
+                    audioFileName: fileLayout.audioFileName,
+                    microphoneStemFileName: fileLayout.microphoneStemFileName,
+                    systemAudioStemFileName: fileLayout.systemAudioStemFileName,
                     recordedAt: now
                 )
                 var session = try await self.dependencies.store.createSession(draft)
                 let sessionDirectory = await self.dependencies.store.sessionDirectoryURL(for: session.id)
-                let audioURL = sessionDirectory.appendingPathComponent(session.audioFileName)
-                let capture = try await self.dependencies.recorder.stopRecording(to: audioURL)
+                let capture = try await self.dependencies.recorder.stopRecording(
+                    in: sessionDirectory,
+                    fileLayout: fileLayout
+                )
                 session.durationSeconds = capture.durationSeconds
                 session.recordedAt = capture.endedAt
                 session.updatedAt = Date()
@@ -511,7 +530,10 @@ final class AppViewModel: ObservableObject {
                 await self.dependencies.metrics.log(
                     name: "record_stopped",
                     sessionId: session.id,
-                    attributes: ["duration_seconds": String(format: "%.2f", capture.durationSeconds)]
+                    attributes: [
+                        "source": session.recordingSource.rawValue,
+                        "duration_seconds": String(format: "%.2f", capture.durationSeconds)
+                    ]
                 )
 
                 self.isRecording = false
@@ -530,7 +552,13 @@ final class AppViewModel: ObservableObject {
                 self.liveTranscriptPreview = nil
                 self.recorderStatusText = "Ready to record"
                 self.presentError(error, defaultTitle: "Could not stop recording")
-                await self.dependencies.metrics.log(name: "record_stop_failed", attributes: ["error": error.localizedDescription])
+                await self.dependencies.metrics.log(
+                    name: "record_stop_failed",
+                    attributes: [
+                        "source": self.selectedRecordingSource.rawValue,
+                        "error": error.localizedDescription
+                    ]
+                )
             }
         }
     }
@@ -1329,6 +1357,40 @@ final class AppViewModel: ObservableObject {
         }
     }
 
+    func setRecordingSource(_ source: RecordingSource) {
+        guard !isRecording, !isStoppingRecording else { return }
+        guard selectedRecordingSource != source else { return }
+
+        let previousSource = selectedRecordingSource
+        let previousSupport = isLiveTranscriptionSupported
+        selectedRecordingSource = source
+
+        Task { [weak self] in
+            guard let self else { return }
+            let supported = await self.dependencies.recorder.supportsLiveTranscription(for: source)
+            await MainActor.run {
+                self.isLiveTranscriptionSupported = supported
+                if !supported {
+                    self.liveTranscriptPreview = nil
+                }
+            }
+
+            do {
+                _ = try await self.dependencies.settings.setSelectedRecordingSource(source)
+                await self.dependencies.metrics.log(
+                    name: "recording_source_changed",
+                    attributes: ["source": source.rawValue]
+                )
+            } catch {
+                await MainActor.run {
+                    self.selectedRecordingSource = previousSource
+                    self.isLiveTranscriptionSupported = previousSupport
+                    self.presentError(error, defaultTitle: "Could not save recording option")
+                }
+            }
+        }
+    }
+
     func setTranscriptConfidenceVisible(_ isVisible: Bool) {
         guard isTranscriptConfidenceVisible != isVisible else { return }
         let previous = isTranscriptConfidenceVisible
@@ -1567,7 +1629,10 @@ final class AppViewModel: ObservableObject {
                     folderId: self.currentDraftFolderID(),
                     status: .processing,
                     durationSeconds: nil,
+                    recordingSource: .microphone,
                     audioFileName: "audio.\(extensionComponent)",
+                    microphoneStemFileName: nil,
+                    systemAudioStemFileName: nil,
                     recordedAt: recordedAt
                 )
                 var session = try await self.dependencies.store.createSession(draft)
@@ -2013,7 +2078,9 @@ final class AppViewModel: ObservableObject {
     private func restoreModelPreparationStateFromSettings() async {
         do {
             let settings = try await dependencies.settings.load()
-            let restoredLiveEnabled = settings.isLiveTranscriptionEnabled && isLiveTranscriptionSupported
+            let restoredRecordingSource = settings.selectedRecordingSource
+            let restoredLiveSupported = await dependencies.recorder.supportsLiveTranscription(for: restoredRecordingSource)
+            let restoredLiveEnabled = settings.isLiveTranscriptionEnabled && restoredLiveSupported
             let restoredVocabularyBoosting = settings.vocabularyBoosting
             let restoredModelRegistry = settings.modelRegistryConfiguration
             FluidAudioRuntimeConfiguration.apply(modelRegistry: restoredModelRegistry)
@@ -2021,6 +2088,8 @@ final class AppViewModel: ObservableObject {
             await dependencies.transcription.setVocabularyBoostingConfiguration(restoredVocabularyBoosting)
             await MainActor.run {
                 self.modelRegistryCustomBaseURL = restoredModelRegistry.normalizedBaseURL ?? ""
+                self.selectedRecordingSource = restoredRecordingSource
+                self.isLiveTranscriptionSupported = restoredLiveSupported
                 self.isSpeakerDiarizationEnabled = settings.isSpeakerDiarizationEnabled
                 self.diarizationExpectedSpeakerCountHint = settings.diarizationExpectedSpeakerCountHint.normalized()
                 self.isDiarizationDebugExportEnabled = settings.isDiarizationDebugExportEnabled
@@ -2046,6 +2115,13 @@ final class AppViewModel: ObservableObject {
                 name: "settings_load_failed",
                 attributes: ["error": error.localizedDescription]
             )
+        }
+    }
+
+    private func refreshLiveTranscriptionSupport(for source: RecordingSource) async {
+        let supported = await dependencies.recorder.supportsLiveTranscription(for: source)
+        await MainActor.run {
+            self.isLiveTranscriptionSupported = supported
         }
     }
 

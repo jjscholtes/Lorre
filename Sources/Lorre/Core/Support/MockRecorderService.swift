@@ -3,15 +3,13 @@ import Foundation
 actor MockRecorderService: RecorderService {
     private var startedAt: Date?
     private var syntheticLevel: Double = 0.15
+    private var activeSource: RecordingSource = .microphone
 
-    func requestMicrophonePermission() async -> Bool {
-        true
-    }
-
-    func startRecording() async throws {
+    func startRecording(_ request: RecordingRequest) async throws {
         guard startedAt == nil else {
             throw LorreError.recordingStartFailed("A recording is already active.")
         }
+        activeSource = request.source
         startedAt = Date()
     }
 
@@ -22,7 +20,7 @@ actor MockRecorderService: RecorderService {
         startedAt = nil
     }
 
-    func stopRecording(to url: URL) async throws -> RecordingCapture {
+    func stopRecording(in directoryURL: URL, fileLayout: RecordingFileLayout) async throws -> RecordingCapture {
         guard let startedAt else {
             throw LorreError.recordingNotStarted
         }
@@ -37,7 +35,18 @@ actor MockRecorderService: RecorderService {
         durationSeconds=\(duration)
         """
         do {
-            try AtomicFileWriter.write(Data(placeholder.utf8), to: url)
+            try FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)
+            let canonicalURL = directoryURL.appendingPathComponent(fileLayout.audioFileName)
+            try AtomicFileWriter.write(Data(placeholder.utf8), to: canonicalURL)
+
+            if activeSource == .microphoneAndSystemAudio {
+                if let microphoneStemFileName = fileLayout.microphoneStemFileName {
+                    try AtomicFileWriter.write(Data("MOCK_MIC_STEM".utf8), to: directoryURL.appendingPathComponent(microphoneStemFileName))
+                }
+                if let systemAudioStemFileName = fileLayout.systemAudioStemFileName {
+                    try AtomicFileWriter.write(Data("MOCK_SYSTEM_STEM".utf8), to: directoryURL.appendingPathComponent(systemAudioStemFileName))
+                }
+            }
         } catch {
             throw LorreError.recordingStopFailed(error.localizedDescription)
         }
@@ -51,12 +60,22 @@ actor MockRecorderService: RecorderService {
         return syntheticLevel
     }
 
-    func preferredRecordingFileExtension() async -> String {
-        "m4a"
+    func recordingFileLayout(for source: RecordingSource) async -> RecordingFileLayout {
+        switch source {
+        case .microphone, .systemAudio:
+            return RecordingFileLayout(audioFileName: "audio.m4a", microphoneStemFileName: nil, systemAudioStemFileName: nil)
+        case .microphoneAndSystemAudio:
+            return RecordingFileLayout(
+                audioFileName: "audio.m4a",
+                microphoneStemFileName: "microphone.m4a",
+                systemAudioStemFileName: "system-audio.m4a"
+            )
+        }
     }
 
-    func supportsLiveTranscription() async -> Bool {
-        false
+    func supportsLiveTranscription(for source: RecordingSource) async -> Bool {
+        _ = source
+        return false
     }
 
     func prepareLiveTranscriptionEngine(

@@ -13,13 +13,12 @@ protocol SessionStore: Sendable {
 }
 
 protocol RecorderService: Sendable {
-    func requestMicrophonePermission() async -> Bool
-    func startRecording() async throws
+    func startRecording(_ request: RecordingRequest) async throws
     func cancelRecording() async throws
-    func stopRecording(to url: URL) async throws -> RecordingCapture
+    func stopRecording(in directoryURL: URL, fileLayout: RecordingFileLayout) async throws -> RecordingCapture
     func currentMeterLevel() async -> Double
-    func preferredRecordingFileExtension() async -> String
-    func supportsLiveTranscription() async -> Bool
+    func recordingFileLayout(for source: RecordingSource) async -> RecordingFileLayout
+    func supportsLiveTranscription(for source: RecordingSource) async -> Bool
     func prepareLiveTranscriptionEngine(
         onProgress: (@Sendable (ProcessingUpdate) async -> Void)?
     ) async throws
@@ -34,7 +33,7 @@ protocol TranscriptionService: Sendable {
         onProgress: (@Sendable (ProcessingUpdate) async -> Void)?
     ) async throws
     func setVocabularyBoostingConfiguration(_ configuration: VocabularyBoostingConfiguration) async
-    func transcribe(url: URL, sessionTitle: String) async throws -> TranscriptionResult
+    func transcribe(url: URL, sessionTitle: String, source: RecordingSource) async throws -> TranscriptionResult
 }
 
 protocol SpeakerDiarizationService: Sendable {

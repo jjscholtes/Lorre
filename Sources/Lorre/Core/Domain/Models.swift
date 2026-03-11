@@ -78,6 +78,48 @@ enum ExportFormat: String, Codable, CaseIterable, Sendable {
     }
 }
 
+enum RecordingSource: String, Codable, CaseIterable, Identifiable, Sendable {
+    case microphone
+    case systemAudio
+    case microphoneAndSystemAudio
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .microphone: "Microphone"
+        case .systemAudio: "System audio"
+        case .microphoneAndSystemAudio: "Microphone + system audio"
+        }
+    }
+
+    var shortLabel: String {
+        switch self {
+        case .microphone: "Mic"
+        case .systemAudio: "System"
+        case .microphoneAndSystemAudio: "Mic + Sys"
+        }
+    }
+
+    var includesMicrophone: Bool {
+        switch self {
+        case .microphone, .microphoneAndSystemAudio:
+            true
+        case .systemAudio:
+            false
+        }
+    }
+
+    var includesSystemAudio: Bool {
+        switch self {
+        case .systemAudio, .microphoneAndSystemAudio:
+            true
+        case .microphone:
+            false
+        }
+    }
+}
+
 enum SpeakerBadgeVariant: String, Codable, CaseIterable, Sendable {
     case filled
     case outline
@@ -144,7 +186,10 @@ struct SessionManifest: Identifiable, Codable, Equatable, Sendable {
     var recordedAt: Date?
     var durationSeconds: Double?
     var notes: String?
+    var recordingSource: RecordingSource
     var audioFileName: String
+    var microphoneStemFileName: String?
+    var systemAudioStemFileName: String?
     var transcriptFileName: String?
     var exports: [ExportRecord]
     var processing: ProcessingSummary
@@ -161,7 +206,10 @@ struct SessionManifest: Identifiable, Codable, Equatable, Sendable {
         recordedAt: Date? = nil,
         durationSeconds: Double? = nil,
         notes: String? = nil,
+        recordingSource: RecordingSource = .microphone,
         audioFileName: String,
+        microphoneStemFileName: String? = nil,
+        systemAudioStemFileName: String? = nil,
         transcriptFileName: String? = nil,
         exports: [ExportRecord] = [],
         processing: ProcessingSummary = .none,
@@ -177,7 +225,10 @@ struct SessionManifest: Identifiable, Codable, Equatable, Sendable {
         self.recordedAt = recordedAt
         self.durationSeconds = durationSeconds
         self.notes = notes
+        self.recordingSource = recordingSource
         self.audioFileName = audioFileName
+        self.microphoneStemFileName = microphoneStemFileName
+        self.systemAudioStemFileName = systemAudioStemFileName
         self.transcriptFileName = transcriptFileName
         self.exports = exports
         self.processing = processing
@@ -192,6 +243,71 @@ struct SessionManifest: Identifiable, Codable, Equatable, Sendable {
 
     var normalizedNotes: String {
         notes?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case title
+        case folderId
+        case status
+        case createdAt
+        case updatedAt
+        case recordedAt
+        case durationSeconds
+        case notes
+        case recordingSource
+        case audioFileName
+        case microphoneStemFileName
+        case systemAudioStemFileName
+        case transcriptFileName
+        case exports
+        case processing
+        case lastErrorMessage
+        case dirtyFlags
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.id = try container.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        self.title = try container.decode(String.self, forKey: .title)
+        self.folderId = try container.decodeIfPresent(String.self, forKey: .folderId)
+        self.status = try container.decode(SessionStatus.self, forKey: .status)
+        self.createdAt = try container.decodeIfPresent(Date.self, forKey: .createdAt) ?? Date()
+        self.updatedAt = try container.decodeIfPresent(Date.self, forKey: .updatedAt) ?? createdAt
+        self.recordedAt = try container.decodeIfPresent(Date.self, forKey: .recordedAt)
+        self.durationSeconds = try container.decodeIfPresent(Double.self, forKey: .durationSeconds)
+        self.notes = try container.decodeIfPresent(String.self, forKey: .notes)
+        self.recordingSource = try container.decodeIfPresent(RecordingSource.self, forKey: .recordingSource) ?? .microphone
+        self.audioFileName = try container.decode(String.self, forKey: .audioFileName)
+        self.microphoneStemFileName = try container.decodeIfPresent(String.self, forKey: .microphoneStemFileName)
+        self.systemAudioStemFileName = try container.decodeIfPresent(String.self, forKey: .systemAudioStemFileName)
+        self.transcriptFileName = try container.decodeIfPresent(String.self, forKey: .transcriptFileName)
+        self.exports = try container.decodeIfPresent([ExportRecord].self, forKey: .exports) ?? []
+        self.processing = try container.decodeIfPresent(ProcessingSummary.self, forKey: .processing) ?? .none
+        self.lastErrorMessage = try container.decodeIfPresent(String.self, forKey: .lastErrorMessage)
+        self.dirtyFlags = try container.decodeIfPresent(SessionDirtyFlags.self, forKey: .dirtyFlags) ?? .clean
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(title, forKey: .title)
+        try container.encodeIfPresent(folderId, forKey: .folderId)
+        try container.encode(status, forKey: .status)
+        try container.encode(createdAt, forKey: .createdAt)
+        try container.encode(updatedAt, forKey: .updatedAt)
+        try container.encodeIfPresent(recordedAt, forKey: .recordedAt)
+        try container.encodeIfPresent(durationSeconds, forKey: .durationSeconds)
+        try container.encodeIfPresent(notes, forKey: .notes)
+        try container.encode(recordingSource, forKey: .recordingSource)
+        try container.encode(audioFileName, forKey: .audioFileName)
+        try container.encodeIfPresent(microphoneStemFileName, forKey: .microphoneStemFileName)
+        try container.encodeIfPresent(systemAudioStemFileName, forKey: .systemAudioStemFileName)
+        try container.encodeIfPresent(transcriptFileName, forKey: .transcriptFileName)
+        try container.encode(exports, forKey: .exports)
+        try container.encode(processing, forKey: .processing)
+        try container.encodeIfPresent(lastErrorMessage, forKey: .lastErrorMessage)
+        try container.encode(dirtyFlags, forKey: .dirtyFlags)
     }
 }
 
@@ -398,8 +514,21 @@ struct NewSessionDraft: Sendable {
     var folderId: String?
     var status: SessionStatus
     var durationSeconds: Double?
+    var recordingSource: RecordingSource
     var audioFileName: String
+    var microphoneStemFileName: String?
+    var systemAudioStemFileName: String?
     var recordedAt: Date?
+}
+
+struct RecordingFileLayout: Equatable, Sendable {
+    var audioFileName: String
+    var microphoneStemFileName: String?
+    var systemAudioStemFileName: String?
+}
+
+struct RecordingRequest: Sendable {
+    var source: RecordingSource
 }
 
 struct RecordingCapture: Sendable {
@@ -644,6 +773,7 @@ struct AppSettings: Codable, Equatable, Sendable {
     var updatedAt: Date
     var modelPreparation: ModelPreparationSnapshot?
     var modelRegistryConfiguration: ModelRegistryConfiguration
+    var selectedRecordingSource: RecordingSource
     var isSpeakerDiarizationEnabled: Bool
     var diarizationExpectedSpeakerCountHint: DiarizationSpeakerCountHint
     var isDiarizationDebugExportEnabled: Bool
@@ -659,6 +789,7 @@ struct AppSettings: Codable, Equatable, Sendable {
         updatedAt: Date = Date(),
         modelPreparation: ModelPreparationSnapshot? = nil,
         modelRegistryConfiguration: ModelRegistryConfiguration = .init(),
+        selectedRecordingSource: RecordingSource = .microphone,
         isSpeakerDiarizationEnabled: Bool = true,
         diarizationExpectedSpeakerCountHint: DiarizationSpeakerCountHint = .auto,
         isDiarizationDebugExportEnabled: Bool = false,
@@ -673,6 +804,7 @@ struct AppSettings: Codable, Equatable, Sendable {
         self.updatedAt = updatedAt
         self.modelPreparation = modelPreparation
         self.modelRegistryConfiguration = modelRegistryConfiguration
+        self.selectedRecordingSource = selectedRecordingSource
         self.isSpeakerDiarizationEnabled = isSpeakerDiarizationEnabled
         self.diarizationExpectedSpeakerCountHint = diarizationExpectedSpeakerCountHint.normalized()
         self.isDiarizationDebugExportEnabled = isDiarizationDebugExportEnabled
@@ -689,6 +821,7 @@ struct AppSettings: Codable, Equatable, Sendable {
         case updatedAt
         case modelPreparation
         case modelRegistryConfiguration
+        case selectedRecordingSource
         case isSpeakerDiarizationEnabled
         case diarizationExpectedSpeakerCountHint
         case isDiarizationDebugExportEnabled
@@ -706,6 +839,7 @@ struct AppSettings: Codable, Equatable, Sendable {
         self.updatedAt = try container.decodeIfPresent(Date.self, forKey: .updatedAt) ?? Date()
         self.modelPreparation = try container.decodeIfPresent(ModelPreparationSnapshot.self, forKey: .modelPreparation)
         self.modelRegistryConfiguration = try container.decodeIfPresent(ModelRegistryConfiguration.self, forKey: .modelRegistryConfiguration) ?? .init()
+        self.selectedRecordingSource = try container.decodeIfPresent(RecordingSource.self, forKey: .selectedRecordingSource) ?? .microphone
         self.isSpeakerDiarizationEnabled = try container.decodeIfPresent(Bool.self, forKey: .isSpeakerDiarizationEnabled) ?? true
         self.diarizationExpectedSpeakerCountHint = (
             try container.decodeIfPresent(DiarizationSpeakerCountHint.self, forKey: .diarizationExpectedSpeakerCountHint)
@@ -725,6 +859,7 @@ struct AppSettings: Codable, Equatable, Sendable {
         try container.encode(updatedAt, forKey: .updatedAt)
         try container.encodeIfPresent(modelPreparation, forKey: .modelPreparation)
         try container.encode(modelRegistryConfiguration, forKey: .modelRegistryConfiguration)
+        try container.encode(selectedRecordingSource, forKey: .selectedRecordingSource)
         try container.encode(isSpeakerDiarizationEnabled, forKey: .isSpeakerDiarizationEnabled)
         try container.encode(diarizationExpectedSpeakerCountHint.normalized(), forKey: .diarizationExpectedSpeakerCountHint)
         try container.encode(isDiarizationDebugExportEnabled, forKey: .isDiarizationDebugExportEnabled)

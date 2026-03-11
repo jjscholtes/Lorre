@@ -2,6 +2,8 @@ import Foundation
 
 enum LorreError: LocalizedError, Sendable {
     case microphonePermissionDenied
+    case screenCapturePermissionDenied
+    case recordingSourceSelectionCancelled
     case recordingNotStarted
     case recordingStartFailed(String)
     case recordingStopFailed(String)
@@ -19,6 +21,10 @@ enum LorreError: LocalizedError, Sendable {
         switch self {
         case .microphonePermissionDenied:
             return "Microphone access is required to record audio."
+        case .screenCapturePermissionDenied:
+            return "Screen and system audio recording access is required to capture system audio."
+        case .recordingSourceSelectionCancelled:
+            return "Recording source selection was cancelled."
         case .recordingNotStarted:
             return "Recording is not active."
         case let .recordingStartFailed(message):
