@@ -212,8 +212,7 @@ enum TranscriptAssembler {
             )
         }
 
-        // Disabled aggressive speaker-flip smoothing because it can erase real short turn-taking
-        // (e.g. "ja", "nee") between two longer rows of the same surrounding speaker.
+        smoothLikelySpeakerFlips(in: &segments, assignments: assignments)
         mergeLikelyFragmentContinuations(in: &segments)
 
         var uniqueSpeakerIds = Array(Set(segments.compactMap(\.speakerId))).sorted()
@@ -345,6 +344,11 @@ enum TranscriptAssembler {
         output.reserveCapacity(utterances.count)
 
         for utterance in utterances {
+            let durationMs = utterance.endMs - utterance.startMs
+            if durationMs < 2_200 || utterance.text.trimmingCharacters(in: .whitespacesAndNewlines).count < 24 {
+                output.append(utterance)
+                continue
+            }
             if let tokenSplit = splitUtteranceUsingTokenSpeakerTransitions(utterance, diarizationSpans: diarizationSpans) {
                 output.append(contentsOf: tokenSplit)
                 continue
@@ -359,6 +363,8 @@ enum TranscriptAssembler {
         _ utterance: TranscriptionUtterance,
         diarizationSpans: [DiarizationSpan]
     ) -> [TranscriptionUtterance]? {
+        let utteranceDuration = utterance.endMs - utterance.startMs
+        guard utteranceDuration >= 2_400 else { return nil }
         guard let tokenTimings = utterance.tokenTimings, tokenTimings.count >= 2 else { return nil }
 
         let clampedTokens = tokenTimings.compactMap { token -> TranscriptionTokenTiming? in
@@ -418,12 +424,19 @@ enum TranscriptAssembler {
 
         let groupedUtterances = groupedTokens.compactMap(utteranceFromTokenGroup)
         guard groupedUtterances.count >= 2 else { return nil }
+        guard groupedUtterances.allSatisfy({ groupedUtterance in
+            let durationMs = groupedUtterance.endMs - groupedUtterance.startMs
+            let wordCount = groupedUtterance.text.split(whereSeparator: \.isWhitespace).count
+            return durationMs >= 650 || wordCount >= 3
+        }) else {
+            return nil
+        }
 
         let groupedAssignments = groupedUtterances.map { primarySpeakerAssignment(for: $0, spans: diarizationSpans) }
         let strongGroupedSpeakers: Set<String> = Set(
             groupedAssignments.compactMap { assignment in
                 guard assignment.speakerId != "UNK" else { return nil }
-                return assignment.overlapRatio >= 0.14 || assignment.overlapMs >= 90 ? assignment.speakerId : nil
+                return assignment.overlapRatio >= 0.34 || assignment.overlapMs >= 160 ? assignment.speakerId : nil
             }
         )
         guard strongGroupedSpeakers.count >= 2 else { return nil }
@@ -434,8 +447,8 @@ enum TranscriptAssembler {
             let right = groupedAssignments[index + 1]
             guard left.speakerId != "UNK", right.speakerId != "UNK", left.speakerId != right.speakerId else { continue }
 
-            let leftStrong = left.overlapRatio >= 0.14 || left.overlapMs >= 90
-            let rightStrong = right.overlapRatio >= 0.14 || right.overlapMs >= 90
+            let leftStrong = left.overlapRatio >= 0.34 || left.overlapMs >= 160
+            let rightStrong = right.overlapRatio >= 0.34 || right.overlapMs >= 160
             if leftStrong && rightStrong {
                 hasStrongBoundary = true
                 break
@@ -452,8 +465,8 @@ enum TranscriptAssembler {
         guard assignment.speakerId != "UNK" else { return nil }
 
         let tokenDurationMs = max(1, token.endMs - token.startMs)
-        let minOverlapMs = min(80, max(24, tokenDurationMs / 3))
-        let isStrong = assignment.overlapRatio >= 0.30 || assignment.overlapMs >= minOverlapMs
+        let minOverlapMs = min(120, max(40, tokenDurationMs / 2))
+        let isStrong = assignment.overlapRatio >= 0.45 || assignment.overlapMs >= minOverlapMs
         return isStrong ? assignment.speakerId : nil
     }
 
@@ -486,8 +499,8 @@ enum TranscriptAssembler {
         let text = utterance.text.trimmingCharacters(in: .whitespacesAndNewlines)
         let durationMs = max(1, utterance.endMs - utterance.startMs)
 
-        guard durationMs >= 650 else { return [utterance] }
-        guard text.count >= 14 else { return [utterance] }
+        guard durationMs >= 2_200 else { return [utterance] }
+        guard text.count >= 24 else { return [utterance] }
 
         let overlappingSpans = diarizationSpans.filter { span in
             min(span.endMs, utterance.endMs) > max(span.startMs, utterance.startMs)
@@ -499,18 +512,25 @@ enum TranscriptAssembler {
 
         let chunked = utteranceChunksByProportion(utterance, chunks: sentenceChunks)
         guard chunked.count >= 2 else { return [utterance] }
+        guard chunked.allSatisfy({ chunk in
+            let durationMs = chunk.endMs - chunk.startMs
+            let wordCount = chunk.text.split(whereSeparator: \.isWhitespace).count
+            return durationMs >= 750 || wordCount >= 4
+        }) else {
+            return [utterance]
+        }
 
         let assignments = chunked.map { primarySpeakerAssignment(for: $0, spans: diarizationSpans) }
         let strongAssignedSpeakers = Set(
             zip(chunked, assignments).compactMap { chunk, assignment -> String? in
                 guard assignment.speakerId != "UNK" else { return nil }
-                if assignment.overlapMs >= 120 || assignment.overlapRatio >= 0.16 {
+                if assignment.overlapMs >= 220 || assignment.overlapRatio >= 0.30 {
                     return assignment.speakerId
                 }
                 // Allow slightly weaker support for shorter chunks.
                 let chunkDuration = max(1, chunk.endMs - chunk.startMs)
                 let chunkSupportRatio = Double(assignment.overlapMs) / Double(chunkDuration)
-                return chunkSupportRatio >= 0.12 ? assignment.speakerId : nil
+                return chunkSupportRatio >= 0.24 ? assignment.speakerId : nil
             }
         )
         guard strongAssignedSpeakers.count >= 2 else { return [utterance] }
@@ -521,8 +541,8 @@ enum TranscriptAssembler {
             let right = assignments[index + 1]
             guard left.speakerId != "UNK", right.speakerId != "UNK", left.speakerId != right.speakerId else { continue }
 
-            let leftStrong = left.overlapMs >= 110 || left.overlapRatio >= 0.14
-            let rightStrong = right.overlapMs >= 110 || right.overlapRatio >= 0.14
+            let leftStrong = left.overlapMs >= 220 || left.overlapRatio >= 0.28
+            let rightStrong = right.overlapMs >= 220 || right.overlapRatio >= 0.28
             if leftStrong && rightStrong {
                 foundTransition = true
                 break
@@ -538,7 +558,7 @@ enum TranscriptAssembler {
 
         var chunks: [String] = []
         var buffer = ""
-        let terminators: Set<Character> = [".", "!", "?", ";", ":"]
+        let terminators: Set<Character> = [".", "!", "?"]
 
         for character in trimmed {
             buffer.append(character)
@@ -628,12 +648,21 @@ enum TranscriptAssembler {
             let durationMs = max(1, current.endMs - current.startMs)
             let supportRatio = assignments[index].overlapRatio
 
-            // Typical diarization jitter pattern: a very short row flips to another speaker
-            // between two rows owned by the same speaker.
-            if durationMs <= 1_400 && supportRatio < 0.38 {
-                segments[index].speakerId = previousSpeaker
-            }
+        let text = current.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let wordCount = text.split(whereSeparator: \.isWhitespace).count
+        let endsSentence = text.last.map { ".!?".contains($0) } ?? false
+
+        // Typical diarization jitter pattern: a very short row flips to another speaker
+        // between two rows owned by the same surrounding speaker.
+        if durationMs <= 1_100 && supportRatio < 0.42 && !endsSentence {
+            segments[index].speakerId = previousSpeaker
+            continue
         }
+
+        if durationMs <= 1_600 && wordCount <= 3 && supportRatio < 0.30 {
+            segments[index].speakerId = previousSpeaker
+        }
+    }
     }
 
     private static func mergeLikelyFragmentContinuations(in segments: inout [TranscriptSegment]) {
@@ -686,6 +715,13 @@ enum TranscriptAssembler {
            currentText.count <= 4,
            nextStartsLowercase,
            !currentEndsSentence {
+            return true
+        }
+
+        if currentWords.count <= 3,
+           durationMs <= 1_400,
+           !currentEndsSentence,
+           nextStartsLowercase {
             return true
         }
 

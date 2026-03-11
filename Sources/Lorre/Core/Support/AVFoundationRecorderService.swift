@@ -873,12 +873,6 @@ actor AVFoundationRecorderService: RecorderService {
             }
             throw LorreError.microphonePermissionDenied
         }
-        if source.includesSystemAudio, !screenCapturePermissionGranted() {
-            await MainActor.run {
-                Self.openSystemSettings(for: .screenCapture)
-            }
-            throw LorreError.screenCapturePermissionDenied
-        }
     }
 
     private func requestMicrophonePermission() async -> Bool {
@@ -896,14 +890,6 @@ actor AVFoundationRecorderService: RecorderService {
         @unknown default:
             return false
         }
-    }
-
-    private func screenCapturePermissionGranted() -> Bool {
-        #if canImport(ScreenCaptureKit)
-        return CGPreflightScreenCaptureAccess()
-        #else
-        return false
-        #endif
     }
 
     @MainActor
@@ -1011,6 +997,12 @@ actor AVFoundationRecorderService: RecorderService {
             try await capture.start()
         } catch {
             await capture.cancel()
+            if Self.isScreenCapturePermissionError(error) {
+                await MainActor.run {
+                    Self.openSystemSettings(for: .screenCapture)
+                }
+                throw LorreError.screenCapturePermissionDenied
+            }
             throw LorreError.recordingStartFailed("System audio capture failed to start. \(error.localizedDescription)")
         }
         return SystemCaptureStartResult(capture: capture, tempURL: tempURL)
@@ -1157,6 +1149,20 @@ actor AVFoundationRecorderService: RecorderService {
             try FileManager.default.removeItem(at: destinationURL)
         }
         try FileManager.default.moveItem(at: sourceURL, to: destinationURL)
+    }
+
+    private static func isScreenCapturePermissionError(_ error: Error) -> Bool {
+        #if canImport(ScreenCaptureKit)
+        let nsError = error as NSError
+        guard nsError.domain == SCStreamErrorDomain else {
+            return false
+        }
+
+        return nsError.code == -3801 || nsError.code == -3802 || nsError.code == -3818
+        #else
+        _ = error
+        return false
+        #endif
     }
 }
 #endif

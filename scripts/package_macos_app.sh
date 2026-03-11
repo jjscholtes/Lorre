@@ -98,6 +98,7 @@ cat > "$CONTENTS_DIR/Info.plist" <<PLIST
 PLIST
 
 chmod +x "$MACOS_DIR/$APP_NAME"
+codesign --force --deep --sign - "$APP_BUNDLE"
 
 echo "Created: $APP_BUNDLE"
 echo "Binary:  $MACOS_DIR/$APP_NAME"

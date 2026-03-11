@@ -685,8 +685,8 @@ actor FluidAudioOfflineDiarizationService: SpeakerDiarizationService {
     }
 
     private func qualityTunedConfig(expectedSpeakers: DiarizationSpeakerCountHint) -> OfflineDiarizerConfig {
-        // FluidAudio benchmarks note the default community-1 config trades some DER for speed.
-        // For transcript review accuracy, prefer the slower / higher-quality segmentation settings.
+        // Favor transcript readability over ultra-fine turn segmentation. The default config can
+        // over-fragment one person into several short clusters, which then chops sentences apart.
         var config = OfflineDiarizerConfig.default.withSpeakers(min: 1, max: 8)
         let normalizedHint = expectedSpeakers.normalized()
         switch normalizedHint.mode {
@@ -700,13 +700,12 @@ actor FluidAudioOfflineDiarizationService: SpeakerDiarizationService {
             config = config.withSpeakers(min: normalizedHint.minCount, max: normalizedHint.maxCount)
         }
         config.segmentationStepRatio = 0.1
-        config.minSegmentDuration = 0.0
-        // Bias slightly toward preserving distinct conversational speakers instead of collapsing
-        // adjacent voices into one label.
-        config.clusteringThreshold = 0.60
-
-        // Keep gap stitching extra conservative so brief turn-taking is less likely to merge.
-        config.minGapDuration = 0.06
+        config.minSegmentDuration = 0.45
+        // Slightly lower the clustering threshold so one speaker is less likely to be split into
+        // multiple synthetic speaker IDs across neighboring sentences.
+        config.clusteringThreshold = 0.54
+        // Stitch brief pauses back together so sentence-level rows stay intact more often.
+        config.minGapDuration = 0.18
         return config
     }
 

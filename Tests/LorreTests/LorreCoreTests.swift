@@ -186,6 +186,44 @@ final class LorreCoreTests: XCTestCase {
         }))
     }
 
+    func testTranscriptAssemblerDoesNotSplitSentenceOnWeakMidUtteranceSpeakerBlip() {
+        let sessionID = UUID()
+        let utterance = TranscriptionUtterance(
+            startMs: 0,
+            endMs: 3_600,
+            text: "I think so yeah but actually no that is different",
+            confidence: 0.95,
+            tokenTimings: [
+                TranscriptionTokenTiming(startMs: 0, endMs: 260, text: "I", confidence: 0.98),
+                TranscriptionTokenTiming(startMs: 260, endMs: 620, text: " think", confidence: 0.97),
+                TranscriptionTokenTiming(startMs: 620, endMs: 920, text: " so", confidence: 0.96),
+                TranscriptionTokenTiming(startMs: 920, endMs: 1_260, text: " yeah", confidence: 0.95),
+                TranscriptionTokenTiming(startMs: 1_260, endMs: 1_620, text: " but", confidence: 0.94),
+                TranscriptionTokenTiming(startMs: 1_620, endMs: 2_240, text: " actually", confidence: 0.93),
+                TranscriptionTokenTiming(startMs: 2_240, endMs: 2_560, text: " no", confidence: 0.93),
+                TranscriptionTokenTiming(startMs: 2_560, endMs: 3_020, text: " that", confidence: 0.92),
+                TranscriptionTokenTiming(startMs: 3_020, endMs: 3_260, text: " is", confidence: 0.92),
+                TranscriptionTokenTiming(startMs: 3_260, endMs: 3_600, text: " different", confidence: 0.91)
+            ]
+        )
+        let transcription = TranscriptionResult(engineName: "TestEngine", utterances: [utterance])
+        let diarization = DiarizationResult(spans: [
+            DiarizationSpan(startMs: 0, endMs: 1_680, speakerId: "S1"),
+            DiarizationSpan(startMs: 1_680, endMs: 1_860, speakerId: "S2"),
+            DiarizationSpan(startMs: 1_860, endMs: 3_600, speakerId: "S1")
+        ])
+
+        let transcript = TranscriptAssembler.assemble(
+            sessionId: sessionID,
+            transcription: transcription,
+            diarization: diarization
+        )
+
+        XCTAssertEqual(transcript.segments.count, 1)
+        XCTAssertEqual(transcript.segments[0].speakerId, "S1")
+        XCTAssertTrue(transcript.segments[0].text.localizedCaseInsensitiveContains("actually no that is different"))
+    }
+
     func testLocalMetricsLoggerWritesJSONLines() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("LorreMetricsTests-\(UUID().uuidString)", isDirectory: true)
