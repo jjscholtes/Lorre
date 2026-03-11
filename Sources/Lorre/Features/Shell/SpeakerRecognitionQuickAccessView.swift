@@ -24,7 +24,7 @@ struct SpeakerRecognitionQuickAccessView: View {
                 .foregroundStyle(DS.ColorToken.fgSecondary)
                 .fixedSize(horizontal: false, vertical: true)
 
-            knownSpeakerLibrary
+            KnownSpeakerLibraryQuickAccessView(viewModel: viewModel)
 
             Text(scopeNote)
                 .font(DS.FontStyle.helper)
@@ -100,7 +100,18 @@ struct SpeakerRecognitionQuickAccessView: View {
         .help("Hint the diarizer with an expected speaker count")
     }
 
-    private var knownSpeakerLibrary: some View {
+    private var statusDescription: String {
+        if viewModel.isSpeakerDiarizationEnabled {
+            return "Automatic speaker labels are enabled. Expected speaker hint: \(viewModel.diarizationExpectedSpeakerCountHint.detailLabel). Enrolled speakers are used to relabel diarization clusters and warm-start the live recorder."
+        }
+        return "Automatic speaker labels are off for faster processing. The speaker library is still kept locally so you can re-enable automatic labeling later."
+    }
+}
+
+struct KnownSpeakerLibraryQuickAccessView: View {
+    @ObservedObject var viewModel: AppViewModel
+
+    var body: some View {
         VStack(alignment: .leading, spacing: DS.Space.x2) {
             HStack(alignment: .firstTextBaseline, spacing: DS.Space.x2) {
                 CapsLabel(text: "Known Speakers")
@@ -223,12 +234,5 @@ struct SpeakerRecognitionQuickAccessView: View {
     private func enrollmentSummary(for speaker: KnownSpeaker) -> String {
         let updated = speaker.updatedAt.formatted(date: .abbreviated, time: .shortened)
         return "\(speaker.enrollmentCount) enrollment\(speaker.enrollmentCount == 1 ? "" : "s") • updated \(updated)"
-    }
-
-    private var statusDescription: String {
-        if viewModel.isSpeakerDiarizationEnabled {
-            return "Automatic speaker labels are enabled. Expected speaker hint: \(viewModel.diarizationExpectedSpeakerCountHint.detailLabel). Enrolled speakers are used to relabel diarization clusters and warm-start the live recorder."
-        }
-        return "Automatic speaker labels are off for faster processing. The speaker library is still kept locally so you can re-enable automatic labeling later."
     }
 }
