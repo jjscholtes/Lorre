@@ -1,5 +1,8 @@
 #if canImport(AVFoundation)
 import AVFoundation
+#if canImport(AppKit)
+import AppKit
+#endif
 #if canImport(ScreenCaptureKit)
 import CoreGraphics
 @preconcurrency import ScreenCaptureKit
@@ -7,6 +10,11 @@ import CoreGraphics
 import Foundation
 
 actor AVFoundationRecorderService: RecorderService {
+    private enum PermissionSettingsPane {
+        case microphone
+        case screenCapture
+    }
+
     private final class CaptureFileWriterBox: @unchecked Sendable {
         private let file: AVAudioFile
         private let lock = NSLock()
@@ -860,9 +868,15 @@ actor AVFoundationRecorderService: RecorderService {
 
     private func ensurePermissions(for source: RecordingSource) async throws {
         if source.includesMicrophone, !(await requestMicrophonePermission()) {
+            await MainActor.run {
+                Self.openSystemSettings(for: .microphone)
+            }
             throw LorreError.microphonePermissionDenied
         }
-        if source.includesSystemAudio, !(await requestScreenCapturePermission()) {
+        if source.includesSystemAudio, !screenCapturePermissionGranted() {
+            await MainActor.run {
+                Self.openSystemSettings(for: .screenCapture)
+            }
             throw LorreError.screenCapturePermissionDenied
         }
     }
@@ -884,14 +898,35 @@ actor AVFoundationRecorderService: RecorderService {
         }
     }
 
-    private func requestScreenCapturePermission() async -> Bool {
+    private func screenCapturePermissionGranted() -> Bool {
         #if canImport(ScreenCaptureKit)
-        if CGPreflightScreenCaptureAccess() {
-            return true
-        }
-        return CGRequestScreenCaptureAccess()
+        return CGPreflightScreenCaptureAccess()
         #else
         return false
+        #endif
+    }
+
+    @MainActor
+    private static func openSystemSettings(for pane: PermissionSettingsPane) {
+        #if canImport(AppKit)
+        let candidateURLs: [URL]
+        switch pane {
+        case .microphone:
+            candidateURLs = [
+                URL(string: "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_Microphone"),
+                URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone")
+            ].compactMap { $0 }
+        case .screenCapture:
+            candidateURLs = [
+                URL(string: "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_ScreenCapture"),
+                URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")
+            ].compactMap { $0 }
+        }
+
+        for url in candidateURLs where NSWorkspace.shared.open(url) {
+            return
+        }
+        _ = NSWorkspace.shared.open(URL(fileURLWithPath: "/System/Applications/System Settings.app"))
         #endif
     }
 

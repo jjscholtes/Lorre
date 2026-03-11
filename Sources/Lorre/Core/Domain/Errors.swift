@@ -20,9 +20,9 @@ enum LorreError: LocalizedError, Sendable {
     var errorDescription: String? {
         switch self {
         case .microphonePermissionDenied:
-            return "Microphone access is required to record audio."
+            return "Microphone access is required to record audio. Enable Lorre in System Settings > Privacy & Security > Microphone."
         case .screenCapturePermissionDenied:
-            return "Screen and system audio recording access is required to capture system audio."
+            return "Screen and system audio recording access is required to capture system audio. Enable Lorre in System Settings > Privacy & Security > Screen & System Audio Recording, then reopen Lorre."
         case .recordingSourceSelectionCancelled:
             return "Recording source selection was cancelled."
         case .recordingNotStarted:
