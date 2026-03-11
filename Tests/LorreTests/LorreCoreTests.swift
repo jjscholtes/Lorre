@@ -777,4 +777,297 @@ final class LorreCoreTests: XCTestCase {
         XCTAssertEqual(collapsed.spans[3].sourceSpeakerId, "S3")
         XCTAssertEqual(collapsed.speakerProfiles.map(\.id), ["S5"])
     }
+
+    func testAppViewModelStopRecordingDeletesDraftSessionWhenRecorderStopFails() async throws {
+        let root = makeTemporaryRoot(named: "LorreStopFailureCleanupTests")
+        let store = FileSessionStore(baseURL: root)
+        let recorder = ControlledRecorderService(
+            startDelay: .zero,
+            stopBehavior: .failure("Synthetic stop failure")
+        )
+        let viewModel = await MainActor.run {
+            AppViewModel(dependencies: makeTestDependencies(root: root, store: store, recorder: recorder))
+        }
+
+        await MainActor.run {
+            viewModel.startRecordingTapped()
+        }
+        try await waitUntil {
+            await MainActor.run { viewModel.isRecording }
+        }
+
+        await MainActor.run {
+            viewModel.stopRecordingTapped()
+        }
+        try await waitUntil {
+            await MainActor.run { !viewModel.isStoppingRecording }
+        }
+
+        let sessions = try await store.loadSessions()
+        XCTAssertTrue(sessions.isEmpty)
+        await MainActor.run {
+            XCTAssertFalse(viewModel.isRecording)
+            XCTAssertFalse(viewModel.isStartingRecording)
+            XCTAssertEqual(viewModel.recorderStatusText, "Ready to record")
+        }
+    }
+
+    func testAppViewModelIgnoresRepeatedStartWhileStartupIsInFlight() async throws {
+        let root = makeTemporaryRoot(named: "LorreStartReentrancyTests")
+        let recorder = ControlledRecorderService(startDelay: .milliseconds(200))
+        let viewModel = await MainActor.run {
+            AppViewModel(dependencies: makeTestDependencies(root: root, recorder: recorder))
+        }
+
+        await MainActor.run {
+            viewModel.startRecordingTapped()
+            viewModel.startRecordingTapped()
+        }
+
+        try await waitUntil {
+            await recorder.startCallCount == 1
+        }
+
+        await MainActor.run {
+            XCTAssertTrue(viewModel.isStartingRecording)
+            XCTAssertFalse(viewModel.isRecording)
+        }
+
+        try await waitUntil {
+            await MainActor.run { viewModel.isRecording }
+        }
+
+        let startCallCount = await recorder.startCallCount
+        XCTAssertEqual(startCallCount, 1)
+    }
+
+    func testAppViewModelRecordingSourceChangeIgnoresStaleAsyncSupportResults() async throws {
+        let root = makeTemporaryRoot(named: "LorreRecordingSourceRaceTests")
+        let recorder = ControlledRecorderService(
+            supportBySource: [
+                .microphone: true,
+                .systemAudio: false
+            ],
+            supportDelayBySource: [
+                .microphone: .milliseconds(20),
+                .systemAudio: .milliseconds(250)
+            ]
+        )
+        let viewModel = await MainActor.run {
+            AppViewModel(dependencies: makeTestDependencies(root: root, recorder: recorder))
+        }
+
+        await MainActor.run {
+            viewModel.setRecordingSource(.systemAudio)
+            viewModel.setRecordingSource(.microphone)
+        }
+
+        try await waitUntil {
+            await MainActor.run { viewModel.isLiveTranscriptionSupported }
+        }
+
+        await MainActor.run {
+            XCTAssertEqual(viewModel.selectedRecordingSource, .microphone)
+            XCTAssertTrue(viewModel.isLiveTranscriptionSupported)
+        }
+    }
+}
+
+private actor ControlledRecorderService: RecorderService {
+    enum StopBehavior: Sendable {
+        case succeed
+        case failure(String)
+    }
+
+    private let startDelay: Duration
+    private let stopBehavior: StopBehavior
+    private let supportBySource: [RecordingSource: Bool]
+    private let supportDelayBySource: [RecordingSource: Duration]
+    private(set) var startCallCount = 0
+    private var startedAt: Date?
+    private var activeSource: RecordingSource = .microphone
+
+    init(
+        startDelay: Duration = .zero,
+        stopBehavior: StopBehavior = .succeed,
+        supportBySource: [RecordingSource: Bool] = [:],
+        supportDelayBySource: [RecordingSource: Duration] = [:]
+    ) {
+        self.startDelay = startDelay
+        self.stopBehavior = stopBehavior
+        self.supportBySource = supportBySource
+        self.supportDelayBySource = supportDelayBySource
+    }
+
+    func startRecording(_ request: RecordingRequest) async throws {
+        startCallCount += 1
+        guard startedAt == nil else {
+            throw LorreError.recordingStartFailed("A recording is already active.")
+        }
+        if startDelay > .zero {
+            try? await Task.sleep(for: startDelay)
+        }
+        startedAt = Date()
+        activeSource = request.source
+    }
+
+    func cancelRecording() async throws {
+        guard startedAt != nil else {
+            throw LorreError.recordingNotStarted
+        }
+        startedAt = nil
+    }
+
+    func stopRecording(in directoryURL: URL, fileLayout: RecordingFileLayout) async throws -> RecordingCapture {
+        guard let startedAt else {
+            throw LorreError.recordingNotStarted
+        }
+        self.startedAt = nil
+
+        switch stopBehavior {
+        case let .failure(message):
+            throw LorreError.recordingStopFailed(message)
+        case .succeed:
+            let endedAt = Date()
+            let duration = max(0.5, endedAt.timeIntervalSince(startedAt))
+            try FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)
+            try Data("audio".utf8).write(to: directoryURL.appendingPathComponent(fileLayout.audioFileName))
+            if activeSource == .microphoneAndSystemAudio {
+                if let microphoneStemFileName = fileLayout.microphoneStemFileName {
+                    try Data("mic".utf8).write(to: directoryURL.appendingPathComponent(microphoneStemFileName))
+                }
+                if let systemAudioStemFileName = fileLayout.systemAudioStemFileName {
+                    try Data("sys".utf8).write(to: directoryURL.appendingPathComponent(systemAudioStemFileName))
+                }
+            }
+            return RecordingCapture(startedAt: startedAt, endedAt: endedAt, durationSeconds: duration)
+        }
+    }
+
+    func currentMeterLevel() async -> Double { 0.12 }
+
+    func recordingFileLayout(for source: RecordingSource) async -> RecordingFileLayout {
+        switch source {
+        case .microphone, .systemAudio:
+            return RecordingFileLayout(audioFileName: "audio.caf", microphoneStemFileName: nil, systemAudioStemFileName: nil)
+        case .microphoneAndSystemAudio:
+            return RecordingFileLayout(
+                audioFileName: "audio.caf",
+                microphoneStemFileName: "microphone.caf",
+                systemAudioStemFileName: "system-audio.caf"
+            )
+        }
+    }
+
+    func supportsLiveTranscription(for source: RecordingSource) async -> Bool {
+        if let delay = supportDelayBySource[source], delay > .zero {
+            try? await Task.sleep(for: delay)
+        }
+        return supportBySource[source] ?? false
+    }
+
+    func prepareLiveTranscriptionEngine(
+        onProgress: (@Sendable (ProcessingUpdate) async -> Void)?
+    ) async throws {
+        _ = onProgress
+    }
+
+    func setKnownSpeakers(_ speakers: [KnownSpeaker]) async {
+        _ = speakers
+    }
+
+    func setLiveTranscriptionEnabled(_ isEnabled: Bool) async {
+        _ = isEnabled
+    }
+
+    func currentLiveTranscriptPreview() async -> LiveTranscriptPreview? { nil }
+
+    func makeLiveMonitorStream() async -> AsyncStream<RecorderLiveMonitorEvent>? { nil }
+}
+
+private final class TestPlaybackService: AudioPlaybackService {
+    var preparedURL: URL?
+    var currentTimeSeconds: Double = 0
+    var durationSeconds: Double = 0
+    var isPlaying: Bool = false
+    var playbackRate: Double = 1.0
+
+    func prepare(url: URL) throws {
+        preparedURL = url
+    }
+
+    func play() throws {
+        isPlaying = true
+    }
+
+    func pause() {
+        isPlaying = false
+    }
+
+    func stop() {
+        isPlaying = false
+        currentTimeSeconds = 0
+    }
+
+    func seek(to seconds: Double) {
+        currentTimeSeconds = seconds
+    }
+
+    func setPlaybackRate(_ rate: Double) {
+        playbackRate = rate
+    }
+}
+
+private func makeTemporaryRoot(named prefix: String) -> URL {
+    FileManager.default.temporaryDirectory
+        .appendingPathComponent("\(prefix)-\(UUID().uuidString)", isDirectory: true)
+}
+
+private func makeTestDependencies(
+    root: URL,
+    store: FileSessionStore? = nil,
+    recorder: any RecorderService
+) -> AppDependencies {
+    let sessionStore = store ?? FileSessionStore(baseURL: root)
+    let knownSpeakerStore = KnownSpeakerStore(baseURL: root)
+    let settings = AppSettingsStore(baseURL: root)
+    let transcription = MockTranscriptionService()
+    let diarization = MockSpeakerDiarizationService()
+    let speakerEnrollment = FluidAudioSpeakerEnrollmentService()
+    let coordinator = ProcessingCoordinator(
+        store: sessionStore,
+        transcriptionService: transcription,
+        diarizationService: diarization
+    )
+    return AppDependencies(
+        store: sessionStore,
+        knownSpeakerStore: knownSpeakerStore,
+        settings: settings,
+        recorder: recorder,
+        transcription: transcription,
+        diarization: diarization,
+        speakerEnrollment: speakerEnrollment,
+        playback: TestPlaybackService(),
+        exporter: MarkdownExportService(),
+        processingCoordinator: coordinator,
+        metrics: LocalMetricsLogger(baseURL: root),
+        fluidAudioStatus: "Test runtime",
+        modelPreparationComponentsSummary: "Test components"
+    )
+}
+
+private func waitUntil(
+    timeout: Duration = .seconds(2),
+    pollingInterval: Duration = .milliseconds(20),
+    condition: @escaping @Sendable () async -> Bool
+) async throws {
+    let deadline = ContinuousClock.now + timeout
+    while ContinuousClock.now < deadline {
+        if await condition() {
+            return
+        }
+        try await Task.sleep(for: pollingInterval)
+    }
+    XCTFail("Timed out waiting for condition")
+    throw LorreError.persistenceFailed("Timed out waiting for condition")
 }

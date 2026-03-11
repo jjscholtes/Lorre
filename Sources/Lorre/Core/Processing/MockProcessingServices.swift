@@ -936,14 +936,12 @@ actor ProcessingCoordinator {
 
     private func deleteAudioArtifacts(for session: SessionManifest, in sessionDir: URL) async throws {
         let fileManager = FileManager.default
-        let fileNames = Set(
-            [
-                session.audioFileName,
-                session.microphoneStemFileName,
-                session.systemAudioStemFileName
-            ]
-            .compactMap { $0 }
-        )
+        var fileNames: [String] = []
+        for candidate in [session.microphoneStemFileName, session.systemAudioStemFileName, session.audioFileName].compactMap({ $0 }) {
+            if !fileNames.contains(candidate) {
+                fileNames.append(candidate)
+            }
+        }
 
         for fileName in fileNames {
             let fileURL = sessionDir.appendingPathComponent(fileName)

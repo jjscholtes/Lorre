@@ -78,6 +78,7 @@ final class AppViewModel: ObservableObject {
     @Published private(set) var activeTranscript: TranscriptDocument?
     @Published private(set) var isLoading = true
     @Published private(set) var isRecording = false
+    @Published private(set) var isStartingRecording = false
     @Published private(set) var isStoppingRecording = false
     @Published private(set) var recordingElapsedSeconds: Double = 0
     @Published private(set) var liveMeterSamples: [Double] = Array(repeating: 0.08, count: 28)
@@ -120,6 +121,7 @@ final class AppViewModel: ObservableObject {
     private var liveMeterTask: Task<Void, Never>?
     private var playbackMonitorTask: Task<Void, Never>?
     private var waveformLoadTask: Task<Void, Never>?
+    private var recordingSourceChangeTask: Task<Void, Never>?
     private var currentRecordingStartedAt: Date?
     private var currentProcessingTasks: [UUID: Task<Void, Never>] = [:]
     private var cachedFilteredSessions: [SessionManifest] = []
@@ -146,6 +148,7 @@ final class AppViewModel: ObservableObject {
         liveMeterTask?.cancel()
         playbackMonitorTask?.cancel()
         waveformLoadTask?.cancel()
+        recordingSourceChangeTask?.cancel()
         sidebarExpansionSaveTask?.cancel()
         currentProcessingTasks.values.forEach { $0.cancel() }
     }
@@ -199,6 +202,9 @@ final class AppViewModel: ObservableObject {
     }
 
     var visibleStageStatusLine: String {
+        if isStartingRecording {
+            return "Starting capture…"
+        }
         if isRecording {
             return "Recording live • audio is stored locally"
         }
@@ -226,7 +232,7 @@ final class AppViewModel: ObservableObject {
     }
 
     var canControlPlayback: Bool {
-        guard !isRecording, !isStoppingRecording else { return false }
+        guard !isStartingRecording, !isRecording, !isStoppingRecording else { return false }
         guard let session = selectedSession else { return false }
         guard session.hasRetainedAudio else { return false }
         return session.status == .ready || session.status == .error
@@ -396,34 +402,36 @@ final class AppViewModel: ObservableObject {
     }
 
     func showRecorderScreenTapped() {
-        guard !isRecording, !isStoppingRecording else { return }
+        guard !isStartingRecording, !isRecording, !isStoppingRecording else { return }
         selectSession(nil)
     }
 
     func startRecordingTapped() {
-        guard !isRecording, !isStoppingRecording else { return }
+        guard !isStartingRecording, !isRecording, !isStoppingRecording else { return }
+        let source = selectedRecordingSource
+        let enableLiveTranscript = isLiveTranscriptionSupported && isLiveTranscriptionEnabled
         stopPlaybackAndResetState()
         banner = nil
         exportMessage = nil
+        isStartingRecording = true
+        recorderStatusText = "Starting capture…"
         Task { [weak self] in
             guard let self else { return }
             do {
-                let enableLiveTranscript = await MainActor.run {
-                    self.isLiveTranscriptionSupported && self.isLiveTranscriptionEnabled
-                }
                 await MainActor.run {
                     self.applyCurrentRuntimeConfiguration()
                 }
                 await self.pushKnownSpeakersToServices()
                 await self.dependencies.recorder.setLiveTranscriptionEnabled(enableLiveTranscript)
-                try await self.dependencies.recorder.startRecording(RecordingRequest(source: self.selectedRecordingSource))
+                try await self.dependencies.recorder.startRecording(RecordingRequest(source: source))
                 await self.dependencies.metrics.log(
                     name: "record_started",
-                    attributes: ["source": self.selectedRecordingSource.rawValue]
+                    attributes: ["source": source.rawValue]
                 )
                 self.selectedSessionID = nil
                 self.activeTranscript = nil
                 self.liveTranscriptPreview = nil
+                self.isStartingRecording = false
                 self.isRecording = true
                 self.isStoppingRecording = false
                 self.recordingElapsedSeconds = 0
@@ -433,19 +441,21 @@ final class AppViewModel: ObservableObject {
             } catch {
                 if let lorreError = error as? LorreError {
                     if case .recordingSourceSelectionCancelled = lorreError {
+                        self.isStartingRecording = false
                         self.recorderStatusText = "Ready to record"
                         await self.dependencies.metrics.log(
                             name: "record_source_selection_cancelled",
-                            attributes: ["source": self.selectedRecordingSource.rawValue]
+                            attributes: ["source": source.rawValue]
                         )
                         return
                     }
                 }
+                self.isStartingRecording = false
                 self.presentError(error, defaultTitle: "Could not start recording")
                 await self.dependencies.metrics.log(
                     name: "record_start_failed",
                     attributes: [
-                        "source": self.selectedRecordingSource.rawValue,
+                        "source": source.rawValue,
                         "error": error.localizedDescription
                     ]
                 )
@@ -506,6 +516,7 @@ final class AppViewModel: ObservableObject {
 
         Task { [weak self] in
             guard let self else { return }
+            var createdSessionID: UUID?
             do {
                 let source = self.selectedRecordingSource
                 let now = Date()
@@ -523,6 +534,7 @@ final class AppViewModel: ObservableObject {
                     recordedAt: now
                 )
                 var session = try await self.dependencies.store.createSession(draft)
+                createdSessionID = session.id
                 let sessionDirectory = await self.dependencies.store.sessionDirectoryURL(for: session.id)
                 let capture = try await self.dependencies.recorder.stopRecording(
                     in: sessionDirectory,
@@ -551,6 +563,10 @@ final class AppViewModel: ObservableObject {
                 await self.loadTranscriptForSelectedSession()
                 self.launchProcessing(for: session.id)
             } catch {
+                if let createdSessionID {
+                    try? await self.dependencies.store.deleteSession(id: createdSessionID)
+                    await self.reloadSessions(selectMostRecentIfNeeded: false)
+                }
                 self.isRecording = false
                 self.isStoppingRecording = false
                 self.currentRecordingStartedAt = nil
@@ -1395,17 +1411,20 @@ final class AppViewModel: ObservableObject {
     }
 
     func setRecordingSource(_ source: RecordingSource) {
-        guard !isRecording, !isStoppingRecording else { return }
+        guard !isStartingRecording, !isRecording, !isStoppingRecording else { return }
         guard selectedRecordingSource != source else { return }
 
         let previousSource = selectedRecordingSource
         let previousSupport = isLiveTranscriptionSupported
         selectedRecordingSource = source
 
-        Task { [weak self] in
+        recordingSourceChangeTask?.cancel()
+        recordingSourceChangeTask = Task { [weak self] in
             guard let self else { return }
             let supported = await self.dependencies.recorder.supportsLiveTranscription(for: source)
+            guard !Task.isCancelled else { return }
             await MainActor.run {
+                guard self.selectedRecordingSource == source else { return }
                 self.isLiveTranscriptionSupported = supported
                 if !supported {
                     self.liveTranscriptPreview = nil
@@ -1414,12 +1433,16 @@ final class AppViewModel: ObservableObject {
 
             do {
                 _ = try await self.dependencies.settings.setSelectedRecordingSource(source)
+                guard !Task.isCancelled else { return }
                 await self.dependencies.metrics.log(
                     name: "recording_source_changed",
                     attributes: ["source": source.rawValue]
                 )
+            } catch is CancellationError {
+                return
             } catch {
                 await MainActor.run {
+                    guard self.selectedRecordingSource == source else { return }
                     self.selectedRecordingSource = previousSource
                     self.isLiveTranscriptionSupported = previousSupport
                     self.presentError(error, defaultTitle: "Could not save recording option")

@@ -89,7 +89,7 @@ struct RecorderConsoleView: View {
 
     private var setupConsole: some View {
         VStack(alignment: .leading, spacing: DS.Space.x4) {
-            RecorderSetupHeaderView(viewModel: viewModel)
+            RecorderSetupHeaderView()
             RecorderSectionDivider()
             RecorderSourceQuickAccessView(viewModel: viewModel)
             RecorderInsetPanel {
@@ -114,8 +114,6 @@ struct RecorderConsoleView: View {
 }
 
 private struct RecorderSetupHeaderView: View {
-    @ObservedObject var viewModel: AppViewModel
-
     var body: some View {
         VStack(alignment: .leading, spacing: DS.Space.x3) {
             titleBlock
@@ -208,6 +206,7 @@ private struct RecorderStartDockView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(RecorderStartActionButtonStyle())
+        .disabled(viewModel.isStartingRecording)
         .accessibilityHint("Starts \(viewModel.selectedRecordingSource.label.lowercased()) recording with the current privacy and processing profile")
     }
 }
@@ -296,7 +295,7 @@ private struct RecorderSourceQuickAccessView: View {
     }
 
     private var isLockedDuringCapture: Bool {
-        viewModel.isRecording || viewModel.isStoppingRecording
+        viewModel.isStartingRecording || viewModel.isRecording || viewModel.isStoppingRecording
     }
 
     private func sourceDetail(for source: RecordingSource) -> String {
@@ -546,7 +545,7 @@ private struct RecorderLivePreviewQuickAccessView: View {
     }
 
     private var isLockedDuringCapture: Bool {
-        viewModel.isRecording || viewModel.isStoppingRecording
+        viewModel.isStartingRecording || viewModel.isRecording || viewModel.isStoppingRecording
     }
 
     private var isToggleDisabled: Bool {
@@ -643,7 +642,7 @@ private struct RecorderPrivacyQuickAccessView: View {
     }
 
     private var isLockedDuringCapture: Bool {
-        viewModel.isRecording || viewModel.isStoppingRecording
+        viewModel.isStartingRecording || viewModel.isRecording || viewModel.isStoppingRecording
     }
 
     private func privacyOption(
@@ -733,6 +732,7 @@ private struct RecorderProcessingProfileView: View {
                             .labelsHidden()
                             .toggleStyle(.switch)
                             .tint(DS.ColorToken.fgPrimary)
+                            .disabled(isLockedDuringCapture)
 
                             expectedSpeakersMenu
                         }
@@ -753,7 +753,7 @@ private struct RecorderProcessingProfileView: View {
                         .labelsHidden()
                         .toggleStyle(.switch)
                         .tint(DS.ColorToken.fgPrimary)
-                        .disabled(!viewModel.isLiveTranscriptionSupported)
+                        .disabled(!viewModel.isLiveTranscriptionSupported || isLockedDuringCapture)
                     }
                 )
             }
@@ -790,12 +790,17 @@ private struct RecorderProcessingProfileView: View {
                     )
                 }
                 .buttonStyle(.plain)
+                .disabled(isLockedDuringCapture)
 
                 if isShowingKnownSpeakerLibrary {
                     KnownSpeakerLibraryQuickAccessView(viewModel: viewModel)
                 }
             }
         }
+    }
+
+    private var isLockedDuringCapture: Bool {
+        viewModel.isStartingRecording || viewModel.isRecording || viewModel.isStoppingRecording
     }
 
     private func processingRow<Control: View>(
@@ -876,7 +881,7 @@ private struct RecorderProcessingProfileView: View {
                     .stroke(DS.ColorToken.borderSoft, lineWidth: 1)
             )
         }
-        .disabled(!viewModel.isSpeakerDiarizationEnabled)
+        .disabled(!viewModel.isSpeakerDiarizationEnabled || isLockedDuringCapture)
     }
 
     private var profileStateLabel: String {
