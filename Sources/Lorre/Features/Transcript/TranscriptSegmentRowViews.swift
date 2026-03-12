@@ -7,6 +7,7 @@ struct TranscriptSegmentRowView: View {
     let segment: TranscriptSegment
     let speaker: SpeakerProfile
     let speakers: [SpeakerProfile]
+    let canCuePlayback: Bool
     let isPlaybackActive: Bool
     let showsConfidence: Bool
     let onCommitText: (String) -> Void
@@ -24,6 +25,7 @@ struct TranscriptSegmentRowView: View {
         segment: TranscriptSegment,
         speaker: SpeakerProfile,
         speakers: [SpeakerProfile],
+        canCuePlayback: Bool = true,
         isPlaybackActive: Bool = false,
         showsConfidence: Bool = false,
         onCommitText: @escaping (String) -> Void,
@@ -35,6 +37,7 @@ struct TranscriptSegmentRowView: View {
         self.segment = segment
         self.speaker = speaker
         self.speakers = speakers
+        self.canCuePlayback = canCuePlayback
         self.isPlaybackActive = isPlaybackActive
         self.showsConfidence = showsConfidence
         self.onCommitText = onCommitText
@@ -50,7 +53,7 @@ struct TranscriptSegmentRowView: View {
                 VStack(alignment: .leading, spacing: DS.Space.x1) {
                     Text(Formatters.timestamp(ms: segment.startMs))
                         .font(DS.FontStyle.monoStrong)
-                        .foregroundStyle(DS.ColorToken.fgPrimary)
+                        .foregroundStyle(canCuePlayback ? DS.ColorToken.fgPrimary : DS.ColorToken.fgSecondary)
                     Text(Formatters.timestamp(ms: segment.endMs))
                         .font(DS.FontStyle.mono)
                         .foregroundStyle(DS.ColorToken.fgSecondary)
@@ -66,7 +69,12 @@ struct TranscriptSegmentRowView: View {
                 )
             }
             .buttonStyle(.plain)
-            .help("Play from \(Formatters.timestamp(ms: segment.startMs))")
+            .disabled(!canCuePlayback)
+            .help(
+                canCuePlayback
+                    ? "Play from \(Formatters.timestamp(ms: segment.startMs))"
+                    : "Playback is unavailable because this session no longer has source audio."
+            )
 
             Button {
                 showSpeakerPopover.toggle()
@@ -162,6 +170,7 @@ struct TranscriptSegmentRowView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .contentShape(Rectangle())
         .onTapGesture {
+            guard canCuePlayback else { return }
             onSeekRequested()
         }
         .onHover { hovering in

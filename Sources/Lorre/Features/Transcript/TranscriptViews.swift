@@ -6,12 +6,9 @@ struct TranscriptStageView: View {
     let transcript: TranscriptDocument?
 
     var body: some View {
+        let canCuePlayback = viewModel.canControlPlayback
         VStack(alignment: .leading, spacing: DS.Space.x4) {
             TranscriptHeaderView(viewModel: viewModel, session: session, transcript: transcript)
-            SpeakerRecognitionQuickAccessView(
-                viewModel: viewModel,
-                scopeNote: "This changes future processing runs. Existing transcript rows can still be reassigned manually."
-            )
 
             if session.status == .error, transcript == nil {
                 TranscriptErrorStateView(viewModel: viewModel, session: session)
@@ -20,13 +17,14 @@ struct TranscriptStageView: View {
                     ScrollView {
                         LazyVStack(spacing: DS.Space.x2) {
                             HStack(spacing: DS.Space.x2) {
-                                Image(systemName: "play.fill")
+                                Image(systemName: cuePlaybackIconName)
                                     .font(.system(size: 9, weight: .semibold))
                                     .foregroundStyle(DS.ColorToken.fgSecondary)
-                                CapsLabel(text: "Cue Playback")
-                                Text("Click a fragment or timestamp to play from that point.")
+                                CapsLabel(text: cuePlaybackStatusLabel)
+                                Text(cuePlaybackDescription)
                                     .font(DS.FontStyle.helper)
                                     .foregroundStyle(DS.ColorToken.fgSecondary)
+                                    .fixedSize(horizontal: false, vertical: true)
                                 Spacer(minLength: 0)
                             }
                             .padding(.horizontal, DS.Space.x2_5)
@@ -40,6 +38,7 @@ struct TranscriptStageView: View {
                                     segment: segment,
                                     speaker: transcript.speaker(for: segment.speakerId),
                                     speakers: transcript.speakers,
+                                    canCuePlayback: canCuePlayback,
                                     isPlaybackActive: viewModel.isPlaybackSegmentActive(segment.id),
                                     showsConfidence: viewModel.isTranscriptConfidenceVisible
                                 ) { updatedText in
@@ -94,5 +93,35 @@ struct TranscriptStageView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    private var cuePlaybackStatusLabel: String {
+        if !session.hasRetainedAudio {
+            return "Playback unavailable"
+        }
+        if !viewModel.canControlPlayback {
+            return "Cue Playback"
+        }
+        return "Cue Playback"
+    }
+
+    private var cuePlaybackDescription: String {
+        if !session.hasRetainedAudio {
+            return "Privacy Mode deleted the source audio for this session, so cue playback is unavailable."
+        }
+        if !viewModel.canControlPlayback {
+            return "Cue playback becomes available once the session is ready."
+        }
+        return "Click a fragment or timestamp to play from that point."
+    }
+
+    private var cuePlaybackIconName: String {
+        if !session.hasRetainedAudio {
+            return "lock.fill"
+        }
+        if !viewModel.canControlPlayback {
+            return "clock.fill"
+        }
+        return "play.fill"
     }
 }
