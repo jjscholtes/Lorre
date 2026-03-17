@@ -41,19 +41,115 @@ private struct WorkStageContainerView: View {
                 }
             }
 
-            if viewModel.isRecording || viewModel.isStoppingRecording || viewModel.selectedSession == nil {
+            if viewModel.isBrowsingArchivedSessionWhileRecording {
+                ActiveRecordingWorkspaceView(viewModel: viewModel)
+            }
+
+            switch viewModel.workStageRoute {
+            case .recorder:
                 RecorderConsoleView(viewModel: viewModel)
-            } else if let session = viewModel.selectedSession, session.status == .processing {
-                ProcessingPipelineView(viewModel: viewModel, session: session)
-            } else if let session = viewModel.selectedSession {
-                TranscriptStageView(
-                    viewModel: viewModel,
-                    session: session,
-                    transcript: viewModel.activeTranscript
-                )
+            case let .processing(sessionID):
+                if let session = viewModel.sessions.first(where: { $0.id == sessionID }) {
+                    ProcessingPipelineView(viewModel: viewModel, session: session)
+                }
+            case let .transcript(sessionID):
+                if let session = viewModel.sessions.first(where: { $0.id == sessionID }) {
+                    TranscriptStageView(
+                        viewModel: viewModel,
+                        session: session,
+                        transcript: viewModel.activeTranscript
+                    )
+                }
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+}
+
+private struct ActiveRecordingWorkspaceView: View {
+    @ObservedObject var viewModel: AppViewModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: DS.Space.x3) {
+            HStack(alignment: .top, spacing: DS.Space.x3) {
+                VStack(alignment: .leading, spacing: DS.Space.x1_5) {
+                    HStack(spacing: DS.Space.x2) {
+                        ActiveRecordingBadge(label: viewModel.isStoppingRecording ? "FINALIZING" : "LIVE")
+                        CapsLabel(text: "Recorder")
+                    }
+
+                    Text(viewModel.activeRecordingHeadline)
+                        .font(DS.FontStyle.panelTitle)
+                        .foregroundStyle(DS.ColorToken.fgPrimary)
+
+                    Text(viewModel.activeRecordingDetail)
+                        .font(DS.FontStyle.body)
+                        .foregroundStyle(DS.ColorToken.fgSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                Spacer(minLength: DS.Space.x2)
+
+                VStack(alignment: .trailing, spacing: DS.Space.x1) {
+                    Text(Formatters.duration(viewModel.recordingElapsedSeconds))
+                        .font(DS.FontStyle.timer)
+                        .foregroundStyle(DS.ColorToken.fgPrimary)
+
+                    Text(viewModel.activeRecordingSourceBadge)
+                        .font(DS.FontStyle.monoStrong)
+                        .foregroundStyle(DS.ColorToken.fgSecondary)
+                }
+            }
+
+            IndexRailView(mode: .live(viewModel.liveMeterSamples), height: 12)
+                .frame(maxWidth: .infinity)
+
+            HStack(spacing: DS.Space.x2) {
+                Button("Open Recorder") {
+                    viewModel.showRecorderScreenTapped()
+                }
+                .buttonStyle(SecondaryControlButtonStyle())
+
+                Button(viewModel.isStoppingRecording ? "Finalizing…" : "Stop Recording") {
+                    viewModel.stopRecordingTapped()
+                }
+                .buttonStyle(PrimaryControlButtonStyle())
+                .disabled(viewModel.isStoppingRecording)
+
+                Button("Cancel") {
+                    viewModel.cancelRecordingTapped()
+                }
+                .buttonStyle(SecondaryControlButtonStyle())
+                .disabled(viewModel.isStoppingRecording)
+            }
+        }
+        .padding(DS.Space.x4)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .dsPanelSurface(cornerRadius: DS.Radius.lg)
+    }
+}
+
+private struct ActiveRecordingBadge: View {
+    let label: String
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 6) {
+            Circle()
+                .fill(DS.ColorToken.white.opacity(0.92))
+                .frame(width: 6, height: 6)
+
+            Text(label)
+                .font(DS.FontStyle.control)
+                .foregroundStyle(DS.ColorToken.white)
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
+        }
+        .padding(.horizontal, DS.Space.x2)
+        .padding(.vertical, 6)
+        .background(
+            Capsule(style: .continuous)
+                .fill(DS.ColorToken.black)
+        )
     }
 }
 

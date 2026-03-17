@@ -7,6 +7,11 @@ struct TranscriptStageView: View {
 
     var body: some View {
         let canCuePlayback = viewModel.canControlPlayback
+        let cuePlaybackPresentation = AppViewModel.makeCuePlaybackPresentation(
+            hasRetainedAudio: session.hasRetainedAudio,
+            canControlPlayback: canCuePlayback,
+            hasActiveRecording: viewModel.hasActiveRecording
+        )
         VStack(alignment: .leading, spacing: DS.Space.x4) {
             TranscriptHeaderView(viewModel: viewModel, session: session, transcript: transcript)
 
@@ -17,11 +22,11 @@ struct TranscriptStageView: View {
                     ScrollView {
                         LazyVStack(spacing: DS.Space.x2) {
                             HStack(spacing: DS.Space.x2) {
-                                Image(systemName: cuePlaybackIconName)
+                                Image(systemName: cuePlaybackPresentation.iconName)
                                     .font(.system(size: 9, weight: .semibold))
                                     .foregroundStyle(DS.ColorToken.fgSecondary)
-                                CapsLabel(text: cuePlaybackStatusLabel)
-                                Text(cuePlaybackDescription)
+                                CapsLabel(text: cuePlaybackPresentation.statusLabel)
+                                Text(cuePlaybackPresentation.description)
                                     .font(DS.FontStyle.helper)
                                     .foregroundStyle(DS.ColorToken.fgSecondary)
                                     .fixedSize(horizontal: false, vertical: true)
@@ -93,35 +98,5 @@ struct TranscriptStageView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-    }
-
-    private var cuePlaybackStatusLabel: String {
-        if !session.hasRetainedAudio {
-            return "Playback unavailable"
-        }
-        if !viewModel.canControlPlayback {
-            return "Cue Playback"
-        }
-        return "Cue Playback"
-    }
-
-    private var cuePlaybackDescription: String {
-        if !session.hasRetainedAudio {
-            return "Privacy Mode deleted the source audio for this session, so cue playback is unavailable."
-        }
-        if !viewModel.canControlPlayback {
-            return "Cue playback becomes available once the session is ready."
-        }
-        return "Click a fragment or timestamp to play from that point."
-    }
-
-    private var cuePlaybackIconName: String {
-        if !session.hasRetainedAudio {
-            return "lock.fill"
-        }
-        if !viewModel.canControlPlayback {
-            return "clock.fill"
-        }
-        return "play.fill"
     }
 }

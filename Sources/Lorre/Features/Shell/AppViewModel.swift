@@ -53,6 +53,18 @@ enum ModelPreparationState: Equatable {
     case error(String)
 }
 
+enum WorkStageRoute: Equatable {
+    case recorder
+    case processing(UUID)
+    case transcript(UUID)
+}
+
+struct CuePlaybackPresentation: Equatable {
+    let statusLabel: String
+    let description: String
+    let iconName: String
+}
+
 @MainActor
 final class AppViewModel: ObservableObject {
     static let unfiledFolderSelectionID = "__UNFILED__"
@@ -188,6 +200,49 @@ final class AppViewModel: ObservableObject {
         return sessions.first(where: { $0.id == selectedSessionID })
     }
 
+    var hasActiveRecording: Bool {
+        isRecording || isStoppingRecording
+    }
+
+    var isBrowsingArchivedSessionWhileRecording: Bool {
+        hasActiveRecording && selectedSession != nil
+    }
+
+    var workStageRoute: WorkStageRoute {
+        Self.makeWorkStageRoute(selectedSession: selectedSession)
+    }
+
+    var recorderShelfActionLabel: String {
+        if hasActiveRecording {
+            return selectedSession == nil ? "Recorder Open" : "Open Recorder"
+        }
+        if isStartingRecording {
+            return "Starting…"
+        }
+        return "New Recording"
+    }
+
+    var activeRecordingHeadline: String {
+        if isStoppingRecording {
+            return "Finalizing active recording"
+        }
+        return "Active recording"
+    }
+
+    var activeRecordingDetail: String {
+        if isStoppingRecording {
+            return "Lorre is closing the capture and preparing a new session."
+        }
+        if selectedSession != nil {
+            return "Capture stays live while you review archived recordings or export finished transcripts."
+        }
+        return "Capture is live. You can open older recordings without stopping."
+    }
+
+    var activeRecordingSourceBadge: String {
+        selectedRecordingSource.shortLabel.uppercased()
+    }
+
     var hasReadyTranscriptStage: Bool {
         if let session = selectedSession {
             return session.status == .ready || session.status == .error
@@ -196,7 +251,7 @@ final class AppViewModel: ObservableObject {
     }
 
     var visibleStageTitle: String {
-        if isRecording { return "Recorder" }
+        if hasActiveRecording && selectedSession == nil { return "Recorder" }
         if let session = selectedSession { return session.displayTitle }
         return "Recorder"
     }
@@ -260,6 +315,47 @@ final class AppViewModel: ObservableObject {
         default:
             return "1.0x"
         }
+    }
+
+    static func makeWorkStageRoute(selectedSession: SessionManifest?) -> WorkStageRoute {
+        guard let session = selectedSession else { return .recorder }
+        if session.status == .processing {
+            return .processing(session.id)
+        }
+        return .transcript(session.id)
+    }
+
+    static func makeCuePlaybackPresentation(
+        hasRetainedAudio: Bool,
+        canControlPlayback: Bool,
+        hasActiveRecording: Bool
+    ) -> CuePlaybackPresentation {
+        if !hasRetainedAudio {
+            return CuePlaybackPresentation(
+                statusLabel: "Playback unavailable",
+                description: "Privacy Mode deleted the source audio for this session, so cue playback is unavailable.",
+                iconName: "lock.fill"
+            )
+        }
+        if hasActiveRecording {
+            return CuePlaybackPresentation(
+                statusLabel: "Playback paused during recording",
+                description: "Stop the active recording before cueing or playing archived audio from this session.",
+                iconName: "record.circle.fill"
+            )
+        }
+        if !canControlPlayback {
+            return CuePlaybackPresentation(
+                statusLabel: "Cue Playback",
+                description: "Cue playback becomes available once the session is ready.",
+                iconName: "clock.fill"
+            )
+        }
+        return CuePlaybackPresentation(
+            statusLabel: "Cue Playback",
+            description: "Click a fragment or timestamp to play from that point.",
+            iconName: "play.fill"
+        )
     }
 
     func count(for filter: ShelfFilter) -> Int {
@@ -402,7 +498,6 @@ final class AppViewModel: ObservableObject {
     }
 
     func showRecorderScreenTapped() {
-        guard !isStartingRecording, !isRecording, !isStoppingRecording else { return }
         selectSession(nil)
     }
 
@@ -413,6 +508,8 @@ final class AppViewModel: ObservableObject {
         stopPlaybackAndResetState()
         banner = nil
         exportMessage = nil
+        selectedSessionID = nil
+        activeTranscript = nil
         isStartingRecording = true
         recorderStatusText = "Starting capture…"
         Task { [weak self] in
@@ -428,8 +525,6 @@ final class AppViewModel: ObservableObject {
                     name: "record_started",
                     attributes: ["source": source.rawValue]
                 )
-                self.selectedSessionID = nil
-                self.activeTranscript = nil
                 self.liveTranscriptPreview = nil
                 self.isStartingRecording = false
                 self.isRecording = true

@@ -41,16 +41,22 @@ struct SessionShelfView: View {
                             .frame(maxWidth: .infinity, alignment: .center)
                     }
                     .buttonStyle(SecondaryControlButtonStyle())
+                    .disabled(viewModel.isStartingRecording || viewModel.hasActiveRecording)
 
                     Button {
                         viewModel.showRecorderScreenTapped()
                     } label: {
-                        Text("New Recording")
+                        Text(viewModel.recorderShelfActionLabel)
                             .frame(maxWidth: .infinity, alignment: .center)
                     }
                     .buttonStyle(PrimaryControlButtonStyle())
+                    .disabled(viewModel.isStartingRecording || (viewModel.hasActiveRecording && viewModel.selectedSession == nil))
                 }
                 .frame(maxWidth: .infinity)
+
+                if viewModel.hasActiveRecording {
+                    ActiveRecordingShelfCard(viewModel: viewModel)
+                }
 
                 VStack(alignment: .leading, spacing: DS.Space.x2) {
                     CapsLabel(text: "Views")
@@ -925,6 +931,65 @@ private struct ModelStatusPanelView: View {
         case .preparing, .ready:
             return false
         }
+    }
+}
+
+private struct ActiveRecordingShelfCard: View {
+    @ObservedObject var viewModel: AppViewModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: DS.Space.x2) {
+            HStack(spacing: DS.Space.x2) {
+                HStack(alignment: .center, spacing: 6) {
+                    Circle()
+                        .fill(DS.ColorToken.white.opacity(0.92))
+                        .frame(width: 6, height: 6)
+
+                    Text(viewModel.isStoppingRecording ? "FINALIZING" : "LIVE")
+                        .font(DS.FontStyle.control)
+                        .foregroundStyle(DS.ColorToken.white)
+                        .lineLimit(1)
+                        .fixedSize(horizontal: true, vertical: false)
+                }
+                .padding(.horizontal, DS.Space.x2)
+                .padding(.vertical, 6)
+                .background(
+                    Capsule(style: .continuous)
+                        .fill(DS.ColorToken.black)
+                )
+                Spacer(minLength: 0)
+                Text(Formatters.duration(viewModel.recordingElapsedSeconds))
+                    .font(DS.FontStyle.monoStrong)
+                    .foregroundStyle(DS.ColorToken.fgPrimary)
+            }
+
+            Text(viewModel.activeRecordingHeadline)
+                .font(DS.FontStyle.bodyStrong)
+                .foregroundStyle(DS.ColorToken.fgPrimary)
+
+            Text(viewModel.activeRecordingDetail)
+                .font(DS.FontStyle.helper)
+                .foregroundStyle(DS.ColorToken.fgSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            HStack(spacing: DS.Space.x2) {
+                CapsLabel(text: viewModel.activeRecordingSourceBadge)
+                Spacer(minLength: 0)
+                if viewModel.selectedSession != nil {
+                    Button("Open Recorder") {
+                        viewModel.showRecorderScreenTapped()
+                    }
+                    .buttonStyle(SecondaryControlButtonStyle())
+                    .disabled(viewModel.isStoppingRecording)
+                }
+            }
+
+            IndexRailView(mode: .live(viewModel.liveMeterSamples), height: 10)
+                .frame(maxWidth: .infinity)
+        }
+        .padding(DS.Space.x3)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .dsPanelSurface(alt: true, cornerRadius: DS.Radius.md)
     }
 }
 

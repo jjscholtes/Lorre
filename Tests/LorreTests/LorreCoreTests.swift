@@ -227,6 +227,52 @@ final class LorreCoreTests: XCTestCase {
         XCTAssertTrue(transcript.segments[0].text.localizedCaseInsensitiveContains("actually no that is different"))
     }
 
+    func testWorkStageRouteUsesSelectionInsteadOfRecordingMode() {
+        let readySession = SessionManifest(
+            id: UUID(uuidString: "AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA")!,
+            title: "Ready Session",
+            status: .ready,
+            recordingSource: .microphone,
+            audioFileName: "audio.m4a",
+            transcriptFileName: "transcript.json"
+        )
+        let processingSession = SessionManifest(
+            id: UUID(uuidString: "BBBBBBBB-BBBB-BBBB-BBBB-BBBBBBBBBBBB")!,
+            title: "Processing Session",
+            status: .processing,
+            recordingSource: .microphone,
+            audioFileName: "audio.m4a"
+        )
+
+        XCTAssertEqual(AppViewModel.makeWorkStageRoute(selectedSession: nil), .recorder)
+        XCTAssertEqual(AppViewModel.makeWorkStageRoute(selectedSession: processingSession), .processing(processingSession.id))
+        XCTAssertEqual(AppViewModel.makeWorkStageRoute(selectedSession: readySession), .transcript(readySession.id))
+    }
+
+    func testCuePlaybackPresentationMentionsActiveRecordingWhenArchiveAudioExists() {
+        let presentation = AppViewModel.makeCuePlaybackPresentation(
+            hasRetainedAudio: true,
+            canControlPlayback: false,
+            hasActiveRecording: true
+        )
+
+        XCTAssertEqual(presentation.statusLabel, "Playback paused during recording")
+        XCTAssertTrue(presentation.description.localizedCaseInsensitiveContains("stop the active recording"))
+        XCTAssertEqual(presentation.iconName, "record.circle.fill")
+    }
+
+    func testCuePlaybackPresentationPrioritizesPrivacyModeOverRecordingState() {
+        let presentation = AppViewModel.makeCuePlaybackPresentation(
+            hasRetainedAudio: false,
+            canControlPlayback: false,
+            hasActiveRecording: true
+        )
+
+        XCTAssertEqual(presentation.statusLabel, "Playback unavailable")
+        XCTAssertTrue(presentation.description.localizedCaseInsensitiveContains("privacy mode"))
+        XCTAssertEqual(presentation.iconName, "lock.fill")
+    }
+
     func testLocalMetricsLoggerWritesJSONLines() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("LorreMetricsTests-\(UUID().uuidString)", isDirectory: true)
