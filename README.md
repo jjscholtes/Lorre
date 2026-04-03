@@ -73,3 +73,9 @@ If privacy mode is enabled before a recording or import, Lorre deletes the sourc
 - JSON
 
 <img width="1750" height="672" alt="image" src="https://github.com/user-attachments/assets/40a23c5c-093f-4363-aa1d-c42d88ddb98c" />
+
+<p align="center">
+  <a href="https://fluidinference.com">
+    <img src="https://assets.inference.plus/fi-badge.png" alt="Powered by Fluid Inference" width="220" />
+  </a>
+</p>
