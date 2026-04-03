@@ -1,5 +1,9 @@
 import Foundation
 
+#if canImport(FluidAudio)
+@preconcurrency import FluidAudio
+#endif
+
 struct MockTranscriptionService: TranscriptionService {
     func ensureModelsReady(
         onProgress: (@Sendable (ProcessingUpdate) async -> Void)?
@@ -77,6 +81,10 @@ struct MockSpeakerDiarizationService: SpeakerDiarizationService {
         _ = speakers
     }
 
+    func setDiarizationEngine(_ engine: DiarizationEngine) async {
+        _ = engine
+    }
+
     func diarize(
         url: URL,
         expectedDurationSeconds: Double?,
@@ -119,6 +127,34 @@ struct MockSpeakerDiarizationService: SpeakerDiarizationService {
         if speakers.count == 2 { return [speakers[0], speakers[1], speakers[0], speakers[1]] }
         if speakers.count == 3 { return [speakers[0], speakers[1], speakers[0], speakers[2]] }
         return speakers
+    }
+}
+
+enum TranscriptTextNormalizationSupport {
+    static func normalize(_ transcript: TranscriptDocument) -> TranscriptDocument {
+        #if canImport(FluidAudio)
+        let normalizer = TextNormalizer.shared
+        guard normalizer.isNativeAvailable else { return transcript }
+        return normalize(transcript, using: normalizer.normalizeSentence)
+        #else
+        return transcript
+        #endif
+    }
+
+    static func normalize(
+        _ transcript: TranscriptDocument,
+        using sentenceNormalizer: (String) -> String
+    ) -> TranscriptDocument {
+        var normalizedTranscript = transcript
+        normalizedTranscript.segments = transcript.segments.map { segment in
+            var normalizedSegment = segment
+            let normalizedText = sentenceNormalizer(segment.text)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !normalizedText.isEmpty else { return normalizedSegment }
+            normalizedSegment.text = normalizedText
+            return normalizedSegment
+        }
+        return normalizedTranscript
     }
 }
 
@@ -831,10 +867,12 @@ actor ProcessingCoordinator {
                 )
                 await onProgress(ProcessingUpdate(phase: .assembling, label: "Saving draft transcript", fraction: 0.52))
 
-                let draftTranscript = TranscriptAssembler.assemble(
-                    sessionId: sessionId,
-                    transcription: transcription,
-                    diarization: nil
+                let draftTranscript = TranscriptTextNormalizationSupport.normalize(
+                    TranscriptAssembler.assemble(
+                        sessionId: sessionId,
+                        transcription: transcription,
+                        diarization: nil
+                    )
                 )
                 try await store.saveTranscript(draftTranscript)
                 session.transcriptFileName = "transcript.json"
@@ -875,10 +913,12 @@ actor ProcessingCoordinator {
 
             try await updateSession(&session, status: .processing, phase: .assembling, label: "Assembling transcript", fraction: 0.82)
             await onProgress(ProcessingUpdate(phase: .assembling, label: "Assembling transcript", fraction: 0.82))
-            let transcript = TranscriptAssembler.assemble(
-                sessionId: sessionId,
-                transcription: transcription,
-                diarization: adjustedDiarization
+            let transcript = TranscriptTextNormalizationSupport.normalize(
+                TranscriptAssembler.assemble(
+                    sessionId: sessionId,
+                    transcription: transcription,
+                    diarization: adjustedDiarization
+                )
             )
 
             if exportDiarizationDebugArtifact {

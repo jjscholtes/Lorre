@@ -632,6 +632,45 @@ struct DiarizationResult: Equatable, Sendable {
     var speakerProfiles: [SpeakerProfile] = []
 }
 
+enum DiarizationEngine: String, Codable, CaseIterable, Equatable, Hashable, Sendable {
+    case offlineVbx
+    case sortformer
+    case lsEend
+
+    var shortLabel: String {
+        switch self {
+        case .offlineVbx:
+            return "VBx"
+        case .sortformer:
+            return "Sort"
+        case .lsEend:
+            return "LS-EEND"
+        }
+    }
+
+    var detailLabel: String {
+        switch self {
+        case .offlineVbx:
+            return "Offline VBx"
+        case .sortformer:
+            return "Sortformer"
+        case .lsEend:
+            return "LS-EEND"
+        }
+    }
+
+    var settingsSummary: String {
+        switch self {
+        case .offlineVbx:
+            return "Best offline-quality clustering across a full recording."
+        case .sortformer:
+            return "Stable 4-speaker diarization with stronger identity continuity."
+        case .lsEend:
+            return "Overlap-friendly diarization for up to 10 speakers."
+        }
+    }
+}
+
 struct DiarizationSpeakerCountHint: Codable, Equatable, Hashable, Sendable {
     enum Mode: String, Codable, CaseIterable, Sendable {
         case auto
@@ -785,6 +824,7 @@ struct AppSettings: Codable, Equatable, Sendable {
     var modelRegistryConfiguration: ModelRegistryConfiguration
     var selectedRecordingSource: RecordingSource
     var isSpeakerDiarizationEnabled: Bool
+    var diarizationEngine: DiarizationEngine
     var diarizationExpectedSpeakerCountHint: DiarizationSpeakerCountHint
     var isDiarizationDebugExportEnabled: Bool
     var isLiveTranscriptionEnabled: Bool
@@ -796,12 +836,13 @@ struct AppSettings: Codable, Equatable, Sendable {
     var sidebarExpandedFolderIDs: [String]
 
     init(
-        schemaVersion: Int = 1,
+        schemaVersion: Int = 2,
         updatedAt: Date = Date(),
         modelPreparation: ModelPreparationSnapshot? = nil,
         modelRegistryConfiguration: ModelRegistryConfiguration = .init(),
         selectedRecordingSource: RecordingSource = .microphone,
         isSpeakerDiarizationEnabled: Bool = true,
+        diarizationEngine: DiarizationEngine = .offlineVbx,
         diarizationExpectedSpeakerCountHint: DiarizationSpeakerCountHint = .auto,
         isDiarizationDebugExportEnabled: Bool = false,
         isLiveTranscriptionEnabled: Bool = false,
@@ -818,6 +859,7 @@ struct AppSettings: Codable, Equatable, Sendable {
         self.modelRegistryConfiguration = modelRegistryConfiguration
         self.selectedRecordingSource = selectedRecordingSource
         self.isSpeakerDiarizationEnabled = isSpeakerDiarizationEnabled
+        self.diarizationEngine = diarizationEngine
         self.diarizationExpectedSpeakerCountHint = diarizationExpectedSpeakerCountHint.normalized()
         self.isDiarizationDebugExportEnabled = isDiarizationDebugExportEnabled
         self.isLiveTranscriptionEnabled = isLiveTranscriptionEnabled
@@ -836,6 +878,7 @@ struct AppSettings: Codable, Equatable, Sendable {
         case modelRegistryConfiguration
         case selectedRecordingSource
         case isSpeakerDiarizationEnabled
+        case diarizationEngine
         case diarizationExpectedSpeakerCountHint
         case isDiarizationDebugExportEnabled
         case isLiveTranscriptionEnabled
@@ -855,6 +898,7 @@ struct AppSettings: Codable, Equatable, Sendable {
         self.modelRegistryConfiguration = try container.decodeIfPresent(ModelRegistryConfiguration.self, forKey: .modelRegistryConfiguration) ?? .init()
         self.selectedRecordingSource = try container.decodeIfPresent(RecordingSource.self, forKey: .selectedRecordingSource) ?? .microphone
         self.isSpeakerDiarizationEnabled = try container.decodeIfPresent(Bool.self, forKey: .isSpeakerDiarizationEnabled) ?? true
+        self.diarizationEngine = try container.decodeIfPresent(DiarizationEngine.self, forKey: .diarizationEngine) ?? .offlineVbx
         self.diarizationExpectedSpeakerCountHint = (
             try container.decodeIfPresent(DiarizationSpeakerCountHint.self, forKey: .diarizationExpectedSpeakerCountHint)
         )?.normalized() ?? .auto
@@ -876,6 +920,7 @@ struct AppSettings: Codable, Equatable, Sendable {
         try container.encode(modelRegistryConfiguration, forKey: .modelRegistryConfiguration)
         try container.encode(selectedRecordingSource, forKey: .selectedRecordingSource)
         try container.encode(isSpeakerDiarizationEnabled, forKey: .isSpeakerDiarizationEnabled)
+        try container.encode(diarizationEngine, forKey: .diarizationEngine)
         try container.encode(diarizationExpectedSpeakerCountHint.normalized(), forKey: .diarizationExpectedSpeakerCountHint)
         try container.encode(isDiarizationDebugExportEnabled, forKey: .isDiarizationDebugExportEnabled)
         try container.encode(isLiveTranscriptionEnabled, forKey: .isLiveTranscriptionEnabled)

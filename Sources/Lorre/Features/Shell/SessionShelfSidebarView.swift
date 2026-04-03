@@ -354,6 +354,9 @@ private struct ModelStatusCompactPanelView: View {
                     .font(DS.FontStyle.mono)
                     .foregroundStyle(DS.ColorToken.fgSecondary)
                 if viewModel.isSpeakerDiarizationEnabled {
+                    Text("Eng \(viewModel.diarizationEngine.shortLabel)")
+                        .font(DS.FontStyle.mono)
+                        .foregroundStyle(DS.ColorToken.fgSecondary)
                     Text("Spk \(viewModel.diarizationExpectedSpeakerCountHint.shortLabel)")
                         .font(DS.FontStyle.mono)
                         .foregroundStyle(DS.ColorToken.fgSecondary)
@@ -495,6 +498,51 @@ private struct ModelStatusPanelView: View {
             modelRegistryConfigurationPanel
 
             VStack(alignment: .leading, spacing: DS.Space.x3) {
+                HStack(alignment: .top, spacing: DS.Space.x2) {
+                    settingsLabelCell(
+                        id: "diar-engine",
+                        label: "Diar Engine",
+                        tooltip: "Choose which local diarization model Lorre uses for speaker assignment on new processing runs."
+                    )
+
+                    Menu {
+                        ForEach(DiarizationEngine.allCases, id: \.self) { engine in
+                            Button {
+                                viewModel.setDiarizationEngine(engine)
+                            } label: {
+                                HStack {
+                                    Text(engine.detailLabel)
+                                    if engine == viewModel.diarizationEngine {
+                                        Image(systemName: "checkmark")
+                                    }
+                                }
+                            }
+                        }
+                    } label: {
+                        HStack(spacing: DS.Space.x1_5) {
+                            Text(viewModel.diarizationEngine.detailLabel)
+                                .lineLimit(1)
+                            Image(systemName: "chevron.down")
+                                .font(.system(size: 10, weight: .semibold))
+                        }
+                    }
+                    .buttonStyle(SecondaryControlButtonStyle())
+                    .frame(width: settingsToggleColumnWidth, alignment: .leading)
+
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(viewModel.diarizationEngine.settingsSummary)
+                            .font(DS.FontStyle.helper)
+                            .foregroundStyle(DS.ColorToken.fgSecondary)
+                            .lineLimit(2)
+                        Text("Current: \(viewModel.diarizationEngine.shortLabel)")
+                            .font(DS.FontStyle.mono)
+                            .foregroundStyle(DS.ColorToken.fgTertiary)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .padding(.vertical, DS.Space.x1)
+                .zIndex(activeTooltipRowID == "diar-engine" ? 100 : 0)
+
                 toggleSettingsRow(
                     id: "show-confidence",
                     label: "Show Confidence",

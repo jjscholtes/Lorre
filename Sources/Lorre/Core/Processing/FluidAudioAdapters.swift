@@ -15,7 +15,10 @@ enum FluidAudioIntegrationProbe {
 
     static var statusSummary: String {
         #if canImport(FluidAudio)
-        return "FluidAudio available (ASR + VAD + diarization adapters enabled)"
+        if TextNormalizer.shared.isNativeAvailable {
+            return "FluidAudio available (ASR + VAD + diarization + ITN enabled)"
+        }
+        return "FluidAudio available (ASR + VAD + diarization enabled; ITN library not linked)"
         #else
         return "FluidAudio adapter seam ready (package not linked in this prototype build)"
         #endif
@@ -26,7 +29,9 @@ enum FluidAudioIntegrationProbe {
         [
             AsrManager.self,
             VadManager.self,
-            OfflineDiarizerManager.self
+            OfflineDiarizerManager.self,
+            SortformerDiarizer.self,
+            LSEENDDiarizer.self
         ]
     }
     #endif
@@ -43,17 +48,6 @@ actor FluidAudioTranscriptionService: TranscriptionService {
 
         func transcribe(_ url: URL, source: AudioSource) async throws -> ASRResult {
             try await manager.transcribe(url, source: source)
-        }
-
-        func configureVocabularyBoosting(
-            vocabulary: CustomVocabularyContext,
-            ctcModels: CtcModels
-        ) async throws {
-            try await manager.configureVocabularyBoosting(vocabulary: vocabulary, ctcModels: ctcModels)
-        }
-
-        func disableVocabularyBoosting() {
-            manager.disableVocabularyBoosting()
         }
     }
 
@@ -82,9 +76,7 @@ actor FluidAudioTranscriptionService: TranscriptionService {
 
     private var managerBox: AsrManagerBox?
     private var vadManagerBox: VadManagerBox?
-    private var ctcModels: CtcModels?
     private var initialized = false
-    private var configuredVocabularySignature: String?
     private var vocabularyBoostingConfiguration = VocabularyBoostingConfiguration()
 
     func ensureModelsReady(
@@ -133,7 +125,7 @@ actor FluidAudioTranscriptionService: TranscriptionService {
             }
         )
         let manager = AsrManager(config: .default)
-        try await manager.initialize(models: models)
+        try await manager.loadModels(models)
         if let onProgress {
             await onProgress(
                 ProcessingUpdate(
@@ -176,7 +168,7 @@ actor FluidAudioTranscriptionService: TranscriptionService {
             throw LorreError.processingFailed("ASR manager is not initialized.")
         }
 
-        try await configureVocabularyBoostingIfNeeded(sessionTitle: sessionTitle, managerBox: managerBox)
+        _ = sessionTitle
         let result = try await managerBox.transcribe(url, source: fluidAudioSource(for: source))
         let speechWindows = await loadSpeechWindowsIfAvailable(from: url)
         let utterances = buildUtterances(from: result, speechWindows: speechWindows)
@@ -195,40 +187,6 @@ actor FluidAudioTranscriptionService: TranscriptionService {
         )
     }
 
-    private func configureVocabularyBoostingIfNeeded(
-        sessionTitle: String,
-        managerBox: AsrManagerBox
-    ) async throws {
-        _ = sessionTitle
-        let config = vocabularyBoostingConfiguration
-        guard config.isEnabled else {
-            if configuredVocabularySignature != nil {
-                managerBox.disableVocabularyBoosting()
-                configuredVocabularySignature = nil
-            }
-            return
-        }
-
-        guard let context = vocabularyContext(fromSimpleFormat: config.simpleFormatTerms) else {
-            if configuredVocabularySignature != nil {
-                managerBox.disableVocabularyBoosting()
-                configuredVocabularySignature = nil
-            }
-            return
-        }
-
-        let signature = vocabularySignature(for: context)
-        guard signature != configuredVocabularySignature else { return }
-
-        if ctcModels == nil {
-            ctcModels = try await CtcModels.downloadAndLoad(variant: .ctc110m)
-        }
-        guard let ctcModels else { return }
-
-        try await managerBox.configureVocabularyBoosting(vocabulary: context, ctcModels: ctcModels)
-        configuredVocabularySignature = signature
-    }
-
     private func fluidAudioSource(for source: RecordingSource) -> AudioSource {
         switch source {
         case .microphone:
@@ -236,74 +194,6 @@ actor FluidAudioTranscriptionService: TranscriptionService {
         case .systemAudio, .microphoneAndSystemAudio:
             return .system
         }
-    }
-
-    private func vocabularySignature(for context: CustomVocabularyContext) -> String {
-        context.terms
-            .map { term in
-                let aliasPart = (term.aliases ?? []).map { $0.lowercased() }.sorted().joined(separator: ",")
-                return "\(term.text.lowercased()):\(aliasPart)"
-            }
-            .sorted()
-            .joined(separator: "|")
-    }
-
-    private func vocabularyContext(fromSimpleFormat rawText: String) -> CustomVocabularyContext? {
-        let trimmedInput = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedInput.isEmpty else { return nil }
-
-        var seen = Set<String>()
-        var terms: [CustomVocabularyTerm] = []
-
-        for line in trimmedInput.split(whereSeparator: { $0.isNewline }) {
-            let rawLine = String(line).trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !rawLine.isEmpty, !rawLine.hasPrefix("#") else { continue }
-
-            let canonicalRaw: String
-            let aliasesRaw: [String]
-            if let colonIndex = rawLine.firstIndex(of: ":") {
-                canonicalRaw = String(rawLine[..<colonIndex]).trimmingCharacters(in: .whitespacesAndNewlines)
-                let aliasSection = String(rawLine[rawLine.index(after: colonIndex)...])
-                aliasesRaw = aliasSection
-                    .split(separator: ",")
-                    .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
-                    .filter { !$0.isEmpty }
-            } else {
-                canonicalRaw = rawLine
-                aliasesRaw = []
-            }
-
-            let canonical = sanitizeVocabularyPhrase(canonicalRaw)
-            guard canonical.count >= 3 else { continue }
-
-            let normalizedKey = canonical.lowercased()
-            guard !seen.contains(normalizedKey) else { continue }
-            seen.insert(normalizedKey)
-
-            let aliases = aliasesRaw
-                .map(sanitizeVocabularyPhrase)
-                .filter { !$0.isEmpty && $0.caseInsensitiveCompare(canonical) != .orderedSame }
-
-            terms.append(
-                CustomVocabularyTerm(
-                    text: canonical,
-                    weight: nil, // Let FluidAudio defaults tune CBW unless user explicitly needs stronger biasing.
-                    aliases: aliases.isEmpty ? nil : aliases
-                )
-            )
-        }
-
-        guard !terms.isEmpty else { return nil }
-        return CustomVocabularyContext(terms: terms)
-    }
-
-    private func sanitizeVocabularyPhrase(_ text: String) -> String {
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return "" }
-        let cleanedScalars = trimmed.unicodeScalars.filter { scalar in
-            !CharacterSet.controlCharacters.contains(scalar)
-        }
-        return String(String.UnicodeScalarView(cleanedScalars)).trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private func loadSpeechWindowsIfAvailable(from url: URL) async -> [SpeechWindow]? {
@@ -652,7 +542,7 @@ actor FluidAudioTranscriptionService: TranscriptionService {
     }
 }
 
-actor FluidAudioOfflineDiarizationService: SpeakerDiarizationService {
+actor FluidAudioDiarizationService: SpeakerDiarizationService {
     private final class OfflineDiarizerManagerBox: @unchecked Sendable {
         let manager: OfflineDiarizerManager
 
@@ -673,12 +563,18 @@ actor FluidAudioOfflineDiarizationService: SpeakerDiarizationService {
     }
 
     private let enrollmentService: any SpeakerEnrollmentService
-    private var managerBox: OfflineDiarizerManagerBox?
-    private var prepared = false
-    private var preparedSpeakerHint: DiarizationSpeakerCountHint = .auto
+    private var diarizationEngine: DiarizationEngine = .offlineVbx
+    private var offlineManagerBox: OfflineDiarizerManagerBox?
+    private var offlinePreparedSpeakerHint: DiarizationSpeakerCountHint = .auto
+    private var sortformerModels: SortformerModels?
+    private var sortformerDiarizer: SortformerDiarizer?
+    private var lsEendDescriptor: LSEENDModelDescriptor?
+    private var lsEendDiarizer: LSEENDDiarizer?
     private var knownSpeakers: [KnownSpeaker] = []
     private let representativeAudioLimitSeconds: Double = 10.0
     private let knownSpeakerMatchThreshold: Float = 0.36
+    private static let diarizationInputSampleRate = 16_000.0
+    private static let sortformerConfig = SortformerConfig.balancedV2_1
 
     init(enrollmentService: any SpeakerEnrollmentService) {
         self.enrollmentService = enrollmentService
@@ -712,19 +608,30 @@ actor FluidAudioOfflineDiarizationService: SpeakerDiarizationService {
     func ensureModelsReady(
         onProgress: (@Sendable (ProcessingUpdate) async -> Void)? = nil
     ) async throws {
-        try await ensureModelsReady(expectedSpeakers: .auto, onProgress: onProgress)
+        switch diarizationEngine {
+        case .offlineVbx:
+            try await ensureOfflineModelsReady(expectedSpeakers: .auto, onProgress: onProgress)
+        case .sortformer:
+            try await ensureSortformerPrepared(onProgress: onProgress)
+        case .lsEend:
+            try await ensureLSEENDPrepared(onProgress: onProgress)
+        }
     }
 
     func setKnownSpeakers(_ speakers: [KnownSpeaker]) async {
         knownSpeakers = speakers.sorted { $0.id < $1.id }
     }
 
-    private func ensureModelsReady(
+    func setDiarizationEngine(_ engine: DiarizationEngine) async {
+        diarizationEngine = engine
+    }
+
+    private func ensureOfflineModelsReady(
         expectedSpeakers: DiarizationSpeakerCountHint,
         onProgress: (@Sendable (ProcessingUpdate) async -> Void)? = nil
     ) async throws {
         let normalizedHint = expectedSpeakers.normalized()
-        if prepared, normalizedHint == preparedSpeakerHint {
+        if offlineManagerBox != nil, normalizedHint == offlinePreparedSpeakerHint {
             if let onProgress {
                 await onProgress(
                     FluidAudioProgressSupport.readyUpdate(
@@ -785,9 +692,8 @@ actor FluidAudioOfflineDiarizationService: SpeakerDiarizationService {
         } catch {
             throw error
         }
-        self.managerBox = OfflineDiarizerManagerBox(manager: manager)
-        self.prepared = true
-        self.preparedSpeakerHint = normalizedHint
+        self.offlineManagerBox = OfflineDiarizerManagerBox(manager: manager)
+        self.offlinePreparedSpeakerHint = normalizedHint
         if let onProgress {
             await onProgress(
                 FluidAudioProgressSupport.readyUpdate(
@@ -800,21 +706,173 @@ actor FluidAudioOfflineDiarizationService: SpeakerDiarizationService {
         }
     }
 
+    private func ensureSortformerPrepared(
+        onProgress: (@Sendable (ProcessingUpdate) async -> Void)? = nil
+    ) async throws {
+        if sortformerDiarizer != nil {
+            if let onProgress {
+                await onProgress(
+                    FluidAudioProgressSupport.readyUpdate(
+                        phase: .preparing,
+                        component: .diarization,
+                        label: "Diarization ready",
+                        detail: "Sortformer diarization is already prepared."
+                    )
+                )
+            }
+            return
+        }
+
+        if let onProgress {
+            await onProgress(
+                ProcessingUpdate(
+                    phase: .preparing,
+                    component: .diarization,
+                    label: "Preparing diarization models",
+                    detail: "Checking Sortformer diarization models…",
+                    fraction: 0.01
+                )
+            )
+        }
+
+        if sortformerModels == nil {
+            sortformerModels = try await SortformerModels.loadFromHuggingFace(
+                config: Self.sortformerConfig,
+                progressHandler: { progress in
+                    guard let onProgress else { return }
+                    let update = FluidAudioProgressSupport.makeUpdate(
+                        phase: .preparing,
+                        component: .diarization,
+                        label: "Preparing diarization models",
+                        progress: progress
+                    )
+                    Task {
+                        await onProgress(update)
+                    }
+                }
+            )
+        }
+
+        guard let sortformerModels else {
+            throw LorreError.processingFailed("Sortformer diarization models are unavailable.")
+        }
+
+        let diarizer = SortformerDiarizer(config: Self.sortformerConfig)
+        diarizer.initialize(models: sortformerModels)
+        sortformerDiarizer = diarizer
+
+        if let onProgress {
+            await onProgress(
+                FluidAudioProgressSupport.readyUpdate(
+                    phase: .preparing,
+                    component: .diarization,
+                    label: "Diarization ready",
+                    detail: "Sortformer diarization models are loaded."
+                )
+            )
+        }
+    }
+
+    private func ensureLSEENDPrepared(
+        onProgress: (@Sendable (ProcessingUpdate) async -> Void)? = nil
+    ) async throws {
+        if lsEendDiarizer != nil {
+            if let onProgress {
+                await onProgress(
+                    FluidAudioProgressSupport.readyUpdate(
+                        phase: .preparing,
+                        component: .diarization,
+                        label: "Diarization ready",
+                        detail: "LS-EEND diarization is already prepared."
+                    )
+                )
+            }
+            return
+        }
+
+        if let onProgress {
+            await onProgress(
+                ProcessingUpdate(
+                    phase: .preparing,
+                    component: .diarization,
+                    label: "Preparing diarization models",
+                    detail: "Checking LS-EEND diarization models…",
+                    fraction: 0.01
+                )
+            )
+        }
+
+        if lsEendDescriptor == nil {
+            lsEendDescriptor = try await LSEENDModelDescriptor.loadFromHuggingFace(
+                variant: .dihard3,
+                progressHandler: { progress in
+                    guard let onProgress else { return }
+                    let update = FluidAudioProgressSupport.makeUpdate(
+                        phase: .preparing,
+                        component: .diarization,
+                        label: "Preparing diarization models",
+                        progress: progress
+                    )
+                    Task {
+                        await onProgress(update)
+                    }
+                }
+            )
+        }
+
+        guard let lsEendDescriptor else {
+            throw LorreError.processingFailed("LS-EEND diarization models are unavailable.")
+        }
+
+        let diarizer = LSEENDDiarizer()
+        try diarizer.initialize(descriptor: lsEendDescriptor)
+        lsEendDiarizer = diarizer
+
+        if let onProgress {
+            await onProgress(
+                FluidAudioProgressSupport.readyUpdate(
+                    phase: .preparing,
+                    component: .diarization,
+                    label: "Diarization ready",
+                    detail: "LS-EEND diarization models are loaded."
+                )
+            )
+        }
+    }
+
     func diarize(
         url: URL,
         expectedDurationSeconds: Double?,
         expectedSpeakers: DiarizationSpeakerCountHint
     ) async throws -> DiarizationResult? {
         _ = expectedDurationSeconds
-        try await ensureModelsReady(expectedSpeakers: expectedSpeakers, onProgress: nil)
-        guard let managerBox else {
-            throw LorreError.processingFailed("Diarizer is not initialized.")
+        let audioData = try AudioConverter().resampleAudioFile(url)
+        let spans: [DiarizationSpan]
+        switch diarizationEngine {
+        case .offlineVbx:
+            spans = try await diarizeOffline(audioData: audioData, expectedSpeakers: expectedSpeakers)
+        case .sortformer:
+            spans = try await diarizeSortformer(audioData: audioData)
+        case .lsEend:
+            spans = try await diarizeLSEEND(audioData: audioData)
         }
 
-        let audioData = try AudioConverter().resampleAudioFile(url)
-        let diarizedSpans = try await managerBox.diarizeSpans(audio: audioData)
+        guard !spans.isEmpty else { return nil }
+        let relabeled = try await relabelKnownSpeakers(in: spans, audioData: audioData)
+        return DiarizationResult(spans: relabeled.spans, speakerProfiles: relabeled.profiles)
+    }
 
-        let spans = diarizedSpans.compactMap { segment -> DiarizationSpan? in
+    private func diarizeOffline(
+        audioData: [Float],
+        expectedSpeakers: DiarizationSpeakerCountHint
+    ) async throws -> [DiarizationSpan] {
+        try await ensureOfflineModelsReady(expectedSpeakers: expectedSpeakers, onProgress: nil)
+        guard let offlineManagerBox else {
+            throw LorreError.processingFailed("Offline diarizer is not initialized.")
+        }
+
+        let diarizedSpans = try await offlineManagerBox.diarizeSpans(audio: audioData)
+        return diarizedSpans.compactMap { segment -> DiarizationSpan? in
             let start = segment.start
             let end = segment.end
             guard end > start else { return nil }
@@ -829,10 +887,40 @@ actor FluidAudioOfflineDiarizationService: SpeakerDiarizationService {
                 sourceSpeakerId: sourceSpeakerID
             )
         }
+    }
 
-        guard !spans.isEmpty else { return nil }
-        let relabeled = try await relabelKnownSpeakers(in: spans, audioData: audioData)
-        return DiarizationResult(spans: relabeled.spans, speakerProfiles: relabeled.profiles)
+    private func diarizeSortformer(audioData: [Float]) async throws -> [DiarizationSpan] {
+        try await ensureSortformerPrepared(onProgress: nil)
+        guard let sortformerDiarizer else {
+            throw LorreError.processingFailed("Sortformer diarizer is not initialized.")
+        }
+
+        sortformerDiarizer.reset()
+        let timeline = try sortformerDiarizer.processComplete(
+            audioData,
+            sourceSampleRate: Self.diarizationInputSampleRate,
+            keepingEnrolledSpeakers: false,
+            finalizeOnCompletion: true,
+            progressCallback: nil
+        )
+        return diarizerSpans(from: timeline.speakers.values.flatMap(\.finalizedSegments))
+    }
+
+    private func diarizeLSEEND(audioData: [Float]) async throws -> [DiarizationSpan] {
+        try await ensureLSEENDPrepared(onProgress: nil)
+        guard let lsEendDiarizer else {
+            throw LorreError.processingFailed("LS-EEND diarizer is not initialized.")
+        }
+
+        lsEendDiarizer.reset()
+        let timeline = try lsEendDiarizer.processComplete(
+            audioData,
+            sourceSampleRate: Self.diarizationInputSampleRate,
+            keepingEnrolledSpeakers: false,
+            finalizeOnCompletion: true,
+            progressCallback: nil
+        )
+        return diarizerSpans(from: timeline.speakers.values.flatMap(\.finalizedSegments))
     }
 
     private func normalizedClusterLabel(from rawSpeakerID: String) -> String {
@@ -843,6 +931,31 @@ actor FluidAudioOfflineDiarizationService: SpeakerDiarizationService {
             return "S\(max(1, numeric + 1))"
         }
         return "S\(trimmed)"
+    }
+
+    private func diarizerSpans(from segments: [DiarizerSegment]) -> [DiarizationSpan] {
+        segments
+            .sorted { lhs, rhs in
+                if lhs.startFrame == rhs.startFrame {
+                    if lhs.endFrame == rhs.endFrame {
+                        return lhs.speakerIndex < rhs.speakerIndex
+                    }
+                    return lhs.endFrame < rhs.endFrame
+                }
+                return lhs.startFrame < rhs.startFrame
+            }
+            .compactMap { segment -> DiarizationSpan? in
+                let startMs = max(0, Int((Double(segment.startTime) * 1000.0).rounded()))
+                let endMs = max(startMs + 1, Int((Double(segment.endTime) * 1000.0).rounded()))
+                guard endMs > startMs else { return nil }
+                let sourceSpeakerID = "S\(segment.speakerIndex + 1)"
+                return DiarizationSpan(
+                    startMs: startMs,
+                    endMs: endMs,
+                    speakerId: sourceSpeakerID,
+                    sourceSpeakerId: sourceSpeakerID
+                )
+            }
     }
 
     private func relabelKnownSpeakers(

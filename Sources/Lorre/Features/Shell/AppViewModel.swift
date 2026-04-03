@@ -111,6 +111,7 @@ final class AppViewModel: ObservableObject {
     @Published private(set) var modelPreparationProgress: Double?
     @Published var modelRegistryCustomBaseURL: String = ""
     @Published private(set) var isSpeakerDiarizationEnabled: Bool = true
+    @Published private(set) var diarizationEngine: DiarizationEngine = .offlineVbx
     @Published private(set) var diarizationExpectedSpeakerCountHint: DiarizationSpeakerCountHint = .auto
     @Published private(set) var isDiarizationDebugExportEnabled: Bool = false
     @Published private(set) var isVocabularyBoostingEnabled: Bool = false
@@ -1148,6 +1149,7 @@ final class AppViewModel: ObservableObject {
                 await MainActor.run {
                     self.applyCurrentRuntimeConfiguration()
                 }
+                await self.dependencies.diarization.setDiarizationEngine(await MainActor.run { self.diarizationEngine })
                 await self.pushKnownSpeakersToServices()
                 let includeDiarization = await MainActor.run { self.isSpeakerDiarizationEnabled }
                 try await self.dependencies.processingCoordinator.prepareModels(includeDiarization: includeDiarization) { [weak self] update in
@@ -1328,6 +1330,36 @@ final class AppViewModel: ObservableObject {
                 await MainActor.run {
                     self.diarizationExpectedSpeakerCountHint = previous
                     self.presentError(error, defaultTitle: "Could not save diarization speaker hint")
+                }
+            }
+        }
+    }
+
+    func setDiarizationEngine(_ engine: DiarizationEngine) {
+        guard diarizationEngine != engine else { return }
+        let previous = diarizationEngine
+        diarizationEngine = engine
+
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                await self.dependencies.diarization.setDiarizationEngine(engine)
+                _ = try await self.dependencies.settings.setDiarizationEngine(engine)
+                await self.dependencies.metrics.log(
+                    name: "diarization_engine_changed",
+                    attributes: ["engine": engine.rawValue]
+                )
+                await MainActor.run {
+                    self.banner = AppBanner(
+                        kind: .info,
+                        title: "Diarization engine set to \(engine.detailLabel)",
+                        message: engine.settingsSummary
+                    )
+                }
+            } catch {
+                await MainActor.run {
+                    self.diarizationEngine = previous
+                    self.presentError(error, defaultTitle: "Could not save diarization engine")
                 }
             }
         }
@@ -1693,6 +1725,7 @@ final class AppViewModel: ObservableObject {
                 await MainActor.run {
                     self.applyCurrentRuntimeConfiguration()
                 }
+                await self.dependencies.diarization.setDiarizationEngine(await MainActor.run { self.diarizationEngine })
                 await self.pushKnownSpeakersToServices()
                 let deleteAudioAfterTranscription = self.isDeleteAudioAfterTranscriptionEnabled
                 let transcript = try await self.dependencies.processingCoordinator.process(
@@ -2252,7 +2285,9 @@ final class AppViewModel: ObservableObject {
             let restoredLiveEnabled = settings.isLiveTranscriptionEnabled && restoredLiveSupported
             let restoredVocabularyBoosting = settings.vocabularyBoosting
             let restoredModelRegistry = settings.modelRegistryConfiguration
+            let restoredDiarizationEngine = settings.diarizationEngine
             FluidAudioRuntimeConfiguration.apply(modelRegistry: restoredModelRegistry)
+            await dependencies.diarization.setDiarizationEngine(restoredDiarizationEngine)
             await dependencies.recorder.setLiveTranscriptionEnabled(restoredLiveEnabled)
             await dependencies.transcription.setVocabularyBoostingConfiguration(restoredVocabularyBoosting)
             await MainActor.run {
@@ -2260,6 +2295,7 @@ final class AppViewModel: ObservableObject {
                 self.selectedRecordingSource = restoredRecordingSource
                 self.isLiveTranscriptionSupported = restoredLiveSupported
                 self.isSpeakerDiarizationEnabled = settings.isSpeakerDiarizationEnabled
+                self.diarizationEngine = restoredDiarizationEngine
                 self.diarizationExpectedSpeakerCountHint = settings.diarizationExpectedSpeakerCountHint.normalized()
                 self.isDiarizationDebugExportEnabled = settings.isDiarizationDebugExportEnabled
                 self.isVocabularyBoostingEnabled = restoredVocabularyBoosting.isEnabled

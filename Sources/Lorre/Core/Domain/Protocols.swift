@@ -41,6 +41,7 @@ protocol SpeakerDiarizationService: Sendable {
         onProgress: (@Sendable (ProcessingUpdate) async -> Void)?
     ) async throws
     func setKnownSpeakers(_ speakers: [KnownSpeaker]) async
+    func setDiarizationEngine(_ engine: DiarizationEngine) async
     func diarize(
         url: URL,
         expectedDurationSeconds: Double?,

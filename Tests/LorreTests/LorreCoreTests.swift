@@ -308,7 +308,7 @@ final class LorreCoreTests: XCTestCase {
 
         let loaded = try await store.load()
         XCTAssertEqual(loaded.modelPreparation, snapshot)
-        XCTAssertEqual(loaded.schemaVersion, 1)
+        XCTAssertEqual(loaded.schemaVersion, 2)
     }
 
     func testAppSettingsStorePersistsModelRegistryConfiguration() async throws {
@@ -401,6 +401,7 @@ final class LorreCoreTests: XCTestCase {
         let settings = try await store.load()
         XCTAssertEqual(settings.folders.count, 1)
         XCTAssertTrue(settings.isSpeakerDiarizationEnabled)
+        XCTAssertEqual(settings.diarizationEngine, .offlineVbx)
         XCTAssertEqual(settings.diarizationExpectedSpeakerCountHint, .auto)
         XCTAssertFalse(settings.isDiarizationDebugExportEnabled)
         XCTAssertTrue(settings.modelRegistryConfiguration.isDefault)
@@ -606,6 +607,23 @@ final class LorreCoreTests: XCTestCase {
         XCTAssertTrue(loaded.isDiarizationDebugExportEnabled)
     }
 
+    func testAppSettingsStorePersistsDiarizationEngine() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("LorreDiarizationEngineSettingTests-\(UUID().uuidString)", isDirectory: true)
+        let store = AppSettingsStore(baseURL: root)
+
+        let initial = try await store.load()
+        XCTAssertEqual(initial.diarizationEngine, .offlineVbx)
+
+        _ = try await store.setDiarizationEngine(.sortformer)
+        let sortformer = try await store.load()
+        XCTAssertEqual(sortformer.diarizationEngine, .sortformer)
+
+        _ = try await store.setDiarizationEngine(.lsEend)
+        let lsEend = try await store.load()
+        XCTAssertEqual(lsEend.diarizationEngine, .lsEend)
+    }
+
     func testAppSettingsStorePersistsLiveTranscriptionToggle() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("LorreLiveTranscriptSettingTests-\(UUID().uuidString)", isDirectory: true)
@@ -664,6 +682,68 @@ final class LorreCoreTests: XCTestCase {
         let reloaded = try await store.load()
         XCTAssertTrue(reloaded.vocabularyBoosting.isEnabled)
         XCTAssertTrue(reloaded.vocabularyBoosting.simpleFormatTerms.contains("FluidAudio"))
+    }
+
+    func testTranscriptTextNormalizationSupportNormalizesSegmentTextPreservingMetadata() {
+        let sessionID = UUID()
+        let original = TranscriptDocument(
+            sessionId: sessionID,
+            sourceEngine: "TestEngine",
+            segments: [
+                TranscriptSegment(
+                    startMs: 0,
+                    endMs: 1200,
+                    text: "two hundred dollars",
+                    speakerId: "S1",
+                    sourceSpeakerId: "S1",
+                    confidence: 0.92
+                ),
+                TranscriptSegment(
+                    startMs: 1200,
+                    endMs: 2200,
+                    text: "plain text",
+                    speakerId: "S2",
+                    sourceSpeakerId: "S2",
+                    confidence: 0.88
+                )
+            ],
+            speakers: [.defaultProfile(id: "S1"), .defaultProfile(id: "S2")]
+        )
+
+        let normalized = TranscriptTextNormalizationSupport.normalize(original) { text in
+            switch text {
+            case "two hundred dollars":
+                return "$200"
+            default:
+                return text
+            }
+        }
+
+        XCTAssertEqual(normalized.sessionId, original.sessionId)
+        XCTAssertEqual(normalized.sourceEngine, original.sourceEngine)
+        XCTAssertEqual(normalized.segments[0].text, "$200")
+        XCTAssertEqual(normalized.segments[0].startMs, original.segments[0].startMs)
+        XCTAssertEqual(normalized.segments[0].endMs, original.segments[0].endMs)
+        XCTAssertEqual(normalized.segments[0].speakerId, original.segments[0].speakerId)
+        XCTAssertEqual(normalized.segments[0].confidence, original.segments[0].confidence)
+        XCTAssertEqual(normalized.segments[1].text, "plain text")
+    }
+
+    func testTranscriptTextNormalizationSupportIgnoresEmptyNormalizerOutput() {
+        let original = TranscriptDocument(
+            sessionId: UUID(),
+            sourceEngine: "TestEngine",
+            segments: [
+                TranscriptSegment(startMs: 0, endMs: 1000, text: "keep me", speakerId: "S1")
+            ],
+            speakers: [.defaultProfile(id: "S1")]
+        )
+
+        let normalized = TranscriptTextNormalizationSupport.normalize(original) { _ in
+            "   "
+        }
+
+        XCTAssertEqual(normalized, original)
     }
 
     func testProcessingCoordinatorWritesDiarizationDebugArtifactWhenEnabled() async throws {

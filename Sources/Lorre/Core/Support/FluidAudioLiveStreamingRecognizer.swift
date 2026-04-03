@@ -60,6 +60,7 @@ actor FluidAudioLiveStreamingRecognizer {
     private var preview = LiveTranscriptPreview()
     private var previewHandler: (@Sendable (LiveTranscriptPreview) -> Void)?
     private var isStreaming = false
+    private let punctuationCommitLayer = PunctuationCommitLayer(debounceTimeout: 1.8, commitOnTimeout: true)
 
     private var knownSpeakers: [KnownSpeaker] = []
     private var sortformerModels: SortformerModels?
@@ -127,6 +128,7 @@ actor FluidAudioLiveStreamingRecognizer {
         if let eouManager {
             await eouManager.reset()
         }
+        await punctuationCommitLayer.reset()
         emitPreview()
     }
 
@@ -185,11 +187,14 @@ actor FluidAudioLiveStreamingRecognizer {
 
         do {
             let finalChunk = try await eouManager.finish()
-            appendConfirmedUtterance(finalChunk, at: Date())
-            preview.partialText = ""
+            let trimmedFinalChunk = finalChunk.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmedFinalChunk.isEmpty {
+                _ = await punctuationCommitLayer.processPartialText(trimmedFinalChunk)
+            }
+            let update = await punctuationCommitLayer.processEOU()
+            applyCommitLayerUpdate(update, at: Date())
             preview.isFinalizing = false
             preview.errorMessage = nil
-            preview.updatedAt = Date()
             await eouManager.reset()
             if let vadManager {
                 vadStreamState = await vadManager.makeStreamState()
@@ -217,6 +222,7 @@ actor FluidAudioLiveStreamingRecognizer {
         if let eouManager {
             await eouManager.reset()
         }
+        await punctuationCommitLayer.reset()
         if let vadManager {
             vadStreamState = await vadManager.makeStreamState()
         } else {
@@ -397,7 +403,7 @@ actor FluidAudioLiveStreamingRecognizer {
                 )
             }
             sortformerModels = try await SortformerModels.loadFromHuggingFace(
-                config: .default,
+                config: Self.liveSortformerConfig,
                 progressHandler: { progress in
                     guard let onProgress else { return }
                     let update = FluidAudioProgressSupport.makeUpdate(
@@ -422,7 +428,7 @@ actor FluidAudioLiveStreamingRecognizer {
             return
         }
 
-        let diarizer = SortformerDiarizer(config: .default)
+        let diarizer = SortformerDiarizer(config: Self.liveSortformerConfig)
         diarizer.initialize(models: sortformerModels)
 
         let primingSamples = try await loadPrimingSamples()
@@ -456,7 +462,12 @@ actor FluidAudioLiveStreamingRecognizer {
                     )
                 )
             }
-            try diarizer.primeWithAudio(primingSample.samples)
+            _ = try diarizer.enrollSpeaker(
+                withAudio: primingSample.samples,
+                sourceSampleRate: nil,
+                named: primingSample.speaker.safeDisplayName,
+                overwritingAssignedSpeakerName: false
+            )
         }
 
         sortformerDiarizer = diarizer
@@ -486,19 +497,20 @@ actor FluidAudioLiveStreamingRecognizer {
         lastSpeakerHintLookupAt = nil
     }
 
-    private func handlePartialCallbackText(_ text: String) {
+    private func handlePartialCallbackText(_ text: String) async {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
-            if preview.updatedAt == nil {
-                preview.updatedAt = Date()
-                emitPreview()
-            }
+            preview.partialText = ""
+            preview.isFinalizing = false
+            preview.errorMessage = nil
+            preview.updatedAt = Date()
+            emitPreview()
             return
         }
-        preview.partialText = trimmed
+        let update = await punctuationCommitLayer.processPartialText(trimmed)
+        applyCommitLayerUpdate(update, at: update.timestamp)
         preview.isFinalizing = false
         preview.errorMessage = nil
-        preview.updatedAt = Date()
         emitPreview()
     }
 
@@ -550,7 +562,7 @@ actor FluidAudioLiveStreamingRecognizer {
         guard let sortformerDiarizer, !knownSpeakers.isEmpty else { return }
         guard !samples.isEmpty else { return }
 
-        let result = try sortformerDiarizer.processSamples(samples)
+        let result = try sortformerDiarizer.process(samples: samples, sourceSampleRate: nil)
         guard let strongest = strongestSpeaker(from: result) else {
             clearSpeakerHintIfNeeded()
             activeSpeakerSlot = nil
@@ -599,26 +611,31 @@ actor FluidAudioLiveStreamingRecognizer {
         applySpeakerHint(assignment, probability: strongest.probability)
     }
 
-    private func strongestSpeaker(from chunk: SortformerChunkResult?) -> (slot: Int, probability: Float)? {
-        guard let chunk else { return nil }
+    private func strongestSpeaker(from update: DiarizerTimelineUpdate?) -> (slot: Int, probability: Float)? {
+        guard let update else { return nil }
 
-        let probabilities: [Float]
-        if chunk.tentativeFrameCount > 0 {
-            let start = max(0, chunk.tentativePredictions.count - 4)
-            probabilities = Array(chunk.tentativePredictions[start...])
-        } else if chunk.frameCount > 0 {
-            let start = max(0, chunk.speakerPredictions.count - 4)
-            probabilities = Array(chunk.speakerPredictions[start...])
+        let candidate: DiarizerSegment?
+        if !update.tentativeSegments.isEmpty {
+            candidate = update.tentativeSegments.max { lhs, rhs in
+                if lhs.endFrame == rhs.endFrame {
+                    return lhs.confidence < rhs.confidence
+                }
+                return lhs.endFrame < rhs.endFrame
+            }
         } else {
-            return nil
+            candidate = update.finalizedSegments.max { lhs, rhs in
+                if lhs.endFrame == rhs.endFrame {
+                    return lhs.confidence < rhs.confidence
+                }
+                return lhs.endFrame < rhs.endFrame
+            }
         }
 
-        guard probabilities.count == 4 else { return nil }
-        guard let maxEntry = probabilities.enumerated().max(by: { $0.element < $1.element }) else {
+        guard let candidate else {
             return nil
         }
-        guard maxEntry.element >= liveSpeakerActivationThreshold else { return nil }
-        return (slot: maxEntry.offset, probability: maxEntry.element)
+        guard candidate.confidence >= liveSpeakerActivationThreshold else { return nil }
+        return (slot: candidate.speakerIndex, probability: candidate.confidence)
     }
 
     private func matchKnownSpeaker(for embedding: [Float]) -> (speaker: KnownSpeaker, distance: Float)? {
@@ -668,11 +685,14 @@ actor FluidAudioLiveStreamingRecognizer {
     private func finalizeDetectedUtterance(using eouManager: StreamingEouAsrManager) async throws {
         let text = try await eouManager.finish()
         let now = Date()
-        appendConfirmedUtterance(text, at: now)
-        preview.partialText = ""
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty {
+            _ = await punctuationCommitLayer.processPartialText(trimmed)
+        }
+        let update = await punctuationCommitLayer.processEOU()
+        applyCommitLayerUpdate(update, at: now)
         preview.isFinalizing = false
         preview.errorMessage = nil
-        preview.updatedAt = now
         emitPreview()
         await eouManager.reset()
         gateSpeechSeenForCurrentUtterance = false
@@ -681,21 +701,9 @@ actor FluidAudioLiveStreamingRecognizer {
         lastSpeakerHintLookupAt = nil
     }
 
-    private func appendConfirmedUtterance(_ text: String, at timestamp: Date) {
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else {
-            preview.updatedAt = timestamp
-            return
-        }
-
-        let existing = preview.confirmedText.trimmingCharacters(in: .whitespacesAndNewlines)
-        if existing.isEmpty {
-            preview.confirmedText = trimmed
-        } else if existing != trimmed && !existing.hasSuffix(trimmed) {
-            preview.confirmedText = "\(existing) \(trimmed)"
-        } else {
-            preview.confirmedText = existing
-        }
+    private func applyCommitLayerUpdate(_ update: CommitLayerUpdate, at timestamp: Date) {
+        preview.confirmedText = update.committedText.trimmingCharacters(in: .whitespacesAndNewlines)
+        preview.partialText = update.ghostText.trimmingCharacters(in: .whitespacesAndNewlines)
         preview.updatedAt = timestamp
     }
 
@@ -751,5 +759,6 @@ actor FluidAudioLiveStreamingRecognizer {
     private let speakerHintMinimumSamples = 16_000
     private let maxSpeakerHintWindowSamples = 16_000 * 6
     private let maxPrimingSamples = 16_000 * 12
+    private static let liveSortformerConfig = SortformerConfig.balancedV2_1
 }
 #endif

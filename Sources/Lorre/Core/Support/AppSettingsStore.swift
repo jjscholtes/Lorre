@@ -55,6 +55,15 @@ actor AppSettingsStore {
     }
 
     @discardableResult
+    func setDiarizationEngine(_ engine: DiarizationEngine) async throws -> AppSettings {
+        var settings = try await load()
+        settings.diarizationEngine = engine
+        settings.updatedAt = Date()
+        try save(settings)
+        return settings
+    }
+
+    @discardableResult
     func setDiarizationExpectedSpeakerCountHint(_ hint: DiarizationSpeakerCountHint) async throws -> AppSettings {
         var settings = try await load()
         settings.diarizationExpectedSpeakerCountHint = hint.normalized()
