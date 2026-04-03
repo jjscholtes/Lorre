@@ -15,10 +15,10 @@ enum FluidAudioIntegrationProbe {
 
     static var statusSummary: String {
         #if canImport(FluidAudio)
-        if TextNormalizer.shared.isNativeAvailable {
+        if TextNormalizationRuntimeSupport.prepare().isNativeAvailable {
             return "FluidAudio available (ASR + VAD + diarization + ITN enabled)"
         }
-        return "FluidAudio available (ASR + VAD + diarization enabled; ITN library not linked)"
+        return "FluidAudio available (ASR + VAD + diarization enabled; \(TextNormalizationRuntimeSupport.runtimeSummary.lowercased()))"
         #else
         return "FluidAudio adapter seam ready (package not linked in this prototype build)"
         #endif

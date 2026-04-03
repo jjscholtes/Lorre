@@ -27,6 +27,7 @@ struct AppDependencies {
         let modelPreparationComponentsSummary: String
 
         #if canImport(FluidAudio)
+        _ = TextNormalizationRuntimeSupport.prepare()
         let enrollmentService = FluidAudioSpeakerEnrollmentService()
         speakerEnrollmentService = enrollmentService
         transcriptionService = FluidAudioTranscriptionService()

@@ -133,7 +133,7 @@ struct MockSpeakerDiarizationService: SpeakerDiarizationService {
 enum TranscriptTextNormalizationSupport {
     static func normalize(_ transcript: TranscriptDocument) -> TranscriptDocument {
         #if canImport(FluidAudio)
-        let normalizer = TextNormalizer.shared
+        let normalizer = TextNormalizationRuntimeSupport.prepare()
         guard normalizer.isNativeAvailable else { return transcript }
         return normalize(transcript, using: normalizer.normalizeSentence)
         #else

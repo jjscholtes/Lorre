@@ -227,6 +227,7 @@ final class LorreCoreTests: XCTestCase {
         XCTAssertTrue(transcript.segments[0].text.localizedCaseInsensitiveContains("actually no that is different"))
     }
 
+    @MainActor
     func testWorkStageRouteUsesSelectionInsteadOfRecordingMode() {
         let readySession = SessionManifest(
             id: UUID(uuidString: "AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA")!,
@@ -249,6 +250,7 @@ final class LorreCoreTests: XCTestCase {
         XCTAssertEqual(AppViewModel.makeWorkStageRoute(selectedSession: readySession), .transcript(readySession.id))
     }
 
+    @MainActor
     func testCuePlaybackPresentationMentionsActiveRecordingWhenArchiveAudioExists() {
         let presentation = AppViewModel.makeCuePlaybackPresentation(
             hasRetainedAudio: true,
@@ -261,6 +263,7 @@ final class LorreCoreTests: XCTestCase {
         XCTAssertEqual(presentation.iconName, "record.circle.fill")
     }
 
+    @MainActor
     func testCuePlaybackPresentationPrioritizesPrivacyModeOverRecordingState() {
         let presentation = AppViewModel.makeCuePlaybackPresentation(
             hasRetainedAudio: false,

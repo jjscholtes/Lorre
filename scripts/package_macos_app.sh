@@ -12,7 +12,9 @@ APP_BUNDLE="$DIST_DIR/${APP_NAME}.app"
 CONTENTS_DIR="$APP_BUNDLE/Contents"
 MACOS_DIR="$CONTENTS_DIR/MacOS"
 RESOURCES_DIR="$CONTENTS_DIR/Resources"
+FRAMEWORKS_DIR="$CONTENTS_DIR/Frameworks"
 ICON_PATH="$ROOT_DIR/Assets/Lorre.icns"
+TEXT_NORMALIZATION_LIBRARY="$ROOT_DIR/ThirdParty/NemoTextProcessing/macos/libnemo_text_processing.dylib"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -58,9 +60,13 @@ fi
 echo "Packaging app bundle..."
 rm -rf "$APP_BUNDLE"
 mkdir -p "$MACOS_DIR" "$RESOURCES_DIR"
+mkdir -p "$FRAMEWORKS_DIR"
 
 cp "$BIN_PATH" "$MACOS_DIR/$APP_NAME"
 cp "$ICON_PATH" "$RESOURCES_DIR/$APP_NAME.icns"
+if [[ -f "$TEXT_NORMALIZATION_LIBRARY" ]]; then
+  cp "$TEXT_NORMALIZATION_LIBRARY" "$FRAMEWORKS_DIR/libnemo_text_processing.dylib"
+fi
 
 cat > "$CONTENTS_DIR/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
