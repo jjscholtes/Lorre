@@ -13,6 +13,7 @@ struct AppDependencies {
     let processingCoordinator: ProcessingCoordinator
     let metrics: LocalMetricsLogger
     let fluidAudioStatus: String
+    let runtimeCapabilities: RuntimeCapabilities
     let modelPreparationComponentsSummary: String
 
     static func live() -> AppDependencies {
@@ -24,6 +25,7 @@ struct AppDependencies {
         let diarizationService: any SpeakerDiarizationService
         let speakerEnrollmentService: any SpeakerEnrollmentService
         let fluidAudioStatus: String
+        let runtimeCapabilities: RuntimeCapabilities
         let modelPreparationComponentsSummary: String
 
         #if canImport(FluidAudio)
@@ -33,12 +35,14 @@ struct AppDependencies {
         transcriptionService = FluidAudioTranscriptionService()
         diarizationService = FluidAudioDiarizationService(enrollmentService: enrollmentService)
         fluidAudioStatus = FluidAudioIntegrationProbe.statusSummary
+        runtimeCapabilities = FluidAudioIntegrationProbe.runtimeCapabilities
         modelPreparationComponentsSummary = "ASR v3 • Silero VAD • Speaker enrollment • VBx / Sortformer / LS-EEND diarizers • Live diarizer"
         #else
         speakerEnrollmentService = FluidAudioSpeakerEnrollmentService()
         transcriptionService = MockTranscriptionService()
         diarizationService = MockSpeakerDiarizationService()
         fluidAudioStatus = "FluidAudio unavailable in this build; using mock ASR + diarization"
+        runtimeCapabilities = .mock
         modelPreparationComponentsSummary = "Mock ASR • Mock diarizer"
         #endif
 
@@ -73,6 +77,7 @@ struct AppDependencies {
             processingCoordinator: coordinator,
             metrics: LocalMetricsLogger(),
             fluidAudioStatus: fluidAudioStatus,
+            runtimeCapabilities: runtimeCapabilities,
             modelPreparationComponentsSummary: modelPreparationComponentsSummary
         )
     }

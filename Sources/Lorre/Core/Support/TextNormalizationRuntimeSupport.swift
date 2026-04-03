@@ -7,6 +7,21 @@ import Darwin
 
 enum TextNormalizationRuntimeSupport {
     #if canImport(FluidAudio)
+    struct RuntimeState: Equatable, Sendable {
+        let isNativeAvailable: Bool
+        let loadedLibraryPath: String?
+
+        var summary: String {
+            guard isNativeAvailable else {
+                return "ITN library unavailable"
+            }
+            if let loadedLibraryPath {
+                return "ITN enabled (\(URL(fileURLWithPath: loadedLibraryPath).lastPathComponent) loaded at runtime)"
+            }
+            return "ITN enabled"
+        }
+    }
+
     private static let lock = NSLock()
     private static let libraryName = "libnemo_text_processing.dylib"
     nonisolated(unsafe) private static var didAttemptLibraryLoad = false
@@ -26,14 +41,15 @@ enum TextNormalizationRuntimeSupport {
     }
 
     static var runtimeSummary: String {
+        runtimeState.summary
+    }
+
+    static var runtimeState: RuntimeState {
         let normalizer = prepare()
-        guard normalizer.isNativeAvailable else {
-            return "ITN library unavailable"
-        }
-        if let loadedLibraryPath {
-            return "ITN enabled (\(URL(fileURLWithPath: loadedLibraryPath).lastPathComponent) loaded at runtime)"
-        }
-        return "ITN enabled"
+        return RuntimeState(
+            isNativeAvailable: normalizer.isNativeAvailable,
+            loadedLibraryPath: loadedLibraryPath
+        )
     }
 
     private static func loadBundledLibraryIfPresent() {
@@ -77,8 +93,21 @@ enum TextNormalizationRuntimeSupport {
         return urls
     }
     #else
+    struct RuntimeState: Equatable, Sendable {
+        let isNativeAvailable: Bool
+        let loadedLibraryPath: String?
+
+        var summary: String {
+            "ITN unavailable"
+        }
+    }
+
     static var runtimeSummary: String {
-        "ITN unavailable"
+        runtimeState.summary
+    }
+
+    static var runtimeState: RuntimeState {
+        RuntimeState(isNativeAvailable: false, loadedLibraryPath: nil)
     }
     #endif
 }

@@ -5,66 +5,6 @@ import AppKit
 #endif
 import UniformTypeIdentifiers
 
-enum ShelfFilter: String, CaseIterable, Identifiable {
-    case all
-    case processing
-    case ready
-    case errors
-
-    var id: String { rawValue }
-
-    var title: String {
-        switch self {
-        case .all: "All Sessions"
-        case .processing: "Processing"
-        case .ready: "Ready"
-        case .errors: "Errors"
-        }
-    }
-
-    var iconName: String {
-        switch self {
-        case .all: "tray.full"
-        case .processing: "gearshape.2"
-        case .ready: "doc.text"
-        case .errors: "exclamationmark.triangle"
-        }
-    }
-}
-
-struct AppBanner: Identifiable {
-    enum Kind {
-        case info
-        case success
-        case error
-    }
-
-    let id = UUID()
-    let kind: Kind
-    let title: String
-    let message: String
-}
-
-enum ModelPreparationState: Equatable {
-    case unknown
-    case idle
-    case preparing
-    case ready
-    case error(String)
-}
-
-enum WorkStageRoute: Equatable {
-    case recorder
-    case processing(UUID)
-    case transcript(UUID)
-}
-
-struct CuePlaybackPresentation: Equatable {
-    let statusLabel: String
-    let description: String
-    let iconName: String
-}
-
 @MainActor
 final class AppViewModel: ObservableObject {
     static let unfiledFolderSelectionID = "__UNFILED__"
@@ -105,6 +45,7 @@ final class AppViewModel: ObservableObject {
     @Published private(set) var isPlaybackWaveformLoading = false
     @Published private(set) var activePlaybackSegmentID: UUID?
     @Published private(set) var fluidAudioStatus: String
+    @Published private(set) var runtimeCapabilities: RuntimeCapabilities
     @Published private(set) var modelPreparationState: ModelPreparationState = .unknown
     @Published private(set) var modelPreparationStatusLine: String = "Models not prepared yet"
     @Published private(set) var modelPreparationDetailLine: String = "Models may download on first transcription."
@@ -148,9 +89,10 @@ final class AppViewModel: ObservableObject {
     init(dependencies: AppDependencies) {
         self.dependencies = dependencies
         self.fluidAudioStatus = dependencies.fluidAudioStatus
+        self.runtimeCapabilities = dependencies.runtimeCapabilities
         self.playbackRate = dependencies.playback.playbackRate
         self.modelPreparationState = .idle
-        if dependencies.fluidAudioStatus.lowercased().contains("mock") {
+        if dependencies.runtimeCapabilities.usesMockPipeline {
             self.modelPreparationStatusLine = "Mock processing pipeline active"
             self.modelPreparationDetailLine = "Model preparation completes instantly in mock mode."
         }
@@ -1397,6 +1339,14 @@ final class AppViewModel: ObservableObject {
     }
 
     func setVocabularyBoostingEnabled(_ isEnabled: Bool) {
+        guard isVocabularyBoostingAvailable else {
+            banner = AppBanner(
+                kind: .info,
+                title: "Vocabulary boosting unavailable",
+                message: "The current FluidAudio SDK path does not expose batch vocabulary boosting. Your saved term list is preserved, but it is inactive in this build."
+            )
+            return
+        }
         guard isVocabularyBoostingEnabled != isEnabled else { return }
         let previous = isVocabularyBoostingEnabled
         isVocabularyBoostingEnabled = isEnabled
@@ -1446,11 +1396,15 @@ final class AppViewModel: ObservableObject {
                 )
                 await MainActor.run {
                     self.banner = AppBanner(
-                        kind: .success,
-                        title: "Vocabulary saved",
-                        message: lineCount == 0
-                            ? "No custom terms configured. Batch transcription will use base Parakeet decoding unless you add terms."
-                            : "Saved \(lineCount) vocabulary entr\(lineCount == 1 ? "y" : "ies"). Use `term: alias1, alias2` for common variants."
+                        kind: self.isVocabularyBoostingAvailable ? .success : .info,
+                        title: self.isVocabularyBoostingAvailable ? "Vocabulary saved" : "Vocabulary saved for later",
+                        message: self.isVocabularyBoostingAvailable
+                            ? (
+                                lineCount == 0
+                                    ? "No custom terms configured. Batch transcription will use base Parakeet decoding unless you add terms."
+                                    : "Saved \(lineCount) vocabulary entr\(lineCount == 1 ? "y" : "ies"). Use `term: alias1, alias2` for common variants."
+                            )
+                            : "Saved \(lineCount) term entr\(lineCount == 1 ? "y" : "ies"), but the current FluidAudio SDK path cannot apply them during transcription yet."
                     )
                 }
             } catch {
@@ -2473,8 +2427,25 @@ final class AppViewModel: ObservableObject {
     }
 
     private var supportsAdvancedFluidAudioFeatures: Bool {
-        let normalized = fluidAudioStatus.lowercased()
-        return normalized.contains("available") && !normalized.contains("unavailable") && !normalized.contains("mock")
+        runtimeCapabilities.supportsSpeakerEnrollment
+    }
+
+    var isVocabularyBoostingAvailable: Bool {
+        runtimeCapabilities.supportsVocabularyBoosting
+    }
+
+    var isVocabularyBoostingEffectivelyEnabled: Bool {
+        isVocabularyBoostingAvailable && isVocabularyBoostingEnabled
+    }
+
+    var vocabularyBoostingSupportSummary: String {
+        if isVocabularyBoostingAvailable {
+            return isVocabularyBoostingEnabled
+                ? "Uses your custom word list to improve recognition."
+                : "Leave off unless you need better recognition for names or special terms."
+        }
+
+        return "Stored for later, but inactive right now. The current FluidAudio SDK path no longer exposes the old batch vocabulary boosting hook."
     }
 
     private func chooseKnownSpeakerSampleURL(title: String) -> URL? {

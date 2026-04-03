@@ -15,12 +15,30 @@ enum FluidAudioIntegrationProbe {
 
     static var statusSummary: String {
         #if canImport(FluidAudio)
-        if TextNormalizationRuntimeSupport.prepare().isNativeAvailable {
+        if runtimeCapabilities.supportsTextNormalization {
             return "FluidAudio available (ASR + VAD + diarization + ITN enabled)"
         }
         return "FluidAudio available (ASR + VAD + diarization enabled; \(TextNormalizationRuntimeSupport.runtimeSummary.lowercased()))"
         #else
         return "FluidAudio adapter seam ready (package not linked in this prototype build)"
+        #endif
+    }
+
+    static var runtimeCapabilities: RuntimeCapabilities {
+        #if canImport(FluidAudio)
+        let textNormalizationState = TextNormalizationRuntimeSupport.runtimeState
+        return RuntimeCapabilities(
+            pipeline: .fluidAudio,
+            supportsSpeechToText: true,
+            supportsVoiceActivityDetection: true,
+            supportsSpeakerDiarization: true,
+            supportsSpeakerEnrollment: true,
+            supportsLivePreview: true,
+            supportsTextNormalization: textNormalizationState.isNativeAvailable,
+            supportsVocabularyBoosting: false
+        )
+        #else
+        return .mock
         #endif
     }
 

@@ -51,11 +51,84 @@ actor AVFoundationRecorderService: RecorderService {
         private var lastMeterEmitUptime: TimeInterval = 0
         private let meterEmitIntervalSeconds: TimeInterval = 0.05
         #if canImport(FluidAudio)
+        private actor RecognitionBufferQueue {
+            private let maxBufferedBuffers: Int
+            private var pendingBuffers: [LiveTranscriptionPCMBufferBox] = []
+            private var suspendedConsumer: CheckedContinuation<LiveTranscriptionPCMBufferBox?, Never>?
+            private var drainContinuations: [CheckedContinuation<Void, Never>] = []
+            private var inFlightBufferCount = 0
+            private var isClosed = false
+
+            init(maxBufferedBuffers: Int) {
+                self.maxBufferedBuffers = maxBufferedBuffers
+            }
+
+            func enqueue(_ buffer: LiveTranscriptionPCMBufferBox) {
+                guard !isClosed else { return }
+
+                if let suspendedConsumer {
+                    self.suspendedConsumer = nil
+                    inFlightBufferCount += 1
+                    suspendedConsumer.resume(returning: buffer)
+                    return
+                }
+
+                pendingBuffers.append(buffer)
+                if pendingBuffers.count > maxBufferedBuffers {
+                    pendingBuffers.removeFirst(pendingBuffers.count - maxBufferedBuffers)
+                }
+            }
+
+            func next() async -> LiveTranscriptionPCMBufferBox? {
+                if !pendingBuffers.isEmpty {
+                    inFlightBufferCount += 1
+                    return pendingBuffers.removeFirst()
+                }
+                if isClosed {
+                    return nil
+                }
+                return await withCheckedContinuation { continuation in
+                    suspendedConsumer = continuation
+                }
+            }
+
+            func finishProcessingCurrentBuffer() {
+                if inFlightBufferCount > 0 {
+                    inFlightBufferCount -= 1
+                }
+                resumeDrainContinuationsIfNeeded()
+            }
+
+            func drain() async {
+                guard !pendingBuffers.isEmpty || inFlightBufferCount > 0 else { return }
+                await withCheckedContinuation { continuation in
+                    drainContinuations.append(continuation)
+                }
+            }
+
+            func finish() {
+                isClosed = true
+                pendingBuffers.removeAll(keepingCapacity: false)
+                if let suspendedConsumer {
+                    self.suspendedConsumer = nil
+                    suspendedConsumer.resume(returning: nil)
+                }
+                resumeDrainContinuationsIfNeeded()
+            }
+
+            private func resumeDrainContinuationsIfNeeded() {
+                guard pendingBuffers.isEmpty, inFlightBufferCount == 0 else { return }
+                let continuations = drainContinuations
+                drainContinuations.removeAll(keepingCapacity: false)
+                continuations.forEach { $0.resume() }
+            }
+        }
+
         private var recognizer: FluidAudioLiveStreamingRecognizer?
-        private var pendingRecognitionBuffers: [LiveTranscriptionPCMBufferBox] = []
         private let maxBufferedRecognitionBuffers = 16
+        private var recognitionQueue: RecognitionBufferQueue?
         private var recognitionWorkerTask: Task<Void, Never>?
-        private var recognitionWorkerBusy = false
+        private var recognitionWorkerGeneration = 0
         #endif
 
         func setMeterLevel(_ level: Double) {
@@ -126,106 +199,127 @@ actor AVFoundationRecorderService: RecorderService {
 
         #if canImport(FluidAudio)
         func setRecognizer(_ recognizer: FluidAudioLiveStreamingRecognizer?) {
+            let queueToFinish: RecognitionBufferQueue?
+            let workerToCancel: Task<Void, Never>?
+            let shouldStartWorker: Bool
+
             lock.lock()
             self.recognizer = recognizer
             if recognizer == nil {
-                pendingRecognitionBuffers.removeAll(keepingCapacity: false)
+                queueToFinish = recognitionQueue
+                recognitionQueue = nil
+                workerToCancel = recognitionWorkerTask
+                recognitionWorkerTask = nil
+                recognitionWorkerGeneration += 1
+                shouldStartWorker = false
+            } else {
+                queueToFinish = nil
+                workerToCancel = nil
+                if recognitionQueue == nil {
+                    recognitionQueue = RecognitionBufferQueue(maxBufferedBuffers: maxBufferedRecognitionBuffers)
+                }
+                shouldStartWorker = recognitionWorkerTask == nil
             }
-            let shouldStartWorker = recognizer != nil && recognitionWorkerTask == nil
             lock.unlock()
+
             if shouldStartWorker {
                 startRecognitionWorkerIfNeeded()
             }
-            if recognizer == nil {
-                recognitionWorkerTask?.cancel()
-                recognitionWorkerTask = nil
+
+            if let workerToCancel {
+                workerToCancel.cancel()
+            }
+            if let queueToFinish {
+                Task {
+                    await queueToFinish.finish()
+                }
             }
         }
 
         func enqueueRecognitionBuffer(_ buffer: AVAudioPCMBuffer) {
             guard let copiedBuffer = buffer.lorre_deepCopy().map(LiveTranscriptionPCMBufferBox.init) else { return }
 
+            let queue: RecognitionBufferQueue?
             lock.lock()
             guard recognizer != nil else {
                 lock.unlock()
                 return
             }
-            if pendingRecognitionBuffers.count >= maxBufferedRecognitionBuffers {
-                pendingRecognitionBuffers.removeFirst(pendingRecognitionBuffers.count - maxBufferedRecognitionBuffers + 1)
-            }
-            pendingRecognitionBuffers.append(copiedBuffer)
-            let shouldStartWorker = recognitionWorkerTask == nil
+            queue = recognitionQueue
             lock.unlock()
-            if shouldStartWorker {
-                startRecognitionWorkerIfNeeded()
+
+            if let queue {
+                Task {
+                    await queue.enqueue(copiedBuffer)
+                }
             }
         }
 
         func drainRecognitionWork() async {
-            while hasRecognitionWork() {
-                try? await Task.sleep(for: .milliseconds(12))
+            let queue = currentRecognitionQueue()
+            if let queue {
+                await queue.drain()
             }
         }
 
         private func startRecognitionWorkerIfNeeded() {
+            let queue: RecognitionBufferQueue?
+            let generation: Int
+
             lock.lock()
             guard recognitionWorkerTask == nil else {
                 lock.unlock()
                 return
             }
+            guard let recognitionQueue else {
+                lock.unlock()
+                return
+            }
+            recognitionWorkerGeneration += 1
+            generation = recognitionWorkerGeneration
+            queue = recognitionQueue
             recognitionWorkerTask = Task { [weak self] in
-                await self?.runRecognitionWorkerLoop()
+                guard let self, let queue else { return }
+                await self.runRecognitionWorkerLoop(using: queue, generation: generation)
             }
             lock.unlock()
         }
 
-        private func popRecognitionWork() -> (FluidAudioLiveStreamingRecognizer, LiveTranscriptionPCMBufferBox)? {
+        private func currentRecognizer() -> FluidAudioLiveStreamingRecognizer? {
             lock.lock()
             defer { lock.unlock() }
-            guard let recognizer, !pendingRecognitionBuffers.isEmpty else { return nil }
-            let next = pendingRecognitionBuffers.removeFirst()
-            recognitionWorkerBusy = true
-            return (recognizer, next)
+            return recognizer
         }
 
-        private func hasRecognitionWork() -> Bool {
+        private func currentRecognitionQueue() -> RecognitionBufferQueue? {
             lock.lock()
             defer { lock.unlock() }
-            return !pendingRecognitionBuffers.isEmpty || recognitionWorkerBusy
+            return recognitionQueue
         }
 
-        private func runRecognitionWorkerLoop() async {
+        private func runRecognitionWorkerLoop(using queue: RecognitionBufferQueue, generation: Int) async {
             while !Task.isCancelled {
-                if let (recognizer, buffer) = popRecognitionWork() {
-                    await recognizer.ingest(buffer)
-                    markRecognitionWorkerIdle()
-                    continue
-                }
-                try? await Task.sleep(for: .milliseconds(12))
-                if shouldBreakRecognitionLoop() {
+                guard let buffer = await queue.next() else {
                     break
                 }
+
+                guard let recognizer = currentRecognizer() else {
+                    await queue.finishProcessingCurrentBuffer()
+                    break
+                }
+
+                await recognizer.ingest(buffer)
+                await queue.finishProcessingCurrentBuffer()
             }
-            clearRecognitionWorkerTaskReference()
+            clearRecognitionWorkerTaskReference(ifGenerationMatches: generation)
         }
 
-        private func clearRecognitionWorkerTaskReference() {
+        private func clearRecognitionWorkerTaskReference(ifGenerationMatches generation: Int) {
             lock.lock()
-            recognitionWorkerTask = nil
-            recognitionWorkerBusy = false
+            if recognitionWorkerGeneration == generation {
+                recognitionWorkerTask = nil
+            }
             lock.unlock()
-        }
-
-        private func markRecognitionWorkerIdle() {
-            lock.lock()
-            recognitionWorkerBusy = false
-            lock.unlock()
-        }
-
-        private func shouldBreakRecognitionLoop() -> Bool {
-            lock.lock()
-            defer { lock.unlock() }
-            return recognizer == nil
         }
         #else
         func setRecognizer(_ recognizer: Any?) {

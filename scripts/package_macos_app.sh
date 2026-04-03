@@ -2,9 +2,13 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-APP_NAME="Lorre"
-APP_VERSION="0.2.0"
-BUILD_NUMBER="4"
+RELEASE_CONFIG_PATH="$ROOT_DIR/Config/app_release.env"
+if [[ ! -f "$RELEASE_CONFIG_PATH" ]]; then
+  echo "Missing release config: $RELEASE_CONFIG_PATH" >&2
+  exit 1
+fi
+source "$RELEASE_CONFIG_PATH"
+
 CONFIGURATION="debug" # debug | release
 SKIP_BUILD="0"
 DIST_DIR="$ROOT_DIR/dist"
@@ -13,8 +17,8 @@ CONTENTS_DIR="$APP_BUNDLE/Contents"
 MACOS_DIR="$CONTENTS_DIR/MacOS"
 RESOURCES_DIR="$CONTENTS_DIR/Resources"
 FRAMEWORKS_DIR="$CONTENTS_DIR/Frameworks"
-ICON_PATH="$ROOT_DIR/Assets/Lorre.icns"
-TEXT_NORMALIZATION_LIBRARY="$ROOT_DIR/ThirdParty/NemoTextProcessing/macos/libnemo_text_processing.dylib"
+ICON_PATH="$ROOT_DIR/$ICON_RELATIVE_PATH"
+TEXT_NORMALIZATION_LIBRARY="$ROOT_DIR/$TEXT_NORMALIZATION_LIBRARY_RELATIVE_PATH"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -78,7 +82,7 @@ cat > "$CONTENTS_DIR/Info.plist" <<PLIST
   <key>CFBundleExecutable</key>
   <string>$APP_NAME</string>
   <key>CFBundleIdentifier</key>
-  <string>com.jessescholtes.lorre</string>
+  <string>$APP_BUNDLE_IDENTIFIER</string>
   <key>CFBundleInfoDictionaryVersion</key>
   <string>6.0</string>
   <key>CFBundleName</key>
@@ -94,7 +98,7 @@ cat > "$CONTENTS_DIR/Info.plist" <<PLIST
   <key>CFBundleIconFile</key>
   <string>$APP_NAME</string>
   <key>LSMinimumSystemVersion</key>
-  <string>14.0</string>
+  <string>$MINIMUM_MACOS_VERSION</string>
   <key>NSMicrophoneUsageDescription</key>
   <string>Lorre needs microphone access to record audio locally.</string>
   <key>NSHighResolutionCapable</key>
