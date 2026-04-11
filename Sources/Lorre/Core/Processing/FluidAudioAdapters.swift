@@ -561,6 +561,8 @@ actor FluidAudioTranscriptionService: TranscriptionService {
 }
 
 actor FluidAudioDiarizationService: SpeakerDiarizationService {
+    static let qualityTunedEmbeddingSkipThreshold: Float = 0.95
+
     private final class OfflineDiarizerManagerBox: @unchecked Sendable {
         let manager: OfflineDiarizerManager
 
@@ -570,6 +572,17 @@ actor FluidAudioDiarizationService: SpeakerDiarizationService {
 
         func diarizeSpans(audio: [Float]) async throws -> [(start: Double, end: Double, speakerId: String)] {
             let result = try await manager.process(audio: audio)
+            return result.segments.map { segment in
+                (
+                    start: Double(segment.startTimeSeconds),
+                    end: Double(segment.endTimeSeconds),
+                    speakerId: segment.speakerId
+                )
+            }
+        }
+
+        func diarizeSpans(url: URL) async throws -> [(start: Double, end: Double, speakerId: String)] {
+            let result = try await manager.process(url)
             return result.segments.map { segment in
                 (
                     start: Double(segment.startTimeSeconds),
@@ -598,7 +611,7 @@ actor FluidAudioDiarizationService: SpeakerDiarizationService {
         self.enrollmentService = enrollmentService
     }
 
-    private func qualityTunedConfig(expectedSpeakers: DiarizationSpeakerCountHint) -> OfflineDiarizerConfig {
+    static func makeQualityTunedConfig(expectedSpeakers: DiarizationSpeakerCountHint) -> OfflineDiarizerConfig {
         // Favor transcript readability over ultra-fine turn segmentation. The default config can
         // over-fragment one person into several short clusters, which then chops sentences apart.
         var config = OfflineDiarizerConfig.default.withSpeakers(min: 1, max: 8)
@@ -614,6 +627,9 @@ actor FluidAudioDiarizationService: SpeakerDiarizationService {
             config = config.withSpeakers(min: normalizedHint.minCount, max: normalizedHint.maxCount)
         }
         config.segmentationStepRatio = 0.1
+        // At this overlap, neighboring segmentation windows are often redundant enough to reuse
+        // embeddings without sacrificing transcript-level speaker readability.
+        config.embeddingSkipStrategy = .maskSimilarity(threshold: qualityTunedEmbeddingSkipThreshold)
         config.minSegmentDuration = 0.45
         // Slightly lower the clustering threshold so one speaker is less likely to be split into
         // multiple synthetic speaker IDs across neighboring sentences.
@@ -621,6 +637,10 @@ actor FluidAudioDiarizationService: SpeakerDiarizationService {
         // Stitch brief pauses back together so sentence-level rows stay intact more often.
         config.minGapDuration = 0.18
         return config
+    }
+
+    private func qualityTunedConfig(expectedSpeakers: DiarizationSpeakerCountHint) -> OfflineDiarizerConfig {
+        Self.makeQualityTunedConfig(expectedSpeakers: expectedSpeakers)
     }
 
     func ensureModelsReady(
@@ -864,24 +884,33 @@ actor FluidAudioDiarizationService: SpeakerDiarizationService {
         expectedSpeakers: DiarizationSpeakerCountHint
     ) async throws -> DiarizationResult? {
         _ = expectedDurationSeconds
-        let audioData = try AudioConverter().resampleAudioFile(url)
         let spans: [DiarizationSpan]
+        let audioData: [Float]?
         switch diarizationEngine {
         case .offlineVbx:
-            spans = try await diarizeOffline(audioData: audioData, expectedSpeakers: expectedSpeakers)
+            spans = try await diarizeOffline(url: url, expectedSpeakers: expectedSpeakers)
+            audioData = knownSpeakers.isEmpty ? nil : try AudioConverter().resampleAudioFile(url)
         case .sortformer:
-            spans = try await diarizeSortformer(audioData: audioData)
+            let loadedAudioData = try AudioConverter().resampleAudioFile(url)
+            spans = try await diarizeSortformer(audioData: loadedAudioData)
+            audioData = loadedAudioData
         case .lsEend:
-            spans = try await diarizeLSEEND(audioData: audioData)
+            let loadedAudioData = try AudioConverter().resampleAudioFile(url)
+            spans = try await diarizeLSEEND(audioData: loadedAudioData)
+            audioData = loadedAudioData
         }
 
         guard !spans.isEmpty else { return nil }
+        guard let audioData else {
+            return DiarizationResult(spans: spans, speakerProfiles: [])
+        }
+
         let relabeled = try await relabelKnownSpeakers(in: spans, audioData: audioData)
         return DiarizationResult(spans: relabeled.spans, speakerProfiles: relabeled.profiles)
     }
 
     private func diarizeOffline(
-        audioData: [Float],
+        url: URL,
         expectedSpeakers: DiarizationSpeakerCountHint
     ) async throws -> [DiarizationSpan] {
         try await ensureOfflineModelsReady(expectedSpeakers: expectedSpeakers, onProgress: nil)
@@ -889,7 +918,7 @@ actor FluidAudioDiarizationService: SpeakerDiarizationService {
             throw LorreError.processingFailed("Offline diarizer is not initialized.")
         }
 
-        let diarizedSpans = try await offlineManagerBox.diarizeSpans(audio: audioData)
+        let diarizedSpans = try await offlineManagerBox.diarizeSpans(url: url)
         return diarizedSpans.compactMap { segment -> DiarizationSpan? in
             let start = segment.start
             let end = segment.end

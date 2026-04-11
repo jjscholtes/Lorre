@@ -880,6 +880,22 @@ final class LorreCoreTests: XCTestCase {
         XCTAssertTrue(DiarizationSpeakerCountHint.tuningPresets.contains(.exact(1)))
     }
 
+    func testFluidAudioDiarizationServiceQualityTunedConfigEnablesEmbeddingSkipStrategy() {
+        let config = FluidAudioDiarizationService.makeQualityTunedConfig(expectedSpeakers: .auto)
+
+        XCTAssertEqual(config.segmentationStepRatio, 0.1)
+        XCTAssertEqual(config.minSegmentDuration, 0.45)
+        XCTAssertEqual(config.clusteringThreshold, 0.54)
+        XCTAssertEqual(config.minGapDuration, 0.18)
+
+        switch config.embeddingSkipStrategy {
+        case let .maskSimilarity(threshold):
+            XCTAssertEqual(threshold, FluidAudioDiarizationService.qualityTunedEmbeddingSkipThreshold)
+        case .none:
+            XCTFail("Expected mask-similarity embedding skipping for quality-tuned diarization.")
+        }
+    }
+
     func testDiarizationResultCollapsesToDominantSpeakerWhenExactOneIsRequested() {
         let diarization = DiarizationResult(
             spans: [
