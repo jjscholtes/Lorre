@@ -1035,9 +1035,9 @@ final class AppViewModel: ObservableObject {
         guard let session = sessions.first(where: { $0.id == sessionID }) else { return }
         let wasSelected = (selectedSessionID == sessionID)
 
+        currentProcessingTasks[sessionID]?.cancel()
+        currentProcessingTasks[sessionID] = nil
         if wasSelected {
-            currentProcessingTasks[sessionID]?.cancel()
-            currentProcessingTasks[sessionID] = nil
             stopPlaybackAndResetState()
         }
 
@@ -1046,13 +1046,13 @@ final class AppViewModel: ObservableObject {
             do {
                 try await self.dependencies.store.deleteSession(id: sessionID)
                 await self.dependencies.metrics.log(name: "session_deleted", sessionId: sessionID)
-                await self.reloadSessions(selectMostRecentIfNeeded: wasSelected)
+                await self.reloadSessions(selectMostRecentIfNeeded: false)
                 await MainActor.run {
                     if wasSelected {
-                self.selectedSessionID = nil
-                self.activeTranscript = nil
-                self.playbackWaveformBins = []
-            }
+                        self.selectedSessionID = nil
+                        self.activeTranscript = nil
+                        self.playbackWaveformBins = []
+                    }
                     self.banner = AppBanner(kind: .success, title: "Session deleted", message: session.displayTitle)
                 }
             } catch {

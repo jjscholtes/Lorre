@@ -78,8 +78,8 @@ actor KnownSpeakerStore {
             throw LorreError.persistenceFailed("Known speaker not found.")
         }
         speakers.removeAll { $0.id == id }
-        try deleteReferenceClipIfPresent(speaker.referenceClip)
         try saveAll(speakers)
+        try deleteReferenceClipIfPresent(speaker.referenceClip)
     }
 
     func referenceAudioURL(for speaker: KnownSpeaker) async -> URL? {
