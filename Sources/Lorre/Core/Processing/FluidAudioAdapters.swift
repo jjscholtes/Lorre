@@ -1,4 +1,5 @@
 import Foundation
+import OSLog
 
 #if canImport(FluidAudio)
 @preconcurrency import FluidAudio
@@ -58,6 +59,8 @@ enum FluidAudioIntegrationProbe {
 
 #if canImport(FluidAudio)
 actor FluidAudioTranscriptionService: TranscriptionService {
+    private let logger = Logger(subsystem: "Lorre", category: "FluidAudio")
+
     private final class AsrManagerBox: @unchecked Sendable {
         let manager: AsrManager
 
@@ -280,6 +283,7 @@ actor FluidAudioTranscriptionService: TranscriptionService {
             let detected = spotResult.detections.map(\.term.text)
             return result.withRescoring(text: output.text, detected: detected, applied: applied)
         } catch {
+            logger.error("vocabulary boosting failed: \(error.localizedDescription, privacy: .public)")
             return result
         }
     }
@@ -330,6 +334,7 @@ actor FluidAudioTranscriptionService: TranscriptionService {
                 )
             ]
         } catch {
+            logger.error("cohere quality pass failed: \(error.localizedDescription, privacy: .public)")
             return []
         }
     }
@@ -387,7 +392,7 @@ actor FluidAudioTranscriptionService: TranscriptionService {
             }
             return windows.isEmpty ? nil : windows
         } catch {
-            // Fall back to token-gap segmentation if VAD model load/inference fails.
+            logger.error("VAD speech-window segmentation failed: \(error.localizedDescription, privacy: .public)")
             return nil
         }
     }

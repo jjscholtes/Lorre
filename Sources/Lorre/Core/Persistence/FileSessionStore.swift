@@ -40,7 +40,9 @@ actor FileSessionStore: SessionStore {
                 }
                 manifests.append(manifest)
             } catch {
-                // Skip corrupted sessions for now; surface via status in a later recovery pass.
+                if let damaged = damagedSessionManifest(for: url, manifestURL: sessionJSON, error: error) {
+                    manifests.append(damaged)
+                }
                 continue
             }
         }
@@ -94,6 +96,9 @@ actor FileSessionStore: SessionStore {
 
     func updateSession(_ session: SessionManifest) async throws {
         try ensureBaseDirectories()
+        guard FileManager.default.fileExists(atPath: sessionManifestURL(for: session.id).path(percentEncoded: false)) else {
+            throw LorreError.sessionNotFound
+        }
         try save(session)
     }
 
@@ -114,6 +119,9 @@ actor FileSessionStore: SessionStore {
 
     func saveTranscript(_ transcript: TranscriptDocument) async throws {
         try ensureBaseDirectories()
+        guard FileManager.default.fileExists(atPath: sessionManifestURL(for: transcript.sessionId).path(percentEncoded: false)) else {
+            throw LorreError.sessionNotFound
+        }
         let url = transcriptURL(for: transcript.sessionId)
         let encoded = try Self.encoder.encode(transcript)
         try AtomicFileWriter.write(encoded, to: url)
@@ -152,6 +160,33 @@ actor FileSessionStore: SessionStore {
     private func ensureBaseDirectories() throws {
         try FileManager.default.createDirectory(at: baseURL, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: sessionsRootURL, withIntermediateDirectories: true)
+    }
+
+    private func damagedSessionManifest(for folderURL: URL, manifestURL: URL, error: Error) -> SessionManifest? {
+        guard let id = UUID(uuidString: folderURL.lastPathComponent) else { return nil }
+        let fileValues = try? manifestURL.resourceValues(forKeys: [.creationDateKey, .contentModificationDateKey])
+        let fallbackDate = Date()
+        let createdAt = fileValues?.creationDate ?? fileValues?.contentModificationDate ?? fallbackDate
+        let updatedAt = fileValues?.contentModificationDate ?? createdAt
+        return SessionManifest(
+            id: id,
+            title: "Damaged Session",
+            status: .error,
+            createdAt: createdAt,
+            updatedAt: updatedAt,
+            recordingSource: .microphone,
+            audioFileName: "",
+            audioDeletedAt: updatedAt,
+            processing: ProcessingSummary(
+                queuedAt: nil,
+                startedAt: nil,
+                completedAt: updatedAt,
+                progressPhase: nil,
+                progressLabel: "Recovery needed",
+                progressFraction: nil
+            ),
+            lastErrorMessage: "Session metadata could not be read. Delete this session or inspect session.json in the session folder. \(error.localizedDescription)"
+        )
     }
 
     private static var encoder: JSONEncoder {

@@ -183,7 +183,7 @@ struct TranscriptHeaderView: View {
         }
         .confirmationDialog("Delete this session?", isPresented: $isShowingDeleteConfirmation, titleVisibility: .visible) {
             Button("Delete Session", role: .destructive) {
-                viewModel.deleteSelectedSessionConfirmed()
+                viewModel.performSessionAction(.delete, for: session.id)
             }
             Button("Cancel", role: .cancel) {}
         } message: {
@@ -317,6 +317,9 @@ struct TranscriptHeaderView: View {
         HStack(spacing: DS.Space.x2) {
             moveToFolderControl
             revealFilesControl
+            if shouldShowRetryControl {
+                retryProcessingControl
+            }
             renameControl
             deleteControl
             if !viewModel.canControlPlayback {
@@ -338,6 +341,9 @@ struct TranscriptHeaderView: View {
             }
             HStack(spacing: DS.Space.x2) {
                 revealFilesControl
+                if shouldShowRetryControl {
+                    retryProcessingControl
+                }
                 renameControl
                 deleteControl
             }
@@ -447,14 +453,23 @@ struct TranscriptHeaderView: View {
             Text("Move to Folder")
         }
         .buttonStyle(SecondaryControlButtonStyle())
+        .disabled(!actionState(.moveToFolder).isEnabled)
     }
 
     private var revealFilesControl: some View {
         Button("Reveal Files") {
-            viewModel.revealSelectedSessionFiles()
+            viewModel.performSessionAction(.revealFiles, for: session.id)
         }
         .buttonStyle(SecondaryControlButtonStyle())
-        .disabled(viewModel.selectedSession == nil)
+        .disabled(!actionState(.revealFiles).isEnabled)
+    }
+
+    private var retryProcessingControl: some View {
+        Button(SessionAction.retryProcessing.title) {
+            viewModel.performSessionAction(.retryProcessing, for: session.id)
+        }
+        .buttonStyle(SecondaryControlButtonStyle())
+        .disabled(!actionState(.retryProcessing).isEnabled)
     }
 
     private var noteIconControl: some View {
@@ -495,6 +510,7 @@ struct TranscriptHeaderView: View {
             isShowingRenameAlert = true
         }
         .buttonStyle(SecondaryControlButtonStyle())
+        .disabled(!actionState(.rename).isEnabled)
     }
 
     private var deleteControl: some View {
@@ -502,6 +518,7 @@ struct TranscriptHeaderView: View {
             isShowingDeleteConfirmation = true
         }
         .buttonStyle(SecondaryControlButtonStyle())
+        .disabled(!actionState(.delete).isEnabled)
     }
 
     private var exportControl: some View {
@@ -519,7 +536,16 @@ struct TranscriptHeaderView: View {
             Text("Export")
         }
         .buttonStyle(PrimaryControlButtonStyle())
-        .disabled(transcript == nil || session.status != .ready)
+        .disabled(!actionState(.exportTranscript).isEnabled)
+    }
+
+    private var shouldShowRetryControl: Bool {
+        viewModel.sessionActions(for: .transcriptHeader, session: session, transcript: transcript)
+            .contains(where: { $0.action == .retryProcessing })
+    }
+
+    private func actionState(_ action: SessionAction) -> SessionActionState {
+        viewModel.sessionActionState(action, for: session, transcript: transcript)
     }
 
     private var scrubberTimeLine: String {
@@ -671,6 +697,7 @@ private struct WaveformStripView: View {
 struct TranscriptErrorStateView: View {
     @ObservedObject var viewModel: AppViewModel
     let session: SessionManifest
+    @State private var isShowingDeleteConfirmation = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: DS.Space.x3) {
@@ -683,18 +710,46 @@ struct TranscriptErrorStateView: View {
                 .foregroundStyle(DS.ColorToken.fgSecondary)
             IndexRailView(mode: .progress(0), height: 8)
             HStack(spacing: DS.Space.x2) {
-                Button("Retry Processing") {
-                    viewModel.retryProcessingSelectedSession()
+                ForEach(viewModel.sessionActions(for: .errorState, session: session)) { actionState in
+                    errorActionButton(actionState)
                 }
-                .buttonStyle(SecondaryControlButtonStyle())
-
-                Button("Delete (Later)") {}
-                    .buttonStyle(SecondaryControlButtonStyle())
-                    .disabled(true)
             }
         }
         .padding(DS.Space.x4)
         .frame(maxWidth: .infinity, alignment: .leading)
         .dsPanelSurface(cornerRadius: DS.Radius.lg)
+        .confirmationDialog("Delete this session?", isPresented: $isShowingDeleteConfirmation, titleVisibility: .visible) {
+            Button("Delete Session", role: .destructive) {
+                viewModel.performSessionAction(.delete, for: session.id)
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This removes the session audio, transcript, and local exports from Lorre storage.")
+        }
+    }
+
+    @ViewBuilder
+    private func errorActionButton(_ actionState: SessionActionState) -> some View {
+        if actionState.action == .retryProcessing {
+            Button(actionState.action.title) {
+                handle(actionState.action)
+            }
+            .buttonStyle(PrimaryControlButtonStyle())
+            .disabled(!actionState.isEnabled)
+        } else {
+            Button(actionState.action.title) {
+                handle(actionState.action)
+            }
+            .buttonStyle(SecondaryControlButtonStyle())
+            .disabled(!actionState.isEnabled)
+        }
+    }
+
+    private func handle(_ action: SessionAction) {
+        if action == .delete {
+            isShowingDeleteConfirmation = true
+            return
+        }
+        viewModel.performSessionAction(action, for: session.id)
     }
 }

@@ -306,6 +306,33 @@ final class LorreCoreTests: XCTestCase {
         XCTAssertEqual(presentation.iconName, "lock.fill")
     }
 
+    @MainActor
+    func testImportFailureRemovesCreatedSession() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("LorreImportFailureCleanupTests-\(UUID().uuidString)", isDirectory: true)
+        let store = FileSessionStore(baseURL: root)
+        let viewModel = AppViewModel(
+            dependencies: makeTestDependencies(
+                root: root,
+                store: store,
+                recorder: ControlledRecorderService()
+            )
+        )
+
+        await viewModel.start()
+        let missingURL = root.appendingPathComponent("missing-source.m4a")
+        viewModel.importAudioPickerCompleted(.success(missingURL))
+
+        try await waitUntil {
+            await MainActor.run {
+                viewModel.banner?.title == "Import failed"
+            }
+        }
+
+        let sessions = try await store.loadSessions()
+        XCTAssertTrue(sessions.isEmpty)
+    }
+
     func testLocalMetricsLoggerWritesJSONLines() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("LorreMetricsTests-\(UUID().uuidString)", isDirectory: true)
@@ -402,6 +429,72 @@ final class LorreCoreTests: XCTestCase {
         let loaded = try await store.loadSession(id: created.id)
         XCTAssertNil(loaded)
         XCTAssertFalse(FileManager.default.fileExists(atPath: sessionDir.path(percentEncoded: false)))
+    }
+
+    func testFileSessionStoreDoesNotRecreateDeletedSessionOnUpdateOrTranscriptSave() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("LorreDeletedSessionMutationTests-\(UUID().uuidString)", isDirectory: true)
+        let store = FileSessionStore(baseURL: root)
+        let created = try await store.createSession(
+            NewSessionDraft(
+                title: "Deleted Session",
+                folderId: nil,
+                status: .processing,
+                durationSeconds: nil,
+                recordingSource: .microphone,
+                audioFileName: "audio.m4a",
+                microphoneStemFileName: nil,
+                systemAudioStemFileName: nil,
+                recordedAt: nil
+            )
+        )
+        let sessionDir = await store.sessionDirectoryURL(for: created.id)
+
+        try await store.deleteSession(id: created.id)
+
+        do {
+            try await store.updateSession(created)
+            XCTFail("Expected updateSession to reject deleted session")
+        } catch LorreError.sessionNotFound {
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+
+        let transcript = TranscriptDocument(
+            sessionId: created.id,
+            sourceEngine: "TestEngine",
+            segments: [TranscriptSegment(startMs: 0, endMs: 500, text: "orphan", speakerId: "S1")],
+            speakers: [SpeakerProfile.defaultProfile(id: "S1")]
+        )
+        do {
+            try await store.saveTranscript(transcript)
+            XCTFail("Expected saveTranscript to reject deleted session")
+        } catch LorreError.sessionNotFound {
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: sessionDir.path(percentEncoded: false)))
+    }
+
+    func testFileSessionStoreSurfacesDamagedSessionManifests() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("LorreDamagedSessionTests-\(UUID().uuidString)", isDirectory: true)
+        let damagedID = UUID()
+        let sessionDir = root
+            .appendingPathComponent("sessions", isDirectory: true)
+            .appendingPathComponent(damagedID.uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: sessionDir, withIntermediateDirectories: true)
+        try Data("{ not json".utf8).write(to: sessionDir.appendingPathComponent("session.json"))
+
+        let store = FileSessionStore(baseURL: root)
+        let sessions = try await store.loadSessions()
+
+        XCTAssertEqual(sessions.count, 1)
+        XCTAssertEqual(sessions.first?.id, damagedID)
+        XCTAssertEqual(sessions.first?.status, .error)
+        XCTAssertEqual(sessions.first?.displayTitle, "Damaged Session")
+        XCTAssertTrue(sessions.first?.lastErrorMessage?.contains("Session metadata could not be read") == true)
     }
 
     func testAppSettingsStoreMigratesLegacySettingsWithoutFoldersField() async throws {
@@ -599,6 +692,47 @@ final class LorreCoreTests: XCTestCase {
         XCTAssertNotNil(storedReferenceURL)
         let storedData = try Data(contentsOf: storedReferenceURL!)
         XCTAssertEqual(String(decoding: storedData, as: UTF8.self), "updated")
+    }
+
+    func testKnownSpeakerStoreKeepsExistingReferenceClipWhenReplacementCopyFails() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("LorreKnownSpeakerAtomicReplaceTests-\(UUID().uuidString)", isDirectory: true)
+        let store = KnownSpeakerStore(baseURL: root)
+
+        let originalURL = root.appendingPathComponent("carol-original.m4a")
+        let missingReplacementURL = root.appendingPathComponent("missing-replacement.m4a")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try Data("original".utf8).write(to: originalURL)
+
+        let saved = try await store.saveNewSpeaker(
+            displayName: "Carol",
+            embedding: [0.1, 0.2, 0.3],
+            referenceAudioURL: originalURL,
+            enrollmentData: KnownSpeakerEnrollmentData(
+                embedding: [0.1, 0.2, 0.3],
+                durationSeconds: 2.5,
+                sampleRate: 16_000
+            )
+        )
+        let storedReferenceURL = await store.referenceAudioURL(for: saved)
+        XCTAssertNotNil(storedReferenceURL)
+
+        do {
+            _ = try await store.updateSpeaker(
+                saved,
+                replacingReferenceAudioAt: missingReplacementURL,
+                enrollmentData: KnownSpeakerEnrollmentData(
+                    embedding: [0.3, 0.2, 0.1],
+                    durationSeconds: 3.0,
+                    sampleRate: 16_000
+                )
+            )
+            XCTFail("Expected missing replacement clip to throw")
+        } catch {
+            XCTAssertTrue(FileManager.default.fileExists(atPath: storedReferenceURL!.path(percentEncoded: false)))
+            let retainedData = try Data(contentsOf: storedReferenceURL!)
+            XCTAssertEqual(String(decoding: retainedData, as: UTF8.self), "original")
+        }
     }
 
     func testAppSettingsStoreRenameDeleteFolderAndPersistSidebarExpansion() async throws {
@@ -1012,6 +1146,56 @@ final class LorreCoreTests: XCTestCase {
                     && (update.fraction ?? 1) <= 0.80
             }
         )
+    }
+
+    func testProcessingCoordinatorCancellationDoesNotRecreateDeletedSession() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("LorreProcessingCancellationTests-\(UUID().uuidString)", isDirectory: true)
+        let store = FileSessionStore(baseURL: root)
+        let session = try await store.createSession(
+            NewSessionDraft(
+                title: "Cancellation Test",
+                folderId: nil,
+                status: .processing,
+                durationSeconds: 8.0,
+                recordingSource: .microphone,
+                audioFileName: "audio.m4a",
+                microphoneStemFileName: nil,
+                systemAudioStemFileName: nil,
+                recordedAt: Date()
+            )
+        )
+        let coordinator = ProcessingCoordinator(
+            store: store,
+            transcriptionService: MockTranscriptionService(),
+            diarizationService: MockSpeakerDiarizationService()
+        )
+
+        let task = Task {
+            try await coordinator.process(
+                sessionId: session.id,
+                enableDiarization: true,
+                diarizationExpectedSpeakers: .exact(2),
+                onProgress: { _ in }
+            )
+        }
+
+        try await Task.sleep(for: .milliseconds(80))
+        task.cancel()
+        try await store.deleteSession(id: session.id)
+
+        do {
+            _ = try await task.value
+            XCTFail("Expected processing task to be cancelled")
+        } catch is CancellationError {
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+
+        let loadedSession = try await store.loadSession(id: session.id)
+        XCTAssertNil(loadedSession)
+        let sessionDir = await store.sessionDirectoryURL(for: session.id)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: sessionDir.path(percentEncoded: false)))
     }
 
     func testProcessingCoordinatorDeletesAudioArtifactsAfterSuccessfulTranscriptionWhenEnabled() async throws {

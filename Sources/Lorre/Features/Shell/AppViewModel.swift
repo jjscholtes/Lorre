@@ -80,6 +80,8 @@ final class AppViewModel: ObservableObject {
     private var recordingSourceChangeTask: Task<Void, Never>?
     private var currentRecordingStartedAt: Date?
     private var currentProcessingTasks: [UUID: Task<Void, Never>] = [:]
+    private let transcriptPersistenceQueue = TranscriptPersistenceQueue()
+    private var transcriptPersistenceVersions: [UUID: Int] = [:]
     private var cachedFilteredSessions: [SessionManifest] = []
     private var cachedViewBrowserSessions: [ShelfFilter: [SessionManifest]] = [:]
     private var cachedFolderBrowserSessions: [String: [SessionManifest]] = [:]
@@ -299,6 +301,92 @@ final class AppViewModel: ObservableObject {
             description: "Click a fragment or timestamp to play from that point.",
             iconName: "play.fill"
         )
+    }
+
+    func sessionActions(
+        for surface: SessionActionSurface,
+        session: SessionManifest,
+        transcript: TranscriptDocument? = nil
+    ) -> [SessionActionState] {
+        let actions: [SessionAction]
+        switch surface {
+        case .shelfContextMenu:
+            actions = session.status == .error
+                ? [.revealFiles, .retryProcessing, .rename, .moveToFolder, .delete]
+                : [.revealFiles, .rename, .moveToFolder, .delete]
+        case .transcriptHeader:
+            actions = session.status == .error
+                ? [.moveToFolder, .revealFiles, .retryProcessing, .rename, .delete, .exportTranscript]
+                : [.moveToFolder, .revealFiles, .rename, .delete, .exportTranscript]
+        case .processingStage:
+            actions = [.revealFiles]
+        case .errorState:
+            actions = [.retryProcessing, .revealFiles, .delete]
+        }
+        return actions.map { sessionActionState($0, for: session, transcript: transcript) }
+    }
+
+    func sessionActionState(
+        _ action: SessionAction,
+        for session: SessionManifest,
+        transcript: TranscriptDocument? = nil
+    ) -> SessionActionState {
+        let exists = sessions.contains(where: { $0.id == session.id })
+        guard exists else {
+            return SessionActionState(action: action, isEnabled: false, disabledReason: "Session is no longer available.")
+        }
+
+        switch action {
+        case .moveToFolder, .revealFiles, .rename, .delete:
+            return SessionActionState(action: action, isEnabled: true, disabledReason: nil)
+        case .retryProcessing:
+            guard session.status == .error else {
+                return SessionActionState(action: action, isEnabled: false, disabledReason: "Only failed sessions can be retried.")
+            }
+            guard session.hasRetainedAudio else {
+                return SessionActionState(action: action, isEnabled: false, disabledReason: "Source audio was deleted for this session.")
+            }
+            return SessionActionState(action: action, isEnabled: true, disabledReason: nil)
+        case .exportTranscript:
+            guard session.status == .ready else {
+                return SessionActionState(action: action, isEnabled: false, disabledReason: "Export is available after processing completes.")
+            }
+            guard transcript != nil else {
+                return SessionActionState(action: action, isEnabled: false, disabledReason: "No transcript is loaded for export.")
+            }
+            return SessionActionState(action: action, isEnabled: true, disabledReason: nil)
+        }
+    }
+
+    func canPerformSessionAction(
+        _ action: SessionAction,
+        for session: SessionManifest,
+        transcript: TranscriptDocument? = nil
+    ) -> Bool {
+        sessionActionState(action, for: session, transcript: transcript).isEnabled
+    }
+
+    func performSessionAction(_ action: SessionAction, for sessionID: UUID) {
+        guard let session = sessions.first(where: { $0.id == sessionID }) else { return }
+        let state = sessionActionState(action, for: session, transcript: activeTranscript)
+        guard state.isEnabled else { return }
+
+        switch action {
+        case .revealFiles:
+            revealFiles(for: sessionID)
+        case .retryProcessing:
+            retryProcessing(sessionID)
+        case .delete:
+            deleteSession(sessionID)
+        case .exportTranscript:
+            if selectedSessionID != sessionID {
+                selectSession(session)
+                return
+            }
+            exportSelectedSessionWithDefaultShortcut()
+        case .moveToFolder, .rename:
+            break
+        }
     }
 
     func count(for filter: ShelfFilter) -> Int {
@@ -1213,7 +1301,16 @@ final class AppViewModel: ObservableObject {
 
     func retryProcessingSelectedSession() {
         guard let session = selectedSession else { return }
-        guard session.status == .error else { return }
+        retryProcessing(session.id)
+    }
+
+    func retryProcessing(_ sessionID: UUID) {
+        guard let session = sessions.first(where: { $0.id == sessionID }) else { return }
+        guard canPerformSessionAction(.retryProcessing, for: session) else {
+            let reason = sessionActionState(.retryProcessing, for: session).disabledReason ?? "This session cannot be retried."
+            banner = AppBanner(kind: .error, title: "Retry unavailable", message: reason)
+            return
+        }
         launchProcessing(for: session.id)
     }
 
@@ -1810,6 +1907,8 @@ final class AppViewModel: ObservableObject {
                         self.startWaveformLoading(for: self.selectedSession)
                     }
                 }
+            } catch is CancellationError {
+                await self.reloadSessions(selectMostRecentIfNeeded: false)
             } catch {
                 await MainActor.run {
                     self.presentError(error, defaultTitle: "Processing failed")
@@ -1843,6 +1942,7 @@ final class AppViewModel: ObservableObject {
 
         Task { [weak self] in
             guard let self else { return }
+            var createdSessionID: UUID?
             await self.dependencies.metrics.log(
                 name: "audio_import_started",
                 attributes: ["file": sourceURL.lastPathComponent]
@@ -1873,6 +1973,7 @@ final class AppViewModel: ObservableObject {
                     recordedAt: recordedAt
                 )
                 var session = try await self.dependencies.store.createSession(draft)
+                createdSessionID = session.id
 
                 let sessionDirectory = await self.dependencies.store.sessionDirectoryURL(for: session.id)
                 let destinationURL = sessionDirectory.appendingPathComponent(session.audioFileName)
@@ -1907,6 +2008,10 @@ final class AppViewModel: ObservableObject {
                 await self.loadTranscriptForSelectedSession()
                 self.launchProcessing(for: session.id)
             } catch {
+                if let createdSessionID {
+                    try? await self.dependencies.store.deleteSession(id: createdSessionID)
+                    await self.reloadSessions(selectMostRecentIfNeeded: false)
+                }
                 await MainActor.run {
                     self.recorderStatusText = "Ready to record"
                     self.presentError(error, defaultTitle: "Import failed")
@@ -2027,10 +2132,15 @@ final class AppViewModel: ObservableObject {
     }
 
     private func persistTranscript(_ transcript: TranscriptDocument, sessionID: UUID) {
+        let version = (transcriptPersistenceVersions[sessionID] ?? 0) + 1
+        transcriptPersistenceVersions[sessionID] = version
         Task { [weak self] in
             guard let self else { return }
             do {
-                try await self.dependencies.store.saveTranscript(transcript)
+                try await self.transcriptPersistenceQueue.save(transcript, using: self.dependencies.store)
+                guard self.transcriptPersistenceVersions[sessionID] == version else {
+                    return
+                }
                 if let index = self.sessions.firstIndex(where: { $0.id == sessionID }) {
                     self.sessions[index].dirtyFlags.transcriptEdited = false
                     self.sessions[index].dirtyFlags.speakerEdited = false

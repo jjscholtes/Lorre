@@ -786,38 +786,26 @@ actor AVFoundationRecorderService: RecorderService {
         liveStartupTask?.cancel()
         liveStartupTask = nil
 
-        try await stopCapturePipelines()
-        await stopLiveStreamingCaptureIfNeeded()
-
-        let microphoneWriteFailure = microphoneWriter?.failureMessage()
-        #if canImport(ScreenCaptureKit)
-        let systemWriteFailure = systemCapture?.failure()
-        #else
-        let systemWriteFailure: String? = nil
-        #endif
-
-        self.microphoneEngine = nil
-        self.microphoneWriter = nil
-        #if canImport(ScreenCaptureKit)
-        self.systemCapture = nil
-        #endif
-        self.liveMonitorBridge = nil
-        self.combinedMeterBox = nil
-        self.previewMixer = nil
-        self.startedAt = nil
-        self.activeRecordingSource = nil
-        self.temporaryCanonicalURL = nil
-        self.temporaryMicrophoneURL = nil
-        self.temporarySystemAudioURL = nil
-
-        if let microphoneWriteFailure {
-            throw LorreError.recordingStopFailed("Could not write microphone audio. \(microphoneWriteFailure)")
-        }
-        if let systemWriteFailure {
-            throw LorreError.recordingStopFailed("Could not write system audio. \(systemWriteFailure)")
-        }
-
         do {
+            try await stopCapturePipelines()
+            await stopLiveStreamingCaptureIfNeeded()
+
+            let microphoneWriteFailure = microphoneWriter?.failureMessage()
+            #if canImport(ScreenCaptureKit)
+            let systemWriteFailure = systemCapture?.failure()
+            #else
+            let systemWriteFailure: String? = nil
+            #endif
+
+            clearActiveRecordingState()
+
+            if let microphoneWriteFailure {
+                throw LorreError.recordingStopFailed("Could not write microphone audio. \(microphoneWriteFailure)")
+            }
+            if let systemWriteFailure {
+                throw LorreError.recordingStopFailed("Could not write system audio. \(systemWriteFailure)")
+            }
+
             try FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)
             let canonicalDestinationURL = directoryURL.appendingPathComponent(fileLayout.audioFileName)
 
@@ -850,9 +838,13 @@ actor AVFoundationRecorderService: RecorderService {
                     to: directoryURL.appendingPathComponent(systemAudioStemFileName)
                 )
             }
-        } catch let error as LorreError {
-            throw error
         } catch {
+            await stopLiveStreamingCaptureIfNeeded()
+            clearActiveRecordingState()
+            removeTemporaryRecordingFiles([canonicalTempURL, microphoneTempURL, systemAudioTempURL])
+            if let error = error as? LorreError {
+                throw error
+            }
             throw LorreError.recordingStopFailed(error.localizedDescription)
         }
 
@@ -1245,6 +1237,33 @@ actor AVFoundationRecorderService: RecorderService {
         self.livePreviewFallback = nil
 
         guard removeTemporaryFiles else { return }
+        for tempURL in tempURLs {
+            guard let tempURL else { continue }
+            let path = tempURL.path(percentEncoded: false)
+            if FileManager.default.fileExists(atPath: path) {
+                try? FileManager.default.removeItem(at: tempURL)
+            }
+        }
+    }
+
+    private func clearActiveRecordingState() {
+        self.microphoneEngine = nil
+        self.microphoneWriter = nil
+        #if canImport(ScreenCaptureKit)
+        self.systemCapture = nil
+        #endif
+        self.liveMonitorBridge = nil
+        self.combinedMeterBox = nil
+        self.previewMixer = nil
+        self.startedAt = nil
+        self.activeRecordingSource = nil
+        self.temporaryCanonicalURL = nil
+        self.temporaryMicrophoneURL = nil
+        self.temporarySystemAudioURL = nil
+        self.livePreviewFallback = nil
+    }
+
+    private func removeTemporaryRecordingFiles(_ tempURLs: [URL?]) {
         for tempURL in tempURLs {
             guard let tempURL else { continue }
             let path = tempURL.path(percentEncoded: false)

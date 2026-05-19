@@ -28,6 +28,7 @@ actor ProcessingCoordinator {
         }
 
         do {
+            try Task.checkCancellation()
             try await updateSession(&session, status: .processing, phase: .preparing, label: "Preparing models", fraction: 0.05)
             await onProgress(
                 ProcessingUpdate(
@@ -43,11 +44,13 @@ actor ProcessingCoordinator {
             try await transcriptionService.ensureModelsReady { update in
                 await onProgress(self.scale(update, into: transcriptionPrepRange))
             }
+            try Task.checkCancellation()
             if enableDiarization {
                 try await diarizationService.ensureModelsReady { update in
                     await onProgress(self.scale(update, into: 0.22...0.32))
                 }
             }
+            try Task.checkCancellation()
 
             let sessionDir = await store.sessionDirectoryURL(for: sessionId)
             let audioURL = sessionDir.appendingPathComponent(session.audioFileName)
@@ -59,6 +62,7 @@ actor ProcessingCoordinator {
                 sessionTitle: session.displayTitle,
                 source: session.recordingSource
             )
+            try Task.checkCancellation()
 
             if enableDiarization {
                 try await updateSession(
@@ -81,6 +85,7 @@ actor ProcessingCoordinator {
                 session.transcriptFileName = "transcript.json"
                 session.updatedAt = Date()
                 try await store.updateSession(session)
+                try Task.checkCancellation()
 
                 try await updateSession(
                     &session,
@@ -115,6 +120,7 @@ actor ProcessingCoordinator {
                 await onProgress(ProcessingUpdate(phase: .diarizing, label: "Skipping speaker diarization", fraction: 0.6))
                 diarization = nil
             }
+            try Task.checkCancellation()
             let adjustedDiarization = diarization?.applyingSpeakerCountHint(diarizationExpectedSpeakers)
 
             try await updateSession(&session, status: .processing, phase: .assembling, label: "Assembling transcript", fraction: 0.82)
@@ -137,10 +143,13 @@ actor ProcessingCoordinator {
                     expectedSpeakers: diarizationExpectedSpeakers
                 )
             }
+            try Task.checkCancellation()
 
             try await updateSession(&session, status: .processing, phase: .saving, label: "Saving transcript", fraction: 0.95)
             await onProgress(ProcessingUpdate(phase: .saving, label: "Saving transcript", fraction: 0.95))
+            try Task.checkCancellation()
             try await store.saveTranscript(transcript)
+            try Task.checkCancellation()
             if deleteAudioAfterTranscription {
                 try await deleteAudioArtifacts(for: session, in: sessionDir)
                 session.audioDeletedAt = Date()
@@ -163,6 +172,8 @@ actor ProcessingCoordinator {
             try await store.updateSession(session)
             await onProgress(ProcessingUpdate(phase: .saving, label: "Ready", fraction: 1))
             return transcript
+        } catch let error as CancellationError {
+            throw error
         } catch {
             session.status = .error
             session.updatedAt = Date()

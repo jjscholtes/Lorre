@@ -145,10 +145,18 @@ actor KnownSpeakerStore {
         let ext = sourceURL.pathExtension.isEmpty ? "m4a" : sourceURL.pathExtension.lowercased()
         let storedFileName = "\(speakerID).\(ext)"
         let destinationURL = samplesDirectoryURL.appendingPathComponent(storedFileName)
-        if FileManager.default.fileExists(atPath: destinationURL.path(percentEncoded: false)) {
-            try FileManager.default.removeItem(at: destinationURL)
+        let temporaryURL = samplesDirectoryURL.appendingPathComponent(".\(speakerID)-\(UUID().uuidString).\(ext)")
+        try FileManager.default.copyItem(at: sourceURL, to: temporaryURL)
+        defer {
+            if FileManager.default.fileExists(atPath: temporaryURL.path(percentEncoded: false)) {
+                try? FileManager.default.removeItem(at: temporaryURL)
+            }
         }
-        try FileManager.default.copyItem(at: sourceURL, to: destinationURL)
+        if FileManager.default.fileExists(atPath: destinationURL.path(percentEncoded: false)) {
+            _ = try FileManager.default.replaceItemAt(destinationURL, withItemAt: temporaryURL)
+        } else {
+            try FileManager.default.moveItem(at: temporaryURL, to: destinationURL)
+        }
         return KnownSpeakerReferenceClip(
             sourceFileName: sourceURL.lastPathComponent,
             storedFileName: storedFileName,

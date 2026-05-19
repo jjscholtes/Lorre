@@ -81,11 +81,14 @@ struct SessionShelfView: View {
                                 sessions: viewModel.sessionsForViewBrowser(filter),
                                 selectedSessionID: viewModel.selectedSessionID,
                                 folders: viewModel.folders,
+                                sessionActionStates: { session in
+                                    viewModel.sessionActions(for: .shelfContextMenu, session: session)
+                                },
                                 onSelectSession: { session in
                                     viewModel.selectSession(session)
                                 },
-                                onRevealSession: { session in
-                                    viewModel.revealFiles(for: session.id)
+                                onPerformSessionAction: { action, session in
+                                    viewModel.performSessionAction(action, for: session.id)
                                 },
                                 onRenameSession: { session in
                                     contextRenameSession = session
@@ -146,11 +149,14 @@ struct SessionShelfView: View {
                             sessions: viewModel.sessionsForFolderBrowser(AppViewModel.unfiledFolderSelectionID),
                             selectedSessionID: viewModel.selectedSessionID,
                             folders: viewModel.folders,
+                            sessionActionStates: { session in
+                                viewModel.sessionActions(for: .shelfContextMenu, session: session)
+                            },
                             onSelectSession: { session in
                                 viewModel.selectSession(session)
                             },
-                            onRevealSession: { session in
-                                viewModel.revealFiles(for: session.id)
+                            onPerformSessionAction: { action, session in
+                                viewModel.performSessionAction(action, for: session.id)
                             },
                             onRenameSession: { session in
                                 contextRenameSession = session
@@ -195,11 +201,14 @@ struct SessionShelfView: View {
                                 sessions: viewModel.sessionsForFolderBrowser(folder.id),
                                 selectedSessionID: viewModel.selectedSessionID,
                                 folders: viewModel.folders,
+                                sessionActionStates: { session in
+                                    viewModel.sessionActions(for: .shelfContextMenu, session: session)
+                                },
                                 onSelectSession: { session in
                                     viewModel.selectSession(session)
                                 },
-                                onRevealSession: { session in
-                                    viewModel.revealFiles(for: session.id)
+                                onPerformSessionAction: { action, session in
+                                    viewModel.performSessionAction(action, for: session.id)
                                 },
                                 onRenameSession: { session in
                                     contextRenameSession = session
@@ -423,8 +432,9 @@ private struct FolderContentsListView: View {
     let sessions: [SessionManifest]
     let selectedSessionID: UUID?
     let folders: [SessionFolder]
+    let sessionActionStates: (SessionManifest) -> [SessionActionState]
     let onSelectSession: (SessionManifest) -> Void
-    let onRevealSession: (SessionManifest) -> Void
+    let onPerformSessionAction: (SessionAction, SessionManifest) -> Void
     let onRenameSession: (SessionManifest) -> Void
     let onDeleteSession: (SessionManifest) -> Void
     let onMoveSession: (UUID, String?) -> Void
@@ -474,17 +484,37 @@ private struct FolderContentsListView: View {
                     .buttonStyle(.plain)
                     .contentShape(Rectangle())
                     .contextMenu {
-                        Button("Reveal Files") {
-                            onRevealSession(session)
+                        let actionStates = Dictionary(
+                            uniqueKeysWithValues: sessionActionStates(session).map { ($0.action, $0) }
+                        )
+
+                        if let revealState = actionStates[.revealFiles] {
+                            Button(revealState.action.title) {
+                                onPerformSessionAction(.revealFiles, session)
+                            }
+                            .disabled(!revealState.isEnabled)
+                        }
+
+                        if let retryState = actionStates[.retryProcessing] {
+                            Button(retryState.action.title) {
+                                onPerformSessionAction(.retryProcessing, session)
+                            }
+                            .disabled(!retryState.isEnabled)
+                        }
+
+                        if actionStates[.retryProcessing] != nil {
+                            Divider()
                         }
 
                         Button("Rename…") {
                             onRenameSession(session)
                         }
+                        .disabled(!(actionStates[.rename]?.isEnabled ?? false))
 
                         Button("Delete…", role: .destructive) {
                             onDeleteSession(session)
                         }
+                        .disabled(!(actionStates[.delete]?.isEnabled ?? false))
 
                         Divider()
 
@@ -499,6 +529,7 @@ private struct FolderContentsListView: View {
                                 }
                             }
                         }
+                        .disabled(!(actionStates[.moveToFolder]?.isEnabled ?? false))
                     }
                     .padding(.leading, DS.Space.x4)
                 }

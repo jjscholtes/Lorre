@@ -939,12 +939,13 @@ struct ProcessingPipelineView: View {
                 rail: .progress(session.processing.progressFraction ?? 0.1),
                 trailingActions: {
                     HStack(spacing: DS.Space.x2) {
-                        Button("Export") {}
-                            .buttonStyle(PrimaryControlButtonStyle())
-                            .disabled(true)
-                        Button("Reveal Files") {}
+                        ForEach(viewModel.sessionActions(for: .processingStage, session: session)) { actionState in
+                            Button(actionState.action.title) {
+                                viewModel.performSessionAction(actionState.action, for: session.id)
+                            }
                             .buttonStyle(SecondaryControlButtonStyle())
-                            .disabled(true)
+                            .disabled(!actionState.isEnabled)
+                        }
                     }
                 }
             )
