@@ -35,7 +35,8 @@ enum FluidAudioIntegrationProbe {
             supportsSpeakerEnrollment: true,
             supportsLivePreview: true,
             supportsTextNormalization: textNormalizationState.isNativeAvailable,
-            supportsVocabularyBoosting: false
+            supportsVocabularyBoosting: true,
+            supportsCohereQualityPass: true
         )
         #else
         return .mock
@@ -64,8 +65,9 @@ actor FluidAudioTranscriptionService: TranscriptionService {
             self.manager = manager
         }
 
-        func transcribe(_ url: URL, source: AudioSource) async throws -> ASRResult {
-            try await manager.transcribe(url, source: source)
+        func transcribe(_ url: URL, language: Language?) async throws -> ASRResult {
+            var decoderState = TdtDecoderState.make(decoderLayers: await manager.decoderLayerCount)
+            return try await manager.transcribe(url, decoderState: &decoderState, language: language)
         }
     }
 
@@ -96,6 +98,7 @@ actor FluidAudioTranscriptionService: TranscriptionService {
     private var vadManagerBox: VadManagerBox?
     private var initialized = false
     private var vocabularyBoostingConfiguration = VocabularyBoostingConfiguration()
+    private var batchTranscriptionConfiguration = BatchTranscriptionConfiguration()
 
     func ensureModelsReady(
         onProgress: (@Sendable (ProcessingUpdate) async -> Void)? = nil
@@ -142,7 +145,12 @@ actor FluidAudioTranscriptionService: TranscriptionService {
                 }
             }
         )
-        let manager = AsrManager(config: .default)
+        let manager = AsrManager(
+            config: ASRConfig(
+                parallelChunkConcurrency: batchTranscriptionConfiguration.parallelChunkConcurrency,
+                streamingEnabled: true
+            )
+        )
         try await manager.loadModels(models)
         if let onProgress {
             await onProgress(
@@ -180,6 +188,16 @@ actor FluidAudioTranscriptionService: TranscriptionService {
         vocabularyBoostingConfiguration = configuration
     }
 
+    func setBatchTranscriptionConfiguration(_ configuration: BatchTranscriptionConfiguration) async {
+        let normalized = configuration.normalized
+        let concurrencyChanged = normalized.parallelChunkConcurrency != batchTranscriptionConfiguration.parallelChunkConcurrency
+        batchTranscriptionConfiguration = normalized
+        if concurrencyChanged {
+            managerBox = nil
+            initialized = false
+        }
+    }
+
     func transcribe(url: URL, sessionTitle: String, source: RecordingSource) async throws -> TranscriptionResult {
         try await ensureModelsReady(onProgress: nil)
         guard let managerBox else {
@@ -187,30 +205,165 @@ actor FluidAudioTranscriptionService: TranscriptionService {
         }
 
         _ = sessionTitle
-        let result = try await managerBox.transcribe(url, source: fluidAudioSource(for: source))
+        _ = source
+        var result = try await managerBox.transcribe(
+            url,
+            language: parakeetLanguage(for: batchTranscriptionConfiguration.languageCode)
+        )
+        result = await applyVocabularyBoostingIfNeeded(to: result, audioURL: url)
         let speechWindows = await loadSpeechWindowsIfAvailable(from: url)
         let utterances = buildUtterances(from: result, speechWindows: speechWindows)
+        let alternatives = await makeAlternativesIfNeeded(for: url)
+        let languageCode = batchTranscriptionConfiguration.languageCode
+        let engineName = result.ctcAppliedTerms?.isEmpty == false
+            ? "FluidAudio-AsrManager-v3+Vocabulary"
+            : "FluidAudio-AsrManager-v3"
 
         if !utterances.isEmpty {
-            return TranscriptionResult(engineName: "FluidAudio-AsrManager-v3", utterances: utterances)
+            return TranscriptionResult(
+                engineName: engineName,
+                utterances: utterances,
+                languageCode: languageCode,
+                alternatives: alternatives
+            )
         }
 
         let trimmed = result.text.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
         let fallbackText = trimmed.isEmpty ? "No speech detected." : trimmed
         return TranscriptionResult(
-            engineName: "FluidAudio-AsrManager-v3",
+            engineName: engineName,
             utterances: [
                 TranscriptionUtterance(startMs: 0, endMs: 1000, text: fallbackText, confidence: nil)
-            ]
+            ],
+            languageCode: languageCode,
+            alternatives: alternatives
         )
     }
 
-    private func fluidAudioSource(for source: RecordingSource) -> AudioSource {
-        switch source {
-        case .microphone:
-            return .microphone
-        case .systemAudio, .microphoneAndSystemAudio:
-            return .system
+    private func applyVocabularyBoostingIfNeeded(to result: ASRResult, audioURL: URL) async -> ASRResult {
+        guard vocabularyBoostingConfiguration.isEnabled else { return result }
+        let terms = vocabularyBoostingConfiguration.runtimeSimpleFormatTerms
+        guard !terms.isEmpty else { return result }
+        guard let tokenTimings = result.tokenTimings, !tokenTimings.isEmpty else { return result }
+
+        do {
+            let vocabURL = try writeRuntimeVocabularyFile(terms)
+            let (customVocab, ctcModels) = try await CustomVocabularyContext.loadWithCtcTokens(from: vocabURL.path)
+            guard !customVocab.terms.isEmpty else { return result }
+
+            let samples = try AudioConverter().resampleAudioFile(audioURL)
+            let blankId = ctcModels.vocabulary.count
+            let spotter = CtcKeywordSpotter(models: ctcModels, blankId: blankId)
+            let spotResult = try await spotter.spotKeywordsWithLogProbs(
+                audioSamples: samples,
+                customVocabulary: customVocab,
+                minScore: nil
+            )
+            guard !spotResult.logProbs.isEmpty else { return result }
+
+            let rescorer = try await VocabularyRescorer.create(
+                spotter: spotter,
+                vocabulary: customVocab,
+                config: .default,
+                ctcModelDirectory: CtcModels.defaultCacheDirectory(for: ctcModels.variant)
+            )
+            let output = rescorer.ctcTokenRescore(
+                transcript: result.text,
+                tokenTimings: tokenTimings,
+                logProbs: spotResult.logProbs,
+                frameDuration: spotResult.frameDuration
+            )
+            guard output.wasModified else { return result }
+            let applied = output.replacements
+                .filter(\.shouldReplace)
+                .compactMap(\.replacementWord)
+            let detected = spotResult.detections.map(\.term.text)
+            return result.withRescoring(text: output.text, detected: detected, applied: applied)
+        } catch {
+            return result
+        }
+    }
+
+    private func writeRuntimeVocabularyFile(_ terms: String) throws -> URL {
+        let directory = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Lorre", isDirectory: true)
+            .appendingPathComponent("Runtime", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let url = directory.appendingPathComponent("custom-vocabulary.txt")
+        try terms.write(to: url, atomically: true, encoding: .utf8)
+        return url
+    }
+
+    private func makeAlternativesIfNeeded(for url: URL) async -> [TranscriptAlternative] {
+        guard batchTranscriptionConfiguration.mode == .parakeetV3WithCohereQualityPass else {
+            return []
+        }
+        guard let language = cohereLanguage(for: batchTranscriptionConfiguration.languageCode) else {
+            return []
+        }
+        guard #available(macOS 14, iOS 17, *) else {
+            return []
+        }
+
+        do {
+            let samples = try AudioConverter().resampleAudioFile(url)
+            let modelDir = try await ensureCohereModelDirectory()
+            let models = try await CoherePipeline.loadModels(
+                encoderDir: modelDir,
+                decoderDir: modelDir,
+                vocabDir: modelDir,
+                decoderVariant: .v2
+            )
+            let result = try await CoherePipeline().transcribeLong(
+                audio: samples,
+                models: models,
+                language: language
+            )
+            let text = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !text.isEmpty else { return [] }
+            return [
+                TranscriptAlternative(
+                    engineName: "FluidAudio-CohereTranscribe-v2",
+                    languageCode: language.rawValue,
+                    text: text,
+                    processingSeconds: result.totalSeconds
+                )
+            ]
+        } catch {
+            return []
+        }
+    }
+
+    private func ensureCohereModelDirectory() async throws -> URL {
+        let modelsBaseDirectory = AsrModels.defaultCacheDirectory().deletingLastPathComponent()
+        try await DownloadUtils.downloadRepo(.cohereTranscribeCoreml, to: modelsBaseDirectory)
+        return modelsBaseDirectory.appendingPathComponent(Repo.cohereTranscribeCoreml.folderName, isDirectory: true)
+    }
+
+    private func parakeetLanguage(for languageCode: String) -> Language? {
+        switch BatchTranscriptionConfiguration.normalizedLanguageCode(languageCode) {
+        case "en": return .english
+        case "fr": return .french
+        case "de": return .german
+        case "es": return .spanish
+        case "it": return .italian
+        case "pt": return .portuguese
+        case "pl": return .polish
+        default: return nil
+        }
+    }
+
+    private func cohereLanguage(for languageCode: String) -> CohereAsrConfig.Language? {
+        switch BatchTranscriptionConfiguration.normalizedLanguageCode(languageCode) {
+        case "en": return .english
+        case "fr": return .french
+        case "de": return .german
+        case "es": return .spanish
+        case "it": return .italian
+        case "pt": return .portuguese
+        case "nl": return .dutch
+        case "pl": return .polish
+        default: return nil
         }
     }
 
@@ -599,7 +752,7 @@ actor FluidAudioDiarizationService: SpeakerDiarizationService {
     private var offlinePreparedSpeakerHint: DiarizationSpeakerCountHint = .auto
     private var sortformerModels: SortformerModels?
     private var sortformerDiarizer: SortformerDiarizer?
-    private var lsEendDescriptor: LSEENDModelDescriptor?
+    private var lsEendModel: LSEENDModel?
     private var lsEendDiarizer: LSEENDDiarizer?
     private var knownSpeakers: [KnownSpeaker] = []
     private let representativeAudioLimitSeconds: Double = 10.0
@@ -840,8 +993,8 @@ actor FluidAudioDiarizationService: SpeakerDiarizationService {
             )
         }
 
-        if lsEendDescriptor == nil {
-            lsEendDescriptor = try await LSEENDModelDescriptor.loadFromHuggingFace(
+        if lsEendModel == nil {
+            lsEendModel = try await LSEENDModel.loadFromHuggingFace(
                 variant: .dihard3,
                 progressHandler: { progress in
                     guard let onProgress else { return }
@@ -858,12 +1011,12 @@ actor FluidAudioDiarizationService: SpeakerDiarizationService {
             )
         }
 
-        guard let lsEendDescriptor else {
+        guard let lsEendModel else {
             throw LorreError.processingFailed("LS-EEND diarization models are unavailable.")
         }
 
         let diarizer = LSEENDDiarizer()
-        try diarizer.initialize(descriptor: lsEendDescriptor)
+        try diarizer.initialize(model: lsEendModel)
         lsEendDiarizer = diarizer
 
         if let onProgress {

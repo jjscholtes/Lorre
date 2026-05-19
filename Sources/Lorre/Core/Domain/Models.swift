@@ -488,6 +488,7 @@ struct TranscriptDocument: Codable, Equatable, Sendable {
     var sourceEngine: String
     var segments: [TranscriptSegment]
     var speakers: [SpeakerProfile]
+    var alternatives: [TranscriptAlternative]
     var createdAt: Date
     var updatedAt: Date
 
@@ -498,6 +499,7 @@ struct TranscriptDocument: Codable, Equatable, Sendable {
         sourceEngine: String,
         segments: [TranscriptSegment],
         speakers: [SpeakerProfile],
+        alternatives: [TranscriptAlternative] = [],
         createdAt: Date = Date(),
         updatedAt: Date = Date()
     ) {
@@ -507,8 +509,47 @@ struct TranscriptDocument: Codable, Equatable, Sendable {
         self.sourceEngine = sourceEngine
         self.segments = segments
         self.speakers = speakers
+        self.alternatives = alternatives
         self.createdAt = createdAt
         self.updatedAt = updatedAt
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case schemaVersion
+        case sessionId
+        case languageHint
+        case sourceEngine
+        case segments
+        case speakers
+        case alternatives
+        case createdAt
+        case updatedAt
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.schemaVersion = try container.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 1
+        self.sessionId = try container.decode(UUID.self, forKey: .sessionId)
+        self.languageHint = try container.decodeIfPresent(String.self, forKey: .languageHint) ?? "en"
+        self.sourceEngine = try container.decode(String.self, forKey: .sourceEngine)
+        self.segments = try container.decode([TranscriptSegment].self, forKey: .segments)
+        self.speakers = try container.decode([SpeakerProfile].self, forKey: .speakers)
+        self.alternatives = try container.decodeIfPresent([TranscriptAlternative].self, forKey: .alternatives) ?? []
+        self.createdAt = try container.decode(Date.self, forKey: .createdAt)
+        self.updatedAt = try container.decode(Date.self, forKey: .updatedAt)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(schemaVersion, forKey: .schemaVersion)
+        try container.encode(sessionId, forKey: .sessionId)
+        try container.encodeIfPresent(languageHint, forKey: .languageHint)
+        try container.encode(sourceEngine, forKey: .sourceEngine)
+        try container.encode(segments, forKey: .segments)
+        try container.encode(speakers, forKey: .speakers)
+        try container.encode(alternatives, forKey: .alternatives)
+        try container.encode(createdAt, forKey: .createdAt)
+        try container.encode(updatedAt, forKey: .updatedAt)
     }
 
     func speaker(for id: String?) -> SpeakerProfile {
@@ -516,6 +557,31 @@ struct TranscriptDocument: Codable, Equatable, Sendable {
             return speakers.first(where: { $0.id == "UNK" }) ?? .defaultProfile(id: "UNK")
         }
         return speakers.first(where: { $0.id == id }) ?? .defaultProfile(id: id)
+    }
+}
+
+struct TranscriptAlternative: Codable, Identifiable, Equatable, Sendable {
+    var id: UUID
+    var engineName: String
+    var languageCode: String
+    var text: String
+    var createdAt: Date
+    var processingSeconds: Double
+
+    init(
+        id: UUID = UUID(),
+        engineName: String,
+        languageCode: String,
+        text: String,
+        createdAt: Date = Date(),
+        processingSeconds: Double
+    ) {
+        self.id = id
+        self.engineName = engineName
+        self.languageCode = languageCode
+        self.text = text
+        self.createdAt = createdAt
+        self.processingSeconds = processingSeconds
     }
 }
 
@@ -618,6 +684,8 @@ struct TranscriptionUtterance: Equatable, Sendable {
 struct TranscriptionResult: Equatable, Sendable {
     var engineName: String
     var utterances: [TranscriptionUtterance]
+    var languageCode: String? = nil
+    var alternatives: [TranscriptAlternative] = []
 }
 
 struct DiarizationSpan: Equatable, Sendable {
@@ -794,6 +862,140 @@ struct VocabularyBoostingConfiguration: Codable, Equatable, Sendable {
         self.isEnabled = isEnabled
         self.simpleFormatTerms = simpleFormatTerms
     }
+
+    var simpleFormatEntries: [VocabularyBoostingEntry] {
+        simpleFormatTerms
+            .split(whereSeparator: { $0.isNewline })
+            .compactMap { VocabularyBoostingEntry(simpleFormatLine: String($0)) }
+    }
+
+    var runtimeSimpleFormatTerms: String {
+        simpleFormatEntries
+            .map(\.simpleFormatLine)
+            .joined(separator: "\n")
+    }
+}
+
+struct VocabularyBoostingEntry: Equatable, Sendable {
+    var term: String
+    var aliases: [String]
+
+    init(term: String, aliases: [String] = []) {
+        self.term = term
+        self.aliases = aliases
+    }
+
+    init?(simpleFormatLine: String) {
+        let trimmed = simpleFormatLine.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, !trimmed.hasPrefix("#") else { return nil }
+
+        if let colonIndex = trimmed.firstIndex(of: ":") {
+            let rawTerm = String(trimmed[..<colonIndex]).trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !rawTerm.isEmpty else { return nil }
+            let rawAliases = String(trimmed[trimmed.index(after: colonIndex)...])
+            self.term = rawTerm
+            self.aliases = rawAliases
+                .split(separator: ",")
+                .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+        } else {
+            self.term = trimmed
+            self.aliases = []
+        }
+    }
+
+    var simpleFormatLine: String {
+        if aliases.isEmpty {
+            return term
+        }
+        return "\(term): \(aliases.joined(separator: ", "))"
+    }
+}
+
+enum BatchTranscriptionMode: String, Codable, CaseIterable, Equatable, Sendable {
+    case parakeetV3
+    case parakeetV3WithCohereQualityPass
+
+    var label: String {
+        switch self {
+        case .parakeetV3:
+            return "Parakeet v3"
+        case .parakeetV3WithCohereQualityPass:
+            return "Parakeet + Cohere"
+        }
+    }
+
+    var settingsSummary: String {
+        switch self {
+        case .parakeetV3:
+            return "Default timed transcript path with token timings and speaker alignment."
+        case .parakeetV3WithCohereQualityPass:
+            return "Adds a lazy Cohere alternate draft; timed rows still use Parakeet."
+        }
+    }
+}
+
+struct BatchTranscriptionConfiguration: Codable, Equatable, Sendable {
+    static let supportedLanguageCodes = ["en", "fr", "de", "es", "it", "pt", "nl", "pl"]
+
+    var mode: BatchTranscriptionMode
+    var languageCode: String
+    var parallelChunkConcurrency: Int
+
+    init(
+        mode: BatchTranscriptionMode = .parakeetV3,
+        languageCode: String = "en",
+        parallelChunkConcurrency: Int = 4
+    ) {
+        self.mode = mode
+        self.languageCode = Self.normalizedLanguageCode(languageCode)
+        self.parallelChunkConcurrency = Self.normalizedConcurrency(parallelChunkConcurrency)
+    }
+
+    var normalized: BatchTranscriptionConfiguration {
+        BatchTranscriptionConfiguration(
+            mode: mode,
+            languageCode: languageCode,
+            parallelChunkConcurrency: parallelChunkConcurrency
+        )
+    }
+
+    static func normalizedLanguageCode(_ value: String) -> String {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return trimmed.isEmpty ? "en" : trimmed
+    }
+
+    static func normalizedConcurrency(_ value: Int) -> Int {
+        min(8, max(1, value))
+    }
+}
+
+enum LiveTranscriptionPreset: String, Codable, CaseIterable, Equatable, Sendable {
+    case lowLatency
+    case balanced
+    case highAccuracy
+
+    var label: String {
+        switch self {
+        case .lowLatency:
+            return "Low latency"
+        case .balanced:
+            return "Balanced"
+        case .highAccuracy:
+            return "High accuracy"
+        }
+    }
+
+    var settingsSummary: String {
+        switch self {
+        case .lowLatency:
+            return "160 ms chunks for faster partials."
+        case .balanced:
+            return "320 ms chunks for the default latency and quality balance."
+        case .highAccuracy:
+            return "1280 ms chunks for steadier live text with more delay."
+        }
+    }
 }
 
 struct SessionFolder: Identifiable, Codable, Equatable, Sendable {
@@ -831,12 +1033,14 @@ struct AppSettings: Codable, Equatable, Sendable {
     var isDeleteAudioAfterTranscriptionEnabled: Bool
     var isTranscriptConfidenceVisible: Bool
     var vocabularyBoosting: VocabularyBoostingConfiguration
+    var batchTranscription: BatchTranscriptionConfiguration
+    var liveTranscriptionPreset: LiveTranscriptionPreset
     var folders: [SessionFolder]
     var sidebarExpandedViewFilterIDs: [String]
     var sidebarExpandedFolderIDs: [String]
 
     init(
-        schemaVersion: Int = 2,
+        schemaVersion: Int = 3,
         updatedAt: Date = Date(),
         modelPreparation: ModelPreparationSnapshot? = nil,
         modelRegistryConfiguration: ModelRegistryConfiguration = .init(),
@@ -849,6 +1053,8 @@ struct AppSettings: Codable, Equatable, Sendable {
         isDeleteAudioAfterTranscriptionEnabled: Bool = false,
         isTranscriptConfidenceVisible: Bool = false,
         vocabularyBoosting: VocabularyBoostingConfiguration = .init(),
+        batchTranscription: BatchTranscriptionConfiguration = .init(),
+        liveTranscriptionPreset: LiveTranscriptionPreset = .balanced,
         folders: [SessionFolder] = [],
         sidebarExpandedViewFilterIDs: [String] = [],
         sidebarExpandedFolderIDs: [String] = []
@@ -866,6 +1072,8 @@ struct AppSettings: Codable, Equatable, Sendable {
         self.isDeleteAudioAfterTranscriptionEnabled = isDeleteAudioAfterTranscriptionEnabled
         self.isTranscriptConfidenceVisible = isTranscriptConfidenceVisible
         self.vocabularyBoosting = vocabularyBoosting
+        self.batchTranscription = batchTranscription.normalized
+        self.liveTranscriptionPreset = liveTranscriptionPreset
         self.folders = folders
         self.sidebarExpandedViewFilterIDs = sidebarExpandedViewFilterIDs
         self.sidebarExpandedFolderIDs = sidebarExpandedFolderIDs
@@ -885,6 +1093,8 @@ struct AppSettings: Codable, Equatable, Sendable {
         case isDeleteAudioAfterTranscriptionEnabled
         case isTranscriptConfidenceVisible
         case vocabularyBoosting
+        case batchTranscription
+        case liveTranscriptionPreset
         case folders
         case sidebarExpandedViewFilterIDs
         case sidebarExpandedFolderIDs
@@ -907,6 +1117,10 @@ struct AppSettings: Codable, Equatable, Sendable {
         self.isDeleteAudioAfterTranscriptionEnabled = try container.decodeIfPresent(Bool.self, forKey: .isDeleteAudioAfterTranscriptionEnabled) ?? false
         self.isTranscriptConfidenceVisible = try container.decodeIfPresent(Bool.self, forKey: .isTranscriptConfidenceVisible) ?? false
         self.vocabularyBoosting = try container.decodeIfPresent(VocabularyBoostingConfiguration.self, forKey: .vocabularyBoosting) ?? .init()
+        self.batchTranscription = (
+            try container.decodeIfPresent(BatchTranscriptionConfiguration.self, forKey: .batchTranscription)
+        )?.normalized ?? .init()
+        self.liveTranscriptionPreset = try container.decodeIfPresent(LiveTranscriptionPreset.self, forKey: .liveTranscriptionPreset) ?? .balanced
         self.folders = try container.decodeIfPresent([SessionFolder].self, forKey: .folders) ?? []
         self.sidebarExpandedViewFilterIDs = try container.decodeIfPresent([String].self, forKey: .sidebarExpandedViewFilterIDs) ?? []
         self.sidebarExpandedFolderIDs = try container.decodeIfPresent([String].self, forKey: .sidebarExpandedFolderIDs) ?? []
@@ -927,6 +1141,8 @@ struct AppSettings: Codable, Equatable, Sendable {
         try container.encode(isDeleteAudioAfterTranscriptionEnabled, forKey: .isDeleteAudioAfterTranscriptionEnabled)
         try container.encode(isTranscriptConfidenceVisible, forKey: .isTranscriptConfidenceVisible)
         try container.encode(vocabularyBoosting, forKey: .vocabularyBoosting)
+        try container.encode(batchTranscription.normalized, forKey: .batchTranscription)
+        try container.encode(liveTranscriptionPreset, forKey: .liveTranscriptionPreset)
         try container.encode(folders, forKey: .folders)
         try container.encode(sidebarExpandedViewFilterIDs, forKey: .sidebarExpandedViewFilterIDs)
         try container.encode(sidebarExpandedFolderIDs, forKey: .sidebarExpandedFolderIDs)

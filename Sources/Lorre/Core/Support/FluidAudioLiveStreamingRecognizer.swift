@@ -19,27 +19,42 @@ final class LiveTranscriptionPCMBufferBox: @unchecked Sendable {
 
 actor FluidAudioLiveStreamingRecognizer {
     private enum LivePreset: CaseIterable {
-        case balanced
         case lowLatency
+        case balanced
+        case highAccuracy
 
         var chunkSize: StreamingChunkSize {
             switch self {
-            case .balanced: return .ms320
             case .lowLatency: return .ms160
+            case .balanced: return .ms320
+            case .highAccuracy: return .ms1280
             }
         }
 
         var eouDebounceMs: Int {
             switch self {
-            case .balanced: return 1280
             case .lowLatency: return 1120
+            case .balanced: return 1280
+            case .highAccuracy: return 1920
             }
         }
 
         var repo: Repo {
             switch self {
-            case .balanced: return .parakeetEou320
             case .lowLatency: return .parakeetEou160
+            case .balanced: return .parakeetEou320
+            case .highAccuracy: return .parakeetEou1280
+            }
+        }
+
+        init(_ preset: LiveTranscriptionPreset) {
+            switch preset {
+            case .lowLatency:
+                self = .lowLatency
+            case .balanced:
+                self = .balanced
+            case .highAccuracy:
+                self = .highAccuracy
             }
         }
     }
@@ -56,6 +71,7 @@ actor FluidAudioLiveStreamingRecognizer {
 
     private var eouManager: StreamingEouAsrManager?
     private var vadManager: VadManager?
+    private var requestedPreset: LivePreset
     private var preparedPreset: LivePreset?
     private var preview = LiveTranscriptPreview()
     private var previewHandler: (@Sendable (LiveTranscriptPreview) -> Void)?
@@ -77,10 +93,36 @@ actor FluidAudioLiveStreamingRecognizer {
 
     init(
         speakerEnrollmentService: any SpeakerEnrollmentService = FluidAudioSpeakerEnrollmentService(),
-        knownSpeakerReferenceAudioProvider: (@Sendable (KnownSpeaker) async -> URL?)? = nil
+        knownSpeakerReferenceAudioProvider: (@Sendable (KnownSpeaker) async -> URL?)? = nil,
+        preset: LiveTranscriptionPreset = .balanced
     ) {
         self.speakerEnrollmentService = speakerEnrollmentService
         self.knownSpeakerReferenceAudioProvider = knownSpeakerReferenceAudioProvider
+        self.requestedPreset = LivePreset(preset)
+    }
+
+    static func livePreviewModelFolderName(for preset: LiveTranscriptionPreset) -> String {
+        LivePreset(preset).repo.folderName
+    }
+
+    static func livePreviewDebounceMilliseconds(for preset: LiveTranscriptionPreset) -> Int {
+        LivePreset(preset).eouDebounceMs
+    }
+
+    static func normalizedLiveSpeakerActivity(_ activity: Float) -> Float {
+        max(0, min(1, activity))
+    }
+
+    func setPreset(_ preset: LiveTranscriptionPreset) async {
+        let nextPreset = LivePreset(preset)
+        guard requestedPreset != nextPreset else { return }
+        requestedPreset = nextPreset
+        guard preparedPreset != nextPreset else { return }
+        if isStreaming {
+            return
+        }
+        eouManager = nil
+        preparedPreset = nil
     }
 
     func setKnownSpeakers(_ speakers: [KnownSpeaker]) async {
@@ -314,7 +356,7 @@ actor FluidAudioLiveStreamingRecognizer {
                     )
                 )
             }
-            try await manager.loadModels(modelDir: modelDir)
+            try await manager.loadModels(from: modelDir)
             await manager.setPartialCallback { [weak self] partial in
                 Task { await self?.handlePartialCallbackText(partial) }
             }
@@ -618,14 +660,14 @@ actor FluidAudioLiveStreamingRecognizer {
         if !update.tentativeSegments.isEmpty {
             candidate = update.tentativeSegments.max { lhs, rhs in
                 if lhs.endFrame == rhs.endFrame {
-                    return lhs.confidence < rhs.confidence
+                    return lhs.activity < rhs.activity
                 }
                 return lhs.endFrame < rhs.endFrame
             }
         } else {
             candidate = update.finalizedSegments.max { lhs, rhs in
                 if lhs.endFrame == rhs.endFrame {
-                    return lhs.confidence < rhs.confidence
+                    return lhs.activity < rhs.activity
                 }
                 return lhs.endFrame < rhs.endFrame
             }
@@ -634,8 +676,9 @@ actor FluidAudioLiveStreamingRecognizer {
         guard let candidate else {
             return nil
         }
-        guard candidate.confidence >= liveSpeakerActivationThreshold else { return nil }
-        return (slot: candidate.speakerIndex, probability: candidate.confidence)
+        let activity = Self.normalizedLiveSpeakerActivity(candidate.activity)
+        guard activity >= liveSpeakerActivationThreshold else { return nil }
+        return (slot: candidate.speakerIndex, probability: activity)
     }
 
     private func matchKnownSpeaker(for embedding: [Float]) -> (speaker: KnownSpeaker, distance: Float)? {
@@ -713,17 +756,18 @@ actor FluidAudioLiveStreamingRecognizer {
     }
 
     private func selectAndPreparePreset() async throws -> LivePreset {
-        for preset in LivePreset.allCases {
+        let fallbackOrder = [requestedPreset] + LivePreset.allCases.filter { $0 != requestedPreset }
+        for (index, preset) in fallbackOrder.enumerated() {
             do {
                 _ = try await Self.ensureEouModelDirectory(for: preset.repo, progressHandler: nil)
                 return preset
             } catch {
-                if preset == LivePreset.allCases.last {
+                if index == fallbackOrder.count - 1 {
                     throw error
                 }
             }
         }
-        return .lowLatency
+        return requestedPreset
     }
 
     private static func ensureEouModelDirectory(

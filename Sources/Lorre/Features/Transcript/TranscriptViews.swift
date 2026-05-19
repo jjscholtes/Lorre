@@ -37,6 +37,10 @@ struct TranscriptStageView: View {
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .dsPanelSurface(alt: true, cornerRadius: DS.Radius.sm)
 
+                            if !transcript.alternatives.isEmpty {
+                                TranscriptAlternativesView(alternatives: transcript.alternatives)
+                            }
+
                             ForEach(transcript.segments) { segment in
                                 TranscriptSegmentRowView(
                                     sessionID: session.id,
@@ -98,5 +102,69 @@ struct TranscriptStageView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+}
+
+private struct TranscriptAlternativesView: View {
+    let alternatives: [TranscriptAlternative]
+    @State private var expandedIDs: Set<UUID> = []
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: DS.Space.x2) {
+            HStack(spacing: DS.Space.x2) {
+                Image(systemName: "doc.text.magnifyingglass")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(DS.ColorToken.fgSecondary)
+                CapsLabel(text: "Alternate Drafts")
+                Spacer(minLength: 0)
+                Text("\(alternatives.count)")
+                    .font(DS.FontStyle.monoStrong)
+                    .foregroundStyle(DS.ColorToken.fgSecondary)
+            }
+
+            ForEach(alternatives) { alternative in
+                DisclosureGroup(isExpanded: expandedBinding(for: alternative.id)) {
+                    Text(alternative.text)
+                        .font(DS.FontStyle.body)
+                        .foregroundStyle(DS.ColorToken.fgPrimary)
+                        .textSelection(.enabled)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.top, DS.Space.x1)
+                } label: {
+                    HStack(spacing: DS.Space.x2) {
+                        Text(alternative.engineName)
+                            .font(DS.FontStyle.bodyStrong)
+                            .foregroundStyle(DS.ColorToken.fgPrimary)
+                        Text(alternative.languageCode.uppercased())
+                            .font(DS.FontStyle.mono)
+                            .foregroundStyle(DS.ColorToken.fgSecondary)
+                        Spacer(minLength: 0)
+                        Text(Formatters.duration(alternative.processingSeconds))
+                            .font(DS.FontStyle.mono)
+                            .foregroundStyle(DS.ColorToken.fgTertiary)
+                    }
+                }
+                .font(DS.FontStyle.body)
+                .foregroundStyle(DS.ColorToken.fgPrimary)
+                .padding(.vertical, DS.Space.x1)
+            }
+        }
+        .padding(.horizontal, DS.Space.x2_5)
+        .padding(.vertical, DS.Space.x2)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .dsPanelSurface(alt: true, cornerRadius: DS.Radius.sm)
+    }
+
+    private func expandedBinding(for id: UUID) -> Binding<Bool> {
+        Binding(
+            get: { expandedIDs.contains(id) },
+            set: { isExpanded in
+                if isExpanded {
+                    expandedIDs.insert(id)
+                } else {
+                    expandedIDs.remove(id)
+                }
+            }
+        )
     }
 }

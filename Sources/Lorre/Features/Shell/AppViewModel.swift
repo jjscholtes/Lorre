@@ -57,6 +57,8 @@ final class AppViewModel: ObservableObject {
     @Published private(set) var isDiarizationDebugExportEnabled: Bool = false
     @Published private(set) var isVocabularyBoostingEnabled: Bool = false
     @Published var customVocabularySimpleFormatTerms: String = ""
+    @Published private(set) var batchTranscriptionConfiguration = BatchTranscriptionConfiguration()
+    @Published private(set) var liveTranscriptionPreset: LiveTranscriptionPreset = .balanced
     @Published private(set) var selectedRecordingSource: RecordingSource = .microphone
     @Published private(set) var isLiveTranscriptionSupported: Bool = false
     @Published private(set) var isLiveTranscriptionEnabled: Bool = false
@@ -131,10 +133,8 @@ final class AppViewModel: ObservableObject {
     }
 
     var customVocabularyTermLineCount: Int {
-        customVocabularySimpleFormatTerms
-            .split(whereSeparator: { $0.isNewline })
-            .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty && !$0.hasPrefix("#") }
+        VocabularyBoostingConfiguration(simpleFormatTerms: customVocabularySimpleFormatTerms)
+            .simpleFormatEntries
             .count
     }
 
@@ -1343,7 +1343,7 @@ final class AppViewModel: ObservableObject {
             banner = AppBanner(
                 kind: .info,
                 title: "Vocabulary boosting unavailable",
-                message: "The current FluidAudio SDK path does not expose batch vocabulary boosting. Your saved term list is preserved, but it is inactive in this build."
+                message: "This build cannot apply vocabulary terms during batch transcription. Your saved term list is preserved."
             )
             return
         }
@@ -1404,12 +1404,102 @@ final class AppViewModel: ObservableObject {
                                     ? "No custom terms configured. Batch transcription will use base Parakeet decoding unless you add terms."
                                     : "Saved \(lineCount) vocabulary entr\(lineCount == 1 ? "y" : "ies"). Use `term: alias1, alias2` for common variants."
                             )
-                            : "Saved \(lineCount) term entr\(lineCount == 1 ? "y" : "ies"), but the current FluidAudio SDK path cannot apply them during transcription yet."
+                            : "Saved \(lineCount) term entr\(lineCount == 1 ? "y" : "ies"), but this build cannot apply them during transcription."
                     )
                 }
             } catch {
                 await MainActor.run {
                     self.presentError(error, defaultTitle: "Could not save vocabulary terms")
+                }
+            }
+        }
+    }
+
+    func setBatchTranscriptionMode(_ mode: BatchTranscriptionMode) {
+        let updated = BatchTranscriptionConfiguration(
+            mode: mode,
+            languageCode: batchTranscriptionConfiguration.languageCode,
+            parallelChunkConcurrency: batchTranscriptionConfiguration.parallelChunkConcurrency
+        )
+        guard updated != batchTranscriptionConfiguration else { return }
+        let previous = batchTranscriptionConfiguration
+        batchTranscriptionConfiguration = updated
+
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                _ = try await self.dependencies.settings.setBatchTranscriptionConfiguration(updated)
+                await self.dependencies.transcription.setBatchTranscriptionConfiguration(updated)
+                await self.dependencies.metrics.log(
+                    name: "batch_transcription_mode_changed",
+                    attributes: ["mode": mode.rawValue]
+                )
+                await MainActor.run {
+                    self.banner = AppBanner(
+                        kind: .info,
+                        title: "Transcription mode updated",
+                        message: updated.mode.settingsSummary
+                    )
+                }
+            } catch {
+                await MainActor.run {
+                    self.batchTranscriptionConfiguration = previous
+                    self.presentError(error, defaultTitle: "Could not save ASR mode")
+                }
+            }
+        }
+    }
+
+    func setBatchTranscriptionLanguageCode(_ languageCode: String) {
+        let updated = BatchTranscriptionConfiguration(
+            mode: batchTranscriptionConfiguration.mode,
+            languageCode: languageCode,
+            parallelChunkConcurrency: batchTranscriptionConfiguration.parallelChunkConcurrency
+        )
+        guard updated != batchTranscriptionConfiguration else { return }
+        let previous = batchTranscriptionConfiguration
+        batchTranscriptionConfiguration = updated
+
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                _ = try await self.dependencies.settings.setBatchTranscriptionConfiguration(updated)
+                await self.dependencies.transcription.setBatchTranscriptionConfiguration(updated)
+            } catch {
+                await MainActor.run {
+                    self.batchTranscriptionConfiguration = previous
+                    self.presentError(error, defaultTitle: "Could not save ASR language")
+                }
+            }
+        }
+    }
+
+    func setLiveTranscriptionPreset(_ preset: LiveTranscriptionPreset) {
+        guard liveTranscriptionPreset != preset else { return }
+        let previous = liveTranscriptionPreset
+        liveTranscriptionPreset = preset
+
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                await self.dependencies.recorder.setLiveTranscriptionPreset(preset)
+                _ = try await self.dependencies.settings.setLiveTranscriptionPreset(preset)
+                await self.dependencies.metrics.log(
+                    name: "live_transcription_preset_changed",
+                    attributes: ["preset": preset.rawValue]
+                )
+                await MainActor.run {
+                    self.banner = AppBanner(
+                        kind: .info,
+                        title: "Live preview preset updated",
+                        message: preset.settingsSummary
+                    )
+                }
+            } catch {
+                await self.dependencies.recorder.setLiveTranscriptionPreset(previous)
+                await MainActor.run {
+                    self.liveTranscriptionPreset = previous
+                    self.presentError(error, defaultTitle: "Could not save live preview preset")
                 }
             }
         }
@@ -2238,10 +2328,14 @@ final class AppViewModel: ObservableObject {
             let restoredLiveSupported = await dependencies.recorder.supportsLiveTranscription(for: restoredRecordingSource)
             let restoredLiveEnabled = settings.isLiveTranscriptionEnabled && restoredLiveSupported
             let restoredVocabularyBoosting = settings.vocabularyBoosting
+            let restoredBatchTranscription = settings.batchTranscription.normalized
+            let restoredLivePreset = settings.liveTranscriptionPreset
             let restoredModelRegistry = settings.modelRegistryConfiguration
             let restoredDiarizationEngine = settings.diarizationEngine
             FluidAudioRuntimeConfiguration.apply(modelRegistry: restoredModelRegistry)
             await dependencies.diarization.setDiarizationEngine(restoredDiarizationEngine)
+            await dependencies.transcription.setBatchTranscriptionConfiguration(restoredBatchTranscription)
+            await dependencies.recorder.setLiveTranscriptionPreset(restoredLivePreset)
             await dependencies.recorder.setLiveTranscriptionEnabled(restoredLiveEnabled)
             await dependencies.transcription.setVocabularyBoostingConfiguration(restoredVocabularyBoosting)
             await MainActor.run {
@@ -2254,6 +2348,8 @@ final class AppViewModel: ObservableObject {
                 self.isDiarizationDebugExportEnabled = settings.isDiarizationDebugExportEnabled
                 self.isVocabularyBoostingEnabled = restoredVocabularyBoosting.isEnabled
                 self.customVocabularySimpleFormatTerms = restoredVocabularyBoosting.simpleFormatTerms
+                self.batchTranscriptionConfiguration = restoredBatchTranscription
+                self.liveTranscriptionPreset = restoredLivePreset
                 self.isLiveTranscriptionEnabled = restoredLiveEnabled
                 self.isDeleteAudioAfterTranscriptionEnabled = settings.isDeleteAudioAfterTranscriptionEnabled
                 self.isTranscriptConfidenceVisible = settings.isTranscriptConfidenceVisible
@@ -2445,7 +2541,7 @@ final class AppViewModel: ObservableObject {
                 : "Leave off unless you need better recognition for names or special terms."
         }
 
-        return "Stored for later, but inactive right now. The current FluidAudio SDK path no longer exposes the old batch vocabulary boosting hook."
+        return "Stored for later, but inactive in this build."
     }
 
     private func chooseKnownSpeakerSampleURL(title: String) -> URL? {

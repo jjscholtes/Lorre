@@ -120,6 +120,24 @@ actor AppSettingsStore {
         return settings
     }
 
+    @discardableResult
+    func setBatchTranscriptionConfiguration(_ configuration: BatchTranscriptionConfiguration) async throws -> AppSettings {
+        var settings = try await load()
+        settings.batchTranscription = configuration.normalized
+        settings.updatedAt = Date()
+        try save(settings)
+        return settings
+    }
+
+    @discardableResult
+    func setLiveTranscriptionPreset(_ preset: LiveTranscriptionPreset) async throws -> AppSettings {
+        var settings = try await load()
+        settings.liveTranscriptionPreset = preset
+        settings.updatedAt = Date()
+        try save(settings)
+        return settings
+    }
+
     func loadFolders() async throws -> [SessionFolder] {
         let settings = try await load()
         return settings.folders.sorted { lhs, rhs in

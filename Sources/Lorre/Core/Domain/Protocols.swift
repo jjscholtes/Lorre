@@ -24,6 +24,7 @@ protocol RecorderService: Sendable {
     ) async throws
     func setKnownSpeakers(_ speakers: [KnownSpeaker]) async
     func setLiveTranscriptionEnabled(_ isEnabled: Bool) async
+    func setLiveTranscriptionPreset(_ preset: LiveTranscriptionPreset) async
     func currentLiveTranscriptPreview() async -> LiveTranscriptPreview?
     func makeLiveMonitorStream() async -> AsyncStream<RecorderLiveMonitorEvent>?
 }
@@ -33,6 +34,7 @@ protocol TranscriptionService: Sendable {
         onProgress: (@Sendable (ProcessingUpdate) async -> Void)?
     ) async throws
     func setVocabularyBoostingConfiguration(_ configuration: VocabularyBoostingConfiguration) async
+    func setBatchTranscriptionConfiguration(_ configuration: BatchTranscriptionConfiguration) async
     func transcribe(url: URL, sessionTitle: String, source: RecordingSource) async throws -> TranscriptionResult
 }
 

@@ -36,7 +36,7 @@ struct AppDependencies {
         diarizationService = FluidAudioDiarizationService(enrollmentService: enrollmentService)
         fluidAudioStatus = FluidAudioIntegrationProbe.statusSummary
         runtimeCapabilities = FluidAudioIntegrationProbe.runtimeCapabilities
-        modelPreparationComponentsSummary = "ASR v3 • Silero VAD • Speaker enrollment • VBx / Sortformer / LS-EEND diarizers • Live diarizer"
+        modelPreparationComponentsSummary = "Parakeet v3 ASR • Cohere quality pass on demand • CTC vocabulary boost • Silero VAD • Speaker enrollment • VBx / Sortformer / LS-EEND diarizers • Live Parakeet EOU"
         #else
         speakerEnrollmentService = FluidAudioSpeakerEnrollmentService()
         transcriptionService = MockTranscriptionService()

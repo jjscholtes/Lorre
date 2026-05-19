@@ -4,7 +4,9 @@ import Foundation
 @preconcurrency import FluidAudio
 #endif
 
-struct MockTranscriptionService: TranscriptionService {
+actor MockTranscriptionService: TranscriptionService {
+    private var batchTranscriptionConfiguration = BatchTranscriptionConfiguration()
+
     func ensureModelsReady(
         onProgress: (@Sendable (ProcessingUpdate) async -> Void)?
     ) async throws {
@@ -24,6 +26,10 @@ struct MockTranscriptionService: TranscriptionService {
 
     func setVocabularyBoostingConfiguration(_ configuration: VocabularyBoostingConfiguration) async {
         _ = configuration
+    }
+
+    func setBatchTranscriptionConfiguration(_ configuration: BatchTranscriptionConfiguration) async {
+        batchTranscriptionConfiguration = configuration.normalized
     }
 
     func transcribe(url: URL, sessionTitle: String, source: RecordingSource) async throws -> TranscriptionResult {
@@ -55,7 +61,26 @@ struct MockTranscriptionService: TranscriptionService {
             cursor += duration + 500
         }
 
-        return TranscriptionResult(engineName: "MockAsrService", utterances: utterances)
+        let alternatives: [TranscriptAlternative]
+        if batchTranscriptionConfiguration.mode == .parakeetV3WithCohereQualityPass {
+            alternatives = [
+                TranscriptAlternative(
+                    engineName: "MockCohereQualityPass",
+                    languageCode: batchTranscriptionConfiguration.languageCode,
+                    text: rotated.joined(separator: " "),
+                    processingSeconds: 0.01
+                )
+            ]
+        } else {
+            alternatives = []
+        }
+
+        return TranscriptionResult(
+            engineName: "MockAsrService",
+            utterances: utterances,
+            languageCode: batchTranscriptionConfiguration.languageCode,
+            alternatives: alternatives
+        )
     }
 }
 

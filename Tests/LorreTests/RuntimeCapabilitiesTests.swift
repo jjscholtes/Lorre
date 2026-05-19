@@ -34,4 +34,21 @@ final class RuntimeCapabilitiesTests: XCTestCase {
         XCTAssertFalse(RuntimeCapabilities.mock.usesFluidAudio)
         XCTAssertTrue(RuntimeCapabilities.mock.processingModeDescription.contains("Test/demo"))
     }
+
+    func testFeatureLabelsIncludeFluidAudioSpeechPassesWhenSupported() {
+        let capabilities = RuntimeCapabilities(
+            pipeline: .fluidAudio,
+            supportsSpeechToText: true,
+            supportsVoiceActivityDetection: true,
+            supportsSpeakerDiarization: true,
+            supportsSpeakerEnrollment: true,
+            supportsLivePreview: true,
+            supportsTextNormalization: true,
+            supportsVocabularyBoosting: true,
+            supportsCohereQualityPass: true
+        )
+
+        XCTAssertTrue(capabilities.featureLabels.contains("Vocabulary boosting"))
+        XCTAssertTrue(capabilities.featureLabels.contains("Cohere quality pass"))
+    }
 }

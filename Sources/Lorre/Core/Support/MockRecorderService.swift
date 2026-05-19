@@ -102,6 +102,10 @@ actor MockRecorderService: RecorderService {
         _ = isEnabled
     }
 
+    func setLiveTranscriptionPreset(_ preset: LiveTranscriptionPreset) async {
+        _ = preset
+    }
+
     func currentLiveTranscriptPreview() async -> LiveTranscriptPreview? {
         nil
     }

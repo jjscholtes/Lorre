@@ -643,6 +643,7 @@ actor AVFoundationRecorderService: RecorderService {
     private var activeRecordingToken: UUID?
     private var activeRecordingSource: RecordingSource?
     private var isLiveTranscriptionEnabled = false
+    private var liveTranscriptionPreset: LiveTranscriptionPreset = .balanced
     private var livePreviewFallback: LiveTranscriptPreview?
     private let speakerEnrollmentService: any SpeakerEnrollmentService
     private let knownSpeakerReferenceAudioProvider: (@Sendable (KnownSpeaker) async -> URL?)?
@@ -894,8 +895,10 @@ actor AVFoundationRecorderService: RecorderService {
         #if canImport(FluidAudio)
         let recognizer = liveRecognizer ?? FluidAudioLiveStreamingRecognizer(
             speakerEnrollmentService: speakerEnrollmentService,
-            knownSpeakerReferenceAudioProvider: knownSpeakerReferenceAudioProvider
+            knownSpeakerReferenceAudioProvider: knownSpeakerReferenceAudioProvider,
+            preset: liveTranscriptionPreset
         )
+        await recognizer.setPreset(liveTranscriptionPreset)
         await recognizer.setKnownSpeakers(knownSpeakers)
         try await recognizer.prepareModels(onProgress: onProgress)
         self.liveRecognizer = recognizer
@@ -936,6 +939,18 @@ actor AVFoundationRecorderService: RecorderService {
             }
             #endif
         }
+    }
+
+    func setLiveTranscriptionPreset(_ preset: LiveTranscriptionPreset) async {
+        guard liveTranscriptionPreset != preset else { return }
+        liveTranscriptionPreset = preset
+        #if canImport(FluidAudio)
+        await liveRecognizer?.setPreset(preset)
+        if activeRecordingSource == nil {
+            await liveRecognizer?.cancel()
+            liveRecognizer = nil
+        }
+        #endif
     }
 
     func currentLiveTranscriptPreview() async -> LiveTranscriptPreview? {
@@ -1146,8 +1161,10 @@ actor AVFoundationRecorderService: RecorderService {
 
         let recognizer = liveRecognizer ?? FluidAudioLiveStreamingRecognizer(
             speakerEnrollmentService: speakerEnrollmentService,
-            knownSpeakerReferenceAudioProvider: knownSpeakerReferenceAudioProvider
+            knownSpeakerReferenceAudioProvider: knownSpeakerReferenceAudioProvider,
+            preset: liveTranscriptionPreset
         )
+        await recognizer.setPreset(liveTranscriptionPreset)
         await recognizer.setKnownSpeakers(knownSpeakers)
         let previewBridge = self.liveMonitorBridge
         try await recognizer.start { [weak previewBridge] preview in

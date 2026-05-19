@@ -103,9 +103,11 @@ enum TranscriptAssembler {
 
         return TranscriptDocument(
             sessionId: sessionId,
+            languageHint: transcription.languageCode ?? "en",
             sourceEngine: transcription.engineName,
             segments: segments,
-            speakers: speakers.sorted { $0.id < $1.id }
+            speakers: speakers.sorted { $0.id < $1.id },
+            alternatives: transcription.alternatives
         )
     }
 

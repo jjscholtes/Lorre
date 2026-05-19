@@ -220,6 +220,106 @@ struct ModelStatusPanelView: View {
                 .padding(.vertical, DS.Space.x1)
                 .zIndex(activeTooltipRowID == "diar-engine" ? 100 : 0)
 
+                HStack(alignment: .top, spacing: DS.Space.x2) {
+                    settingsLabelCell(
+                        id: "asr-engine",
+                        label: "ASR Mode",
+                        tooltip: "Choose the local batch transcription path used for new processing runs."
+                    )
+
+                    Menu {
+                        ForEach(BatchTranscriptionMode.allCases, id: \.self) { mode in
+                            Button {
+                                viewModel.setBatchTranscriptionMode(mode)
+                            } label: {
+                                HStack {
+                                    Text(mode.label)
+                                    if mode == viewModel.batchTranscriptionConfiguration.mode {
+                                        Image(systemName: "checkmark")
+                                    }
+                                }
+                            }
+                        }
+                    } label: {
+                        HStack(spacing: DS.Space.x1_5) {
+                            Text(viewModel.batchTranscriptionConfiguration.mode.label)
+                                .lineLimit(1)
+                            Image(systemName: "chevron.down")
+                                .font(.system(size: 10, weight: .semibold))
+                        }
+                    }
+                    .buttonStyle(SecondaryControlButtonStyle())
+                    .frame(width: settingsToggleColumnWidth, alignment: .leading)
+
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(viewModel.batchTranscriptionConfiguration.mode.settingsSummary)
+                            .font(DS.FontStyle.helper)
+                            .foregroundStyle(DS.ColorToken.fgSecondary)
+                            .lineLimit(2)
+                        Menu {
+                            ForEach(BatchTranscriptionConfiguration.supportedLanguageCodes, id: \.self) { code in
+                                Button {
+                                    viewModel.setBatchTranscriptionLanguageCode(code)
+                                } label: {
+                                    HStack {
+                                        Text(code.uppercased())
+                                        if code == viewModel.batchTranscriptionConfiguration.languageCode {
+                                            Image(systemName: "checkmark")
+                                        }
+                                    }
+                                }
+                            }
+                        } label: {
+                            Text("Language: \(viewModel.batchTranscriptionConfiguration.languageCode.uppercased())")
+                                .font(DS.FontStyle.mono)
+                        }
+                        .buttonStyle(SecondaryControlButtonStyle())
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .padding(.vertical, DS.Space.x1)
+                .zIndex(activeTooltipRowID == "asr-engine" ? 100 : 0)
+
+                HStack(alignment: .top, spacing: DS.Space.x2) {
+                    settingsLabelCell(
+                        id: "live-preset",
+                        label: "Live Preset",
+                        tooltip: "Choose the live transcription latency and quality balance for the recorder preview."
+                    )
+
+                    Menu {
+                        ForEach(LiveTranscriptionPreset.allCases, id: \.self) { preset in
+                            Button {
+                                viewModel.setLiveTranscriptionPreset(preset)
+                            } label: {
+                                HStack {
+                                    Text(preset.label)
+                                    if preset == viewModel.liveTranscriptionPreset {
+                                        Image(systemName: "checkmark")
+                                    }
+                                }
+                            }
+                        }
+                    } label: {
+                        HStack(spacing: DS.Space.x1_5) {
+                            Text(viewModel.liveTranscriptionPreset.label)
+                                .lineLimit(1)
+                            Image(systemName: "chevron.down")
+                                .font(.system(size: 10, weight: .semibold))
+                        }
+                    }
+                    .buttonStyle(SecondaryControlButtonStyle())
+                    .frame(width: settingsToggleColumnWidth, alignment: .leading)
+
+                    Text(viewModel.liveTranscriptionPreset.settingsSummary)
+                        .font(DS.FontStyle.helper)
+                        .foregroundStyle(DS.ColorToken.fgSecondary)
+                        .lineLimit(2)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .padding(.vertical, DS.Space.x1)
+                .zIndex(activeTooltipRowID == "live-preset" ? 100 : 0)
+
                 toggleSettingsRow(
                     id: "show-confidence",
                     label: "Show Confidence",

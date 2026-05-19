@@ -54,6 +54,7 @@ final class LorreCoreTests: XCTestCase {
         let loadedTranscript = try await store.loadTranscript(sessionId: created.id)
         XCTAssertEqual(loadedTranscript?.segments.first?.text, "Hello world")
         XCTAssertEqual(loadedTranscript?.speakers.first(where: { $0.id == "S1" })?.safeDisplayName, "Speaker S1")
+        XCTAssertEqual(loadedTranscript?.alternatives, [])
     }
 
     func testMarkdownExporterIncludesSpeakerAndTimestamps() async throws {
@@ -113,6 +114,35 @@ final class LorreCoreTests: XCTestCase {
         XCTAssertEqual(transcript.segments[0].speakerId, "S1")
         XCTAssertEqual(transcript.segments[1].speakerId, "S3")
         XCTAssertTrue(transcript.speakers.contains(where: { $0.id == "UNK" }))
+    }
+
+    func testTranscriptAssemblerCarriesAlternativeDrafts() {
+        let sessionID = UUID()
+        let alternative = TranscriptAlternative(
+            engineName: "MockCohereQualityPass",
+            languageCode: "en",
+            text: "Cohere read only draft",
+            createdAt: Date(timeIntervalSince1970: 1_700_000_000),
+            processingSeconds: 1.2
+        )
+        let transcription = TranscriptionResult(
+            engineName: "TestEngine",
+            utterances: [
+                TranscriptionUtterance(startMs: 0, endMs: 1200, text: "Primary timed row", confidence: 0.91)
+            ],
+            languageCode: "nl",
+            alternatives: [alternative]
+        )
+
+        let transcript = TranscriptAssembler.assemble(
+            sessionId: sessionID,
+            transcription: transcription,
+            diarization: nil
+        )
+
+        XCTAssertEqual(transcript.segments.map(\.text), ["Primary timed row"])
+        XCTAssertEqual(transcript.languageHint, "nl")
+        XCTAssertEqual(transcript.alternatives, [alternative])
     }
 
     func testTranscriptAssemblerSplitsSentenceAtSpeakerTransition() {
@@ -311,7 +341,7 @@ final class LorreCoreTests: XCTestCase {
 
         let loaded = try await store.load()
         XCTAssertEqual(loaded.modelPreparation, snapshot)
-        XCTAssertEqual(loaded.schemaVersion, 2)
+        XCTAssertEqual(loaded.schemaVersion, 3)
     }
 
     func testAppSettingsStorePersistsModelRegistryConfiguration() async throws {
@@ -412,6 +442,47 @@ final class LorreCoreTests: XCTestCase {
         XCTAssertFalse(settings.isDeleteAudioAfterTranscriptionEnabled)
         XCTAssertFalse(settings.vocabularyBoosting.isEnabled)
         XCTAssertEqual(settings.vocabularyBoosting.simpleFormatTerms, "")
+        XCTAssertEqual(settings.batchTranscription, BatchTranscriptionConfiguration())
+        XCTAssertEqual(settings.liveTranscriptionPreset, .balanced)
+    }
+
+    func testTranscriptDocumentDecodesLegacyJSONWithEmptyAlternatives() throws {
+        let legacyJSON = """
+        {
+          "schemaVersion" : 1,
+          "sessionId" : "5E3D20E5-D3B3-430D-980B-8699A28EC4C0",
+          "sourceEngine" : "FluidAudio-AsrManager-v3",
+          "segments" : [
+            {
+              "id" : "11111111-1111-1111-1111-111111111111",
+              "startMs" : 0,
+              "endMs" : 1200,
+              "text" : "Legacy transcript",
+              "speakerId" : "S1",
+              "isEdited" : false
+            }
+          ],
+          "speakers" : [
+            {
+              "id" : "S1",
+              "displayName" : "Speaker S1",
+              "styleVariant" : "filled",
+              "isUserRenamed" : false
+            }
+          ],
+          "createdAt" : "2026-02-23T10:20:01Z",
+          "updatedAt" : "2026-02-23T10:21:01Z"
+        }
+        """
+
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+
+        let transcript = try decoder.decode(TranscriptDocument.self, from: Data(legacyJSON.utf8))
+
+        XCTAssertEqual(transcript.languageHint, "en")
+        XCTAssertEqual(transcript.alternatives, [])
+        XCTAssertEqual(transcript.segments.first?.text, "Legacy transcript")
     }
 
     func testSessionManifestDecodesLegacyJSONWithoutRecordingSourceMetadata() throws {
@@ -644,6 +715,41 @@ final class LorreCoreTests: XCTestCase {
         XCTAssertFalse(disabled.isLiveTranscriptionEnabled)
     }
 
+    func testAppSettingsStorePersistsBatchTranscriptionConfiguration() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("LorreBatchTranscriptionSettingTests-\(UUID().uuidString)", isDirectory: true)
+        let store = AppSettingsStore(baseURL: root)
+
+        let initial = try await store.load()
+        XCTAssertEqual(initial.batchTranscription, BatchTranscriptionConfiguration())
+
+        _ = try await store.setBatchTranscriptionConfiguration(
+            BatchTranscriptionConfiguration(
+                mode: .parakeetV3WithCohereQualityPass,
+                languageCode: "NL",
+                parallelChunkConcurrency: 12
+            )
+        )
+
+        let loaded = try await store.load()
+        XCTAssertEqual(loaded.batchTranscription.mode, .parakeetV3WithCohereQualityPass)
+        XCTAssertEqual(loaded.batchTranscription.languageCode, "nl")
+        XCTAssertEqual(loaded.batchTranscription.parallelChunkConcurrency, 8)
+    }
+
+    func testAppSettingsStorePersistsLiveTranscriptionPreset() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("LorreLivePresetSettingTests-\(UUID().uuidString)", isDirectory: true)
+        let store = AppSettingsStore(baseURL: root)
+
+        let initial = try await store.load()
+        XCTAssertEqual(initial.liveTranscriptionPreset, .balanced)
+
+        _ = try await store.setLiveTranscriptionPreset(.highAccuracy)
+        let loaded = try await store.load()
+        XCTAssertEqual(loaded.liveTranscriptionPreset, .highAccuracy)
+    }
+
     func testAppSettingsStorePersistsDeleteAudioAfterTranscriptionToggle() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("LorreDeleteAudioSettingTests-\(UUID().uuidString)", isDirectory: true)
@@ -686,6 +792,77 @@ final class LorreCoreTests: XCTestCase {
         XCTAssertTrue(reloaded.vocabularyBoosting.isEnabled)
         XCTAssertTrue(reloaded.vocabularyBoosting.simpleFormatTerms.contains("FluidAudio"))
     }
+
+    func testVocabularyBoostingSimpleFormatParserNormalizesRuntimeTerms() {
+        let configuration = VocabularyBoostingConfiguration(
+            isEnabled: true,
+            simpleFormatTerms: """
+            # Domain terms
+              Lorre: lore, lora,
+
+            FluidAudio
+            : ignored
+            """
+        )
+
+        XCTAssertEqual(
+            configuration.simpleFormatEntries,
+            [
+                VocabularyBoostingEntry(term: "Lorre", aliases: ["lore", "lora"]),
+                VocabularyBoostingEntry(term: "FluidAudio", aliases: [])
+            ]
+        )
+        XCTAssertEqual(configuration.runtimeSimpleFormatTerms, "Lorre: lore, lora\nFluidAudio")
+    }
+
+    func testMockCohereQualityPassPreservesPrimaryTranscriptAndAddsAlternative() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("LorreMockCohereQualityPassTests-\(UUID().uuidString)", isDirectory: true)
+        let audioURL = root.appendingPathComponent("audio.m4a")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try Data("mock-audio".utf8).write(to: audioURL)
+
+        let service = MockTranscriptionService()
+        await service.setBatchTranscriptionConfiguration(
+            BatchTranscriptionConfiguration(
+                mode: .parakeetV3WithCohereQualityPass,
+                languageCode: "nl"
+            )
+        )
+
+        let result = try await service.transcribe(url: audioURL, sessionTitle: "Quality Pass", source: .microphone)
+
+        XCTAssertFalse(result.utterances.isEmpty)
+        XCTAssertEqual(result.engineName, "MockAsrService")
+        XCTAssertEqual(result.languageCode, "nl")
+        XCTAssertEqual(result.alternatives.count, 1)
+        XCTAssertEqual(result.alternatives.first?.engineName, "MockCohereQualityPass")
+        XCTAssertEqual(result.alternatives.first?.languageCode, "nl")
+    }
+
+    #if canImport(AVFoundation) && canImport(FluidAudio)
+    func testFluidAudioLivePresetMapsToSelectedStreamingModel() {
+        XCTAssertEqual(
+            FluidAudioLiveStreamingRecognizer.livePreviewModelFolderName(for: .lowLatency),
+            "parakeet-eou-streaming/160ms"
+        )
+        XCTAssertEqual(
+            FluidAudioLiveStreamingRecognizer.livePreviewModelFolderName(for: .balanced),
+            "parakeet-eou-streaming/320ms"
+        )
+        XCTAssertEqual(
+            FluidAudioLiveStreamingRecognizer.livePreviewModelFolderName(for: .highAccuracy),
+            "parakeet-eou-streaming/1280ms"
+        )
+        XCTAssertEqual(FluidAudioLiveStreamingRecognizer.livePreviewDebounceMilliseconds(for: .balanced), 1280)
+    }
+
+    func testLiveSpeakerHintConfidenceUsesClampedActivity() {
+        XCTAssertEqual(FluidAudioLiveStreamingRecognizer.normalizedLiveSpeakerActivity(-0.4), 0)
+        XCTAssertEqual(FluidAudioLiveStreamingRecognizer.normalizedLiveSpeakerActivity(0.72), 0.72)
+        XCTAssertEqual(FluidAudioLiveStreamingRecognizer.normalizedLiveSpeakerActivity(1.4), 1)
+    }
+    #endif
 
     func testTranscriptTextNormalizationSupportNormalizesSegmentTextPreservingMetadata() {
         let sessionID = UUID()

@@ -14,6 +14,29 @@ struct RuntimeCapabilities: Equatable, Sendable {
     let supportsLivePreview: Bool
     let supportsTextNormalization: Bool
     let supportsVocabularyBoosting: Bool
+    let supportsCohereQualityPass: Bool
+
+    init(
+        pipeline: RuntimeProcessingPipeline,
+        supportsSpeechToText: Bool,
+        supportsVoiceActivityDetection: Bool,
+        supportsSpeakerDiarization: Bool,
+        supportsSpeakerEnrollment: Bool,
+        supportsLivePreview: Bool,
+        supportsTextNormalization: Bool,
+        supportsVocabularyBoosting: Bool,
+        supportsCohereQualityPass: Bool = false
+    ) {
+        self.pipeline = pipeline
+        self.supportsSpeechToText = supportsSpeechToText
+        self.supportsVoiceActivityDetection = supportsVoiceActivityDetection
+        self.supportsSpeakerDiarization = supportsSpeakerDiarization
+        self.supportsSpeakerEnrollment = supportsSpeakerEnrollment
+        self.supportsLivePreview = supportsLivePreview
+        self.supportsTextNormalization = supportsTextNormalization
+        self.supportsVocabularyBoosting = supportsVocabularyBoosting
+        self.supportsCohereQualityPass = supportsCohereQualityPass
+    }
 
     static let mock = RuntimeCapabilities(
         pipeline: .mock,
@@ -23,7 +46,8 @@ struct RuntimeCapabilities: Equatable, Sendable {
         supportsSpeakerEnrollment: false,
         supportsLivePreview: false,
         supportsTextNormalization: false,
-        supportsVocabularyBoosting: false
+        supportsVocabularyBoosting: false,
+        supportsCohereQualityPass: false
     )
 
     var usesMockPipeline: Bool {
@@ -50,6 +74,12 @@ struct RuntimeCapabilities: Equatable, Sendable {
         }
         if supportsTextNormalization {
             labels.append("Text normalization")
+        }
+        if supportsVocabularyBoosting {
+            labels.append("Vocabulary boosting")
+        }
+        if supportsCohereQualityPass {
+            labels.append("Cohere quality pass")
         }
         return labels
     }

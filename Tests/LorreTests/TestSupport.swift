@@ -109,6 +109,10 @@ actor ControlledRecorderService: RecorderService {
         _ = isEnabled
     }
 
+    func setLiveTranscriptionPreset(_ preset: LiveTranscriptionPreset) async {
+        _ = preset
+    }
+
     func currentLiveTranscriptPreview() async -> LiveTranscriptPreview? { nil }
 
     func makeLiveMonitorStream() async -> AsyncStream<RecorderLiveMonitorEvent>? { nil }
