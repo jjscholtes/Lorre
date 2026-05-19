@@ -281,6 +281,95 @@ final class LorreCoreTests: XCTestCase {
     }
 
     @MainActor
+    func testSessionActionModelMatchesSessionState() async throws {
+        let root = makeTemporaryRoot(named: "LorreSessionActionModelTests")
+        let store = FileSessionStore(baseURL: root)
+        let ready = try await store.createSession(
+            NewSessionDraft(
+                title: "Ready",
+                folderId: nil,
+                status: .ready,
+                durationSeconds: nil,
+                recordingSource: .microphone,
+                audioFileName: "audio.m4a",
+                microphoneStemFileName: nil,
+                systemAudioStemFileName: nil,
+                recordedAt: nil
+            )
+        )
+        let processing = try await store.createSession(
+            NewSessionDraft(
+                title: "Processing",
+                folderId: nil,
+                status: .processing,
+                durationSeconds: nil,
+                recordingSource: .microphone,
+                audioFileName: "audio.m4a",
+                microphoneStemFileName: nil,
+                systemAudioStemFileName: nil,
+                recordedAt: nil
+            )
+        )
+        let retryableError = try await store.createSession(
+            NewSessionDraft(
+                title: "Retryable",
+                folderId: nil,
+                status: .error,
+                durationSeconds: nil,
+                recordingSource: .microphone,
+                audioFileName: "audio.m4a",
+                microphoneStemFileName: nil,
+                systemAudioStemFileName: nil,
+                recordedAt: nil
+            )
+        )
+        var transcriptOnlyError = try await store.createSession(
+            NewSessionDraft(
+                title: "Transcript Only",
+                folderId: nil,
+                status: .error,
+                durationSeconds: nil,
+                recordingSource: .microphone,
+                audioFileName: "audio.m4a",
+                microphoneStemFileName: nil,
+                systemAudioStemFileName: nil,
+                recordedAt: nil
+            )
+        )
+        transcriptOnlyError.audioDeletedAt = Date()
+        try await store.updateSession(transcriptOnlyError)
+
+        let viewModel = AppViewModel(
+            dependencies: makeTestDependencies(
+                root: root,
+                store: store,
+                recorder: ControlledRecorderService()
+            )
+        )
+        await viewModel.start()
+
+        let transcript = TranscriptDocument(
+            sessionId: ready.id,
+            sourceEngine: "Test",
+            segments: [TranscriptSegment(startMs: 0, endMs: 1000, text: "Ready transcript", speakerId: "S1")],
+            speakers: [.defaultProfile(id: "S1")]
+        )
+
+        XCTAssertTrue(viewModel.canPerformSessionAction(.exportTranscript, for: ready, transcript: transcript))
+        XCTAssertFalse(viewModel.canPerformSessionAction(.exportTranscript, for: ready, transcript: nil))
+
+        let processingActions = viewModel.sessionActions(for: .processingStage, session: processing).map(\.action)
+        XCTAssertEqual(processingActions, [.revealFiles])
+
+        XCTAssertTrue(viewModel.canPerformSessionAction(.retryProcessing, for: retryableError))
+        XCTAssertFalse(viewModel.canPerformSessionAction(.retryProcessing, for: transcriptOnlyError))
+        XCTAssertEqual(
+            viewModel.sessionActionState(.retryProcessing, for: transcriptOnlyError).disabledReason,
+            "Source audio was deleted for this session."
+        )
+    }
+
+    @MainActor
     func testCuePlaybackPresentationMentionsActiveRecordingWhenArchiveAudioExists() {
         let presentation = AppViewModel.makeCuePlaybackPresentation(
             hasRetainedAudio: true,
