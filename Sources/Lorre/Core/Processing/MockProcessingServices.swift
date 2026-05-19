@@ -113,10 +113,22 @@ struct MockSpeakerDiarizationService: SpeakerDiarizationService {
     func diarize(
         url: URL,
         expectedDurationSeconds: Double?,
-        expectedSpeakers: DiarizationSpeakerCountHint
+        expectedSpeakers: DiarizationSpeakerCountHint,
+        onProgress: (@Sendable (ProcessingUpdate) async -> Void)? = nil
     ) async throws -> DiarizationResult? {
         _ = url
-        try await Task.sleep(for: .milliseconds(350))
+        if let onProgress {
+            await onProgress(
+                ProcessingUpdate(
+                    phase: .diarizing,
+                    component: .diarization,
+                    label: "Assigning mock speakers",
+                    detail: "Starting mock diarization pass.",
+                    fraction: 0.1
+                )
+            )
+        }
+        try await Task.sleep(for: .milliseconds(120))
         let totalMs = Int(max(12, expectedDurationSeconds ?? 14) * 1000)
         let span = max(2000, totalMs / 4)
         let speakerPool = speakerSequence(for: expectedSpeakers)
@@ -128,6 +140,18 @@ struct MockSpeakerDiarizationService: SpeakerDiarizationService {
             spans.append(DiarizationSpan(startMs: cursor, endMs: next, speakerId: speakerPool[i % speakerPool.count]))
             cursor = next
             i += 1
+            if let onProgress {
+                await onProgress(
+                    ProcessingUpdate(
+                        phase: .diarizing,
+                        component: .diarization,
+                        label: "Assigning mock speakers",
+                        detail: "Processed \(min(cursor, totalMs))/\(totalMs) ms of mock audio.",
+                        fraction: min(Double(cursor) / Double(max(totalMs, 1)), 1.0)
+                    )
+                )
+            }
+            try await Task.sleep(for: .milliseconds(40))
         }
         return DiarizationResult(spans: spans)
     }

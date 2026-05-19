@@ -723,8 +723,11 @@ actor FluidAudioDiarizationService: SpeakerDiarizationService {
             self.manager = manager
         }
 
-        func diarizeSpans(audio: [Float]) async throws -> [(start: Double, end: Double, speakerId: String)] {
-            let result = try await manager.process(audio: audio)
+        func diarizeSpans(
+            audio: [Float],
+            progressCallback: (@Sendable (Int, Int) -> Void)? = nil
+        ) async throws -> [(start: Double, end: Double, speakerId: String)] {
+            let result = try await manager.process(audio: audio, progressCallback: progressCallback)
             return result.segments.map { segment in
                 (
                     start: Double(segment.startTimeSeconds),
@@ -734,8 +737,11 @@ actor FluidAudioDiarizationService: SpeakerDiarizationService {
             }
         }
 
-        func diarizeSpans(url: URL) async throws -> [(start: Double, end: Double, speakerId: String)] {
-            let result = try await manager.process(url)
+        func diarizeSpans(
+            url: URL,
+            progressCallback: (@Sendable (Int, Int) -> Void)? = nil
+        ) async throws -> [(start: Double, end: Double, speakerId: String)] {
+            let result = try await manager.process(url, progressCallback: progressCallback)
             return result.segments.map { segment in
                 (
                     start: Double(segment.startTimeSeconds),
@@ -743,6 +749,38 @@ actor FluidAudioDiarizationService: SpeakerDiarizationService {
                     speakerId: segment.speakerId
                 )
             }
+        }
+    }
+
+    private final class AsyncProgressDispatcher: @unchecked Sendable {
+        private let lock = NSLock()
+        private var tasks: [Task<Void, Never>] = []
+
+        func submit(
+            _ update: ProcessingUpdate,
+            to onProgress: @escaping @Sendable (ProcessingUpdate) async -> Void
+        ) {
+            let task = Task {
+                await onProgress(update)
+            }
+            lock.lock()
+            tasks.append(task)
+            lock.unlock()
+        }
+
+        func drain() async {
+            let pendingTasks = takePendingTasks()
+            for task in pendingTasks {
+                await task.value
+            }
+        }
+
+        private func takePendingTasks() -> [Task<Void, Never>] {
+            lock.lock()
+            defer { lock.unlock() }
+            let pendingTasks = tasks
+            tasks.removeAll()
+            return pendingTasks
         }
     }
 
@@ -1034,44 +1072,103 @@ actor FluidAudioDiarizationService: SpeakerDiarizationService {
     func diarize(
         url: URL,
         expectedDurationSeconds: Double?,
-        expectedSpeakers: DiarizationSpeakerCountHint
+        expectedSpeakers: DiarizationSpeakerCountHint,
+        onProgress: (@Sendable (ProcessingUpdate) async -> Void)? = nil
     ) async throws -> DiarizationResult? {
         _ = expectedDurationSeconds
         let spans: [DiarizationSpan]
         let audioData: [Float]?
+        let engineLabel: String
         switch diarizationEngine {
         case .offlineVbx:
-            spans = try await diarizeOffline(url: url, expectedSpeakers: expectedSpeakers)
+            engineLabel = "offline VBx"
+            spans = try await diarizeOffline(url: url, expectedSpeakers: expectedSpeakers, onProgress: onProgress)
             audioData = knownSpeakers.isEmpty ? nil : try AudioConverter().resampleAudioFile(url)
         case .sortformer:
+            engineLabel = "Sortformer"
             let loadedAudioData = try AudioConverter().resampleAudioFile(url)
-            spans = try await diarizeSortformer(audioData: loadedAudioData)
+            spans = try await diarizeSortformer(audioData: loadedAudioData, onProgress: onProgress)
             audioData = loadedAudioData
         case .lsEend:
+            engineLabel = "LS-EEND"
             let loadedAudioData = try AudioConverter().resampleAudioFile(url)
-            spans = try await diarizeLSEEND(audioData: loadedAudioData)
+            spans = try await diarizeLSEEND(audioData: loadedAudioData, onProgress: onProgress)
             audioData = loadedAudioData
         }
 
+        if let onProgress {
+            await onProgress(
+                ProcessingUpdate(
+                    phase: .diarizing,
+                    component: .diarization,
+                    label: "Finished \(engineLabel) diarization",
+                    detail: "Found \(spans.count) speaker span\(spans.count == 1 ? "" : "s").",
+                    fraction: knownSpeakers.isEmpty ? 1.0 : 0.88
+                )
+            )
+        }
         guard !spans.isEmpty else { return nil }
         guard let audioData else {
             return DiarizationResult(spans: spans, speakerProfiles: [])
         }
 
+        if let onProgress, !knownSpeakers.isEmpty {
+            await onProgress(
+                ProcessingUpdate(
+                    phase: .diarizing,
+                    component: .diarization,
+                    label: "Matching known speakers",
+                    detail: "Comparing diarized speaker spans with saved speaker profiles.",
+                    fraction: 0.92
+                )
+            )
+        }
         let relabeled = try await relabelKnownSpeakers(in: spans, audioData: audioData)
+        if let onProgress {
+            await onProgress(
+                ProcessingUpdate(
+                    phase: .diarizing,
+                    component: .diarization,
+                    label: "Speaker assignment complete",
+                    detail: "Speaker labels are ready for transcript assembly.",
+                    fraction: 1.0
+                )
+            )
+        }
         return DiarizationResult(spans: relabeled.spans, speakerProfiles: relabeled.profiles)
     }
 
     private func diarizeOffline(
         url: URL,
-        expectedSpeakers: DiarizationSpeakerCountHint
+        expectedSpeakers: DiarizationSpeakerCountHint,
+        onProgress: (@Sendable (ProcessingUpdate) async -> Void)?
     ) async throws -> [DiarizationSpan] {
         try await ensureOfflineModelsReady(expectedSpeakers: expectedSpeakers, onProgress: nil)
         guard let offlineManagerBox else {
             throw LorreError.processingFailed("Offline diarizer is not initialized.")
         }
 
-        let diarizedSpans = try await offlineManagerBox.diarizeSpans(url: url)
+        let progressDispatcher = AsyncProgressDispatcher()
+        let diarizedSpans: [(start: Double, end: Double, speakerId: String)]
+        do {
+            diarizedSpans = try await offlineManagerBox.diarizeSpans(
+                url: url,
+                progressCallback: { processedChunks, totalChunks in
+                    guard let onProgress else { return }
+                    let update = Self.chunkProgressUpdate(
+                        engine: "offline VBx",
+                        processedChunks: processedChunks,
+                        totalChunks: totalChunks
+                    )
+                    progressDispatcher.submit(update, to: onProgress)
+                }
+            )
+        } catch {
+            await progressDispatcher.drain()
+            throw error
+        }
+        await progressDispatcher.drain()
+
         return diarizedSpans.compactMap { segment -> DiarizationSpan? in
             let start = segment.start
             let end = segment.end
@@ -1089,38 +1186,122 @@ actor FluidAudioDiarizationService: SpeakerDiarizationService {
         }
     }
 
-    private func diarizeSortformer(audioData: [Float]) async throws -> [DiarizationSpan] {
+    private func diarizeSortformer(
+        audioData: [Float],
+        onProgress: (@Sendable (ProcessingUpdate) async -> Void)?
+    ) async throws -> [DiarizationSpan] {
         try await ensureSortformerPrepared(onProgress: nil)
         guard let sortformerDiarizer else {
             throw LorreError.processingFailed("Sortformer diarizer is not initialized.")
         }
 
         sortformerDiarizer.reset()
-        let timeline = try sortformerDiarizer.processComplete(
-            audioData,
-            sourceSampleRate: Self.diarizationInputSampleRate,
-            keepingEnrolledSpeakers: false,
-            finalizeOnCompletion: true,
-            progressCallback: nil
-        )
+        let progressDispatcher = AsyncProgressDispatcher()
+        let timeline: DiarizerTimeline
+        do {
+            timeline = try sortformerDiarizer.processComplete(
+                audioData,
+                sourceSampleRate: Self.diarizationInputSampleRate,
+                keepingEnrolledSpeakers: false,
+                finalizeOnCompletion: true,
+                progressCallback: { processedSamples, totalSamples, chunksProcessed in
+                    guard let onProgress else { return }
+                    let update = Self.sampleProgressUpdate(
+                        engine: "Sortformer",
+                        processedSamples: processedSamples,
+                        totalSamples: totalSamples,
+                        chunksProcessed: chunksProcessed
+                    )
+                    progressDispatcher.submit(update, to: onProgress)
+                }
+            )
+        } catch {
+            await progressDispatcher.drain()
+            throw error
+        }
+        await progressDispatcher.drain()
+
         return diarizerSpans(from: timeline.speakers.values.flatMap(\.finalizedSegments))
     }
 
-    private func diarizeLSEEND(audioData: [Float]) async throws -> [DiarizationSpan] {
+    private func diarizeLSEEND(
+        audioData: [Float],
+        onProgress: (@Sendable (ProcessingUpdate) async -> Void)?
+    ) async throws -> [DiarizationSpan] {
         try await ensureLSEENDPrepared(onProgress: nil)
         guard let lsEendDiarizer else {
             throw LorreError.processingFailed("LS-EEND diarizer is not initialized.")
         }
 
         lsEendDiarizer.reset()
-        let timeline = try lsEendDiarizer.processComplete(
-            audioData,
-            sourceSampleRate: Self.diarizationInputSampleRate,
-            keepingEnrolledSpeakers: false,
-            finalizeOnCompletion: true,
-            progressCallback: nil
-        )
+        let progressDispatcher = AsyncProgressDispatcher()
+        let timeline: DiarizerTimeline
+        do {
+            timeline = try lsEendDiarizer.processComplete(
+                audioData,
+                sourceSampleRate: Self.diarizationInputSampleRate,
+                keepingEnrolledSpeakers: false,
+                finalizeOnCompletion: true,
+                progressCallback: { processedSamples, totalSamples, chunksProcessed in
+                    guard let onProgress else { return }
+                    let update = Self.sampleProgressUpdate(
+                        engine: "LS-EEND",
+                        processedSamples: processedSamples,
+                        totalSamples: totalSamples,
+                        chunksProcessed: chunksProcessed
+                    )
+                    progressDispatcher.submit(update, to: onProgress)
+                }
+            )
+        } catch {
+            await progressDispatcher.drain()
+            throw error
+        }
+        await progressDispatcher.drain()
+
         return diarizerSpans(from: timeline.speakers.values.flatMap(\.finalizedSegments))
+    }
+
+    private static func chunkProgressUpdate(
+        engine: String,
+        processedChunks: Int,
+        totalChunks: Int
+    ) -> ProcessingUpdate {
+        let safeTotal = max(totalChunks, 1)
+        let safeProcessed = min(max(processedChunks, 0), safeTotal)
+        return ProcessingUpdate(
+            phase: .diarizing,
+            component: .diarization,
+            label: "Assigning speakers with \(engine)",
+            detail: "Processed \(safeProcessed)/\(safeTotal) diarization chunks.",
+            fraction: Double(safeProcessed) / Double(safeTotal)
+        )
+    }
+
+    private static func sampleProgressUpdate(
+        engine: String,
+        processedSamples: Int,
+        totalSamples: Int,
+        chunksProcessed: Int
+    ) -> ProcessingUpdate {
+        let safeTotal = max(totalSamples, 1)
+        let safeProcessed = min(max(processedSamples, 0), safeTotal)
+        let processedTime = formatDuration(seconds: Double(safeProcessed) / diarizationInputSampleRate)
+        let totalTime = formatDuration(seconds: Double(safeTotal) / diarizationInputSampleRate)
+        return ProcessingUpdate(
+            phase: .diarizing,
+            component: .diarization,
+            label: "Assigning speakers with \(engine)",
+            detail: "Processed \(processedTime) / \(totalTime) across \(max(chunksProcessed, 0)) chunks.",
+            fraction: Double(safeProcessed) / Double(safeTotal)
+        )
+    }
+
+    private static func formatDuration(seconds: Double) -> String {
+        let totalSeconds = max(0, Int(seconds.rounded()))
+        let minutes = totalSeconds / 60
+        let seconds = totalSeconds % 60
+        return String(format: "%d:%02d", minutes, seconds)
     }
 
     private func normalizedClusterLabel(from rawSpeakerID: String) -> String {

@@ -47,7 +47,8 @@ protocol SpeakerDiarizationService: Sendable {
     func diarize(
         url: URL,
         expectedDurationSeconds: Double?,
-        expectedSpeakers: DiarizationSpeakerCountHint
+        expectedSpeakers: DiarizationSpeakerCountHint,
+        onProgress: (@Sendable (ProcessingUpdate) async -> Void)?
     ) async throws -> DiarizationResult?
 }
 

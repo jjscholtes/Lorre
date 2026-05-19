@@ -194,6 +194,18 @@ final class TestPlaybackService: AudioPlaybackService {
     }
 }
 
+actor ProcessingUpdateCollector {
+    private var updates: [ProcessingUpdate] = []
+
+    func append(_ update: ProcessingUpdate) {
+        updates.append(update)
+    }
+
+    func snapshot() -> [ProcessingUpdate] {
+        updates
+    }
+}
+
 func makeTemporaryRoot(named prefix: String) -> URL {
     FileManager.default.temporaryDirectory
         .appendingPathComponent("\(prefix)-\(UUID().uuidString)", isDirectory: true)

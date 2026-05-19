@@ -970,6 +970,50 @@ final class LorreCoreTests: XCTestCase {
         XCTAssertTrue(text.contains("\"diarizationSpans\""))
     }
 
+    func testProcessingCoordinatorPublishesDiarizationRunProgress() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("LorreDiarizationProgressTests-\(UUID().uuidString)", isDirectory: true)
+        let store = FileSessionStore(baseURL: root)
+        let session = try await store.createSession(
+            NewSessionDraft(
+                title: "Diarization Progress Test",
+                folderId: nil,
+                status: .processing,
+                durationSeconds: 8.0,
+                recordingSource: .microphone,
+                audioFileName: "audio.m4a",
+                microphoneStemFileName: nil,
+                systemAudioStemFileName: nil,
+                recordedAt: Date()
+            )
+        )
+        let collector = ProcessingUpdateCollector()
+        let coordinator = ProcessingCoordinator(
+            store: store,
+            transcriptionService: MockTranscriptionService(),
+            diarizationService: MockSpeakerDiarizationService()
+        )
+
+        _ = try await coordinator.process(
+            sessionId: session.id,
+            enableDiarization: true,
+            diarizationExpectedSpeakers: .exact(2),
+            onProgress: { update in
+                await collector.append(update)
+            }
+        )
+
+        let diarizationUpdates = await collector.snapshot().filter { $0.phase == .diarizing }
+        XCTAssertTrue(
+            diarizationUpdates.contains { update in
+                update.component == .diarization
+                    && update.label == "Assigning mock speakers"
+                    && (update.fraction ?? 0) > 0.60
+                    && (update.fraction ?? 1) <= 0.80
+            }
+        )
+    }
+
     func testProcessingCoordinatorDeletesAudioArtifactsAfterSuccessfulTranscriptionWhenEnabled() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("LorreDeleteAudioAfterProcessingTests-\(UUID().uuidString)", isDirectory: true)

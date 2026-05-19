@@ -105,7 +105,10 @@ actor ProcessingCoordinator {
                 diarization = try await diarizationService.diarize(
                     url: audioURL,
                     expectedDurationSeconds: session.durationSeconds,
-                    expectedSpeakers: diarizationExpectedSpeakers
+                    expectedSpeakers: diarizationExpectedSpeakers,
+                    onProgress: { update in
+                        await onProgress(self.scale(update, into: 0.60...0.80))
+                    }
                 )
             } else {
                 try await updateSession(&session, status: .processing, phase: .diarizing, label: "Skipping speaker diarization", fraction: 0.6)
