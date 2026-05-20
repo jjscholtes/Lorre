@@ -10,19 +10,19 @@ final class AppViewModel: ObservableObject {
     static let unfiledFolderSelectionID = "__UNFILED__"
 
     @Published private(set) var sessions: [SessionManifest] = [] {
-        didSet { rebuildDerivedSessionState() }
+        didSet { rebuildDerivedSessionStateIfNeeded() }
     }
     @Published private(set) var folders: [SessionFolder] = [] {
-        didSet { rebuildDerivedSessionState() }
+        didSet { rebuildDerivedSessionStateIfNeeded() }
     }
     @Published var searchQuery: String = "" {
-        didSet { rebuildDerivedSessionState() }
+        didSet { rebuildDerivedSessionStateIfNeeded() }
     }
     @Published var selectedFilter: ShelfFilter = .all {
-        didSet { rebuildDerivedSessionState() }
+        didSet { rebuildDerivedSessionStateIfNeeded() }
     }
     @Published var selectedFolderID: String? {
-        didSet { rebuildDerivedSessionState() }
+        didSet { rebuildDerivedSessionStateIfNeeded() }
     }
     @Published var selectedSessionID: UUID?
     @Published var expandedViewFilters: Set<ShelfFilter> = [.all]
@@ -50,6 +50,7 @@ final class AppViewModel: ObservableObject {
     @Published private(set) var modelPreparationStatusLine: String = "Models not prepared yet"
     @Published private(set) var modelPreparationDetailLine: String = "Models may download on first transcription."
     @Published private(set) var modelPreparationProgress: Double?
+    @Published private(set) var modelPreparationLastPreparedAt: Date?
     @Published var modelRegistryCustomBaseURL: String = ""
     @Published private(set) var isSpeakerDiarizationEnabled: Bool = true
     @Published private(set) var diarizationEngine: DiarizationEngine = .offlineVbx
@@ -70,6 +71,7 @@ final class AppViewModel: ObservableObject {
     @Published private(set) var knownSpeakerLibraryStatusLine: String = "No known speakers enrolled yet."
     @Published private(set) var knownSpeakerOperationDescription: String?
     @Published private(set) var isKnownSpeakerOperationInFlight = false
+    @Published private(set) var processingProgressSnapshots: [UUID: ProcessingSummary] = [:]
 
     private let dependencies: AppDependencies
     private var started = false
@@ -80,6 +82,7 @@ final class AppViewModel: ObservableObject {
     private var recordingSourceChangeTask: Task<Void, Never>?
     private var currentRecordingStartedAt: Date?
     private var currentProcessingTasks: [UUID: Task<Void, Never>] = [:]
+    private var currentProcessingTaskTokens: [UUID: UUID] = [:]
     private let transcriptPersistenceQueue = TranscriptPersistenceQueue()
     private var transcriptPersistenceVersions: [UUID: Int] = [:]
     private var cachedFilteredSessions: [SessionManifest] = []
@@ -89,6 +92,7 @@ final class AppViewModel: ObservableObject {
     private var cachedViewCounts: [ShelfFilter: Int] = [:]
     private var sidebarExpansionSaveTask: Task<Void, Never>?
     private var waveformCache: [UUID: [Double]] = [:]
+    private var isBatchingDerivedSessionState = false
 
     init(dependencies: AppDependencies) {
         self.dependencies = dependencies
@@ -115,6 +119,11 @@ final class AppViewModel: ObservableObject {
     func start() async {
         guard !started else { return }
         started = true
+        dependencies.playback.onPlaybackFinished = { [weak self] in
+            Task { @MainActor in
+                self?.handlePlaybackFinished()
+            }
+        }
         await refreshLiveTranscriptionSupport(for: selectedRecordingSource)
         await restoreModelPreparationStateFromSettings()
         await reloadKnownSpeakers()
@@ -213,7 +222,7 @@ final class AppViewModel: ObservableObject {
         }
         if let session = selectedSession {
             if session.status == .processing {
-                return session.processing.progressLabel ?? "Processing"
+                return processingSummary(for: session).progressLabel ?? "Processing"
             }
             if session.status == .error {
                 return session.lastErrorMessage ?? "Processing failed"
@@ -432,11 +441,14 @@ final class AppViewModel: ObservableObject {
     func selectFolderFilter(_ folderID: String?) {
         // "Open folder" should feel deterministic: show the folder contents, not a stale
         // status/search-filtered view from a previous shelf state.
+        isBatchingDerivedSessionState = true
         if !searchQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             searchQuery = ""
         }
         selectedFilter = .all
         selectedFolderID = folderID
+        isBatchingDerivedSessionState = false
+        rebuildDerivedSessionState()
 
         let sessionsInFolder = sessions.filter { session in
             if let folderID {
@@ -472,26 +484,27 @@ final class AppViewModel: ObservableObject {
     }
 
     func moveSession(_ sessionID: UUID, to folderID: String?) {
-        guard var session = sessions.first(where: { $0.id == sessionID }) else { return }
+        guard let session = sessions.first(where: { $0.id == sessionID }) else { return }
         guard session.folderId != folderID else { return }
 
         Task { [weak self] in
             guard let self else { return }
             do {
-                session.folderId = folderID
-                session.updatedAt = Date()
-                try await self.dependencies.store.updateSession(session)
+                let updatedSession = try await self.dependencies.store.updateSession(id: sessionID) { session in
+                    session.folderId = folderID
+                    session.updatedAt = Date()
+                }
                 await self.reloadSessions(selectMostRecentIfNeeded: false)
                 await MainActor.run {
-                    if self.selectedSessionID == session.id {
-                        self.selectedSessionID = session.id
+                    if self.selectedSessionID == updatedSession.id {
+                        self.selectedSessionID = updatedSession.id
                     }
                     let label = self.folderName(for: folderID)
-                    self.banner = AppBanner(kind: .success, title: "Moved to folder", message: "\(session.displayTitle) → \(label)")
+                    self.banner = AppBanner(kind: .success, title: "Moved to folder", message: "\(updatedSession.displayTitle) → \(label)")
                 }
                 await self.dependencies.metrics.log(
                     name: "session_moved_to_folder",
-                    sessionId: session.id,
+                    sessionId: updatedSession.id,
                     attributes: ["folder_id": folderID ?? "unfiled"]
                 )
             } catch {
@@ -666,10 +679,11 @@ final class AppViewModel: ObservableObject {
                     in: sessionDirectory,
                     fileLayout: fileLayout
                 )
-                session.durationSeconds = capture.durationSeconds
-                session.recordedAt = capture.endedAt
-                session.updatedAt = Date()
-                try await self.dependencies.store.updateSession(session)
+                session = try await self.dependencies.store.updateSession(id: session.id) { session in
+                    session.durationSeconds = capture.durationSeconds
+                    session.recordedAt = capture.endedAt
+                    session.updatedAt = Date()
+                }
                 await self.dependencies.metrics.log(
                     name: "record_stopped",
                     sessionId: session.id,
@@ -755,13 +769,13 @@ final class AppViewModel: ObservableObject {
                     destinationURL: destinationURL
                 )
 
-                var updated = session
-                updated.exports.append(
-                    ExportRecord(format: format, fileName: exportedURL.lastPathComponent)
-                )
-                updated.updatedAt = Date()
-                updated.dirtyFlags = .clean
-                try await self.dependencies.store.updateSession(updated)
+                let updated = try await self.dependencies.store.updateSession(id: session.id) { session in
+                    session.exports.append(
+                        ExportRecord(format: format, fileName: exportedURL.lastPathComponent)
+                    )
+                    session.updatedAt = Date()
+                    session.dirtyFlags = .clean
+                }
                 await self.reloadSessions(selectMostRecentIfNeeded: false)
                 self.selectedSessionID = updated.id
                 self.exportMessage = "Exported \(format.label) to \(exportedURL.lastPathComponent)"
@@ -973,10 +987,11 @@ final class AppViewModel: ObservableObject {
             guard let self else { return }
             do {
                 let affected = self.sessions.filter { $0.folderId == folderID }
-                for var session in affected {
-                    session.folderId = nil
-                    session.updatedAt = Date()
-                    try await self.dependencies.store.updateSession(session)
+                for session in affected {
+                    _ = try await self.dependencies.store.updateSession(id: session.id) { session in
+                        session.folderId = nil
+                        session.updatedAt = Date()
+                    }
                 }
 
                 try await self.dependencies.settings.deleteFolder(id: folderID)
@@ -1026,7 +1041,7 @@ final class AppViewModel: ObservableObject {
     }
 
     func renameSession(_ sessionID: UUID, to newName: String) {
-        guard var session = sessions.first(where: { $0.id == sessionID }) else { return }
+        guard let session = sessions.first(where: { $0.id == sessionID }) else { return }
         let trimmed = newName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         guard session.title != trimmed else { return }
@@ -1034,15 +1049,16 @@ final class AppViewModel: ObservableObject {
         Task { [weak self] in
             guard let self else { return }
             do {
-                session.title = trimmed
-                session.updatedAt = Date()
-                session.dirtyFlags.titleEdited = true
-                try await self.dependencies.store.updateSession(session)
+                let updatedSession = try await self.dependencies.store.updateSession(id: sessionID) { session in
+                    session.title = trimmed
+                    session.updatedAt = Date()
+                    session.dirtyFlags.titleEdited = true
+                }
                 await self.reloadSessions(selectMostRecentIfNeeded: false)
                 await MainActor.run {
                     self.banner = AppBanner(kind: .success, title: "Session renamed", message: trimmed)
                 }
-                await self.dependencies.metrics.log(name: "session_renamed", sessionId: session.id)
+                await self.dependencies.metrics.log(name: "session_renamed", sessionId: updatedSession.id)
             } catch {
                 await MainActor.run {
                     self.presentError(error, defaultTitle: "Rename failed")
@@ -1062,11 +1078,15 @@ final class AppViewModel: ObservableObject {
         updated.notes = normalized
         updated.updatedAt = Date()
         sessions[index] = updated
+        let updatedAt = updated.updatedAt
 
         Task { [weak self] in
             guard let self else { return }
             do {
-                try await self.dependencies.store.updateSession(updated)
+                _ = try await self.dependencies.store.updateSession(id: sessionID) { session in
+                    session.notes = normalized
+                    session.updatedAt = updatedAt
+                }
                 await self.dependencies.metrics.log(
                     name: "session_notes_saved",
                     sessionId: sessionID,
@@ -1125,6 +1145,7 @@ final class AppViewModel: ObservableObject {
 
         currentProcessingTasks[sessionID]?.cancel()
         currentProcessingTasks[sessionID] = nil
+        currentProcessingTaskTokens[sessionID] = nil
         if wasSelected {
             stopPlaybackAndResetState()
         }
@@ -1382,8 +1403,8 @@ final class AppViewModel: ObservableObject {
         Task { [weak self] in
             guard let self else { return }
             do {
-                await self.dependencies.diarization.setDiarizationEngine(engine)
                 _ = try await self.dependencies.settings.setDiarizationEngine(engine)
+                await self.dependencies.diarization.setDiarizationEngine(engine)
                 await self.dependencies.metrics.log(
                     name: "diarization_engine_changed",
                     attributes: ["engine": engine.rawValue]
@@ -1396,6 +1417,7 @@ final class AppViewModel: ObservableObject {
                     )
                 }
             } catch {
+                await self.dependencies.diarization.setDiarizationEngine(previous)
                 await MainActor.run {
                     self.diarizationEngine = previous
                     self.presentError(error, defaultTitle: "Could not save diarization engine")
@@ -1579,8 +1601,8 @@ final class AppViewModel: ObservableObject {
         Task { [weak self] in
             guard let self else { return }
             do {
-                await self.dependencies.recorder.setLiveTranscriptionPreset(preset)
                 _ = try await self.dependencies.settings.setLiveTranscriptionPreset(preset)
+                await self.dependencies.recorder.setLiveTranscriptionPreset(preset)
                 await self.dependencies.metrics.log(
                     name: "live_transcription_preset_changed",
                     attributes: ["preset": preset.rawValue]
@@ -1622,8 +1644,8 @@ final class AppViewModel: ObservableObject {
         Task { [weak self] in
             guard let self else { return }
             do {
-                await self.dependencies.recorder.setLiveTranscriptionEnabled(isEnabled)
                 _ = try await self.dependencies.settings.setLiveTranscriptionEnabled(isEnabled)
+                await self.dependencies.recorder.setLiveTranscriptionEnabled(isEnabled)
                 await self.dependencies.metrics.log(
                     name: "live_transcript_setting_changed",
                     attributes: ["enabled": isEnabled ? "true" : "false"]
@@ -1638,6 +1660,7 @@ final class AppViewModel: ObservableObject {
                     )
                 }
             } catch {
+                await self.dependencies.recorder.setLiveTranscriptionEnabled(previous)
                 await MainActor.run {
                     self.isLiveTranscriptionEnabled = previous
                     self.presentError(error, defaultTitle: "Could not save recording option")
@@ -1854,12 +1877,19 @@ final class AppViewModel: ObservableObject {
             .mapValues(\.count)
         return transcript.speakers.compactMap { speaker in
             guard let count = counts[speaker.id], count > 0 else { return nil }
-            return IndexRailSpeakerBin(variant: speaker.styleVariant, weight: Double(count))
+            return IndexRailSpeakerBin(id: speaker.id, variant: speaker.styleVariant, weight: Double(count))
         }
+    }
+
+    func processingSummary(for session: SessionManifest) -> ProcessingSummary {
+        processingProgressSnapshots[session.id] ?? session.processing
     }
 
     private func launchProcessing(for sessionID: UUID) {
         currentProcessingTasks[sessionID]?.cancel()
+        markSessionProcessingLocally(sessionID: sessionID)
+        let taskToken = UUID()
+        currentProcessingTaskTokens[sessionID] = taskToken
         currentProcessingTasks[sessionID] = Task { [weak self] in
             guard let self else { return }
             do {
@@ -1878,7 +1908,9 @@ final class AppViewModel: ObservableObject {
                     onProgress: { [weak self] update in
                         guard let self else { return }
                         await MainActor.run {
-                            self.recorderStatusText = update.label
+                            if self.selectedSessionID == sessionID {
+                                self.recorderStatusText = update.label
+                            }
                             self.applyProcessingProgressLocally(sessionID: sessionID, update: update)
                         }
                         if update.label.lowercased().contains("draft transcript ready") || update.phase == .diarizing {
@@ -1908,8 +1940,16 @@ final class AppViewModel: ObservableObject {
                     }
                 }
             } catch is CancellationError {
+                let isCurrentTask = await MainActor.run {
+                    self.currentProcessingTaskTokens[sessionID] == taskToken
+                }
+                guard isCurrentTask else { return }
                 await self.reloadSessions(selectMostRecentIfNeeded: false)
             } catch {
+                let isCurrentTask = await MainActor.run {
+                    self.currentProcessingTaskTokens[sessionID] == taskToken
+                }
+                guard isCurrentTask else { return }
                 await MainActor.run {
                     self.presentError(error, defaultTitle: "Processing failed")
                 }
@@ -1927,7 +1967,9 @@ final class AppViewModel: ObservableObject {
             }
 
             await MainActor.run {
+                guard self.currentProcessingTaskTokens[sessionID] == taskToken else { return }
                 self.currentProcessingTasks[sessionID] = nil
+                self.currentProcessingTaskTokens[sessionID] = nil
             }
         }
     }
@@ -1980,8 +2022,9 @@ final class AppViewModel: ObservableObject {
 
                 try self.copyImportedAudio(from: sourceURL, to: destinationURL)
 
-                session.updatedAt = Date()
-                try await self.dependencies.store.updateSession(session)
+                session = try await self.dependencies.store.updateSession(id: session.id) { session in
+                    session.updatedAt = Date()
+                }
 
                 await MainActor.run {
                     self.recorderStatusText = "Processing imported audio"
@@ -2032,9 +2075,13 @@ final class AppViewModel: ObservableObject {
             activeTranscript = nil
             return
         }
+        let requestedSessionID = session.id
         do {
-            activeTranscript = try await dependencies.store.loadTranscript(sessionId: session.id)
+            let transcript = try await dependencies.store.loadTranscript(sessionId: requestedSessionID)
+            guard selectedSessionID == requestedSessionID else { return }
+            activeTranscript = transcript
         } catch {
+            guard selectedSessionID == requestedSessionID else { return }
             activeTranscript = nil
             presentError(error, defaultTitle: "Could not load transcript")
         }
@@ -2056,6 +2103,8 @@ final class AppViewModel: ObservableObject {
         do {
             let loaded = try await dependencies.store.loadSessions()
             sessions = loaded
+            let processingIDs = Set(loaded.filter { $0.status == .processing }.map(\.id))
+            processingProgressSnapshots = processingProgressSnapshots.filter { processingIDs.contains($0.key) }
 
             if let selectedSessionID, !loaded.contains(where: { $0.id == selectedSessionID }) {
                 self.selectedSessionID = nil
@@ -2116,19 +2165,41 @@ final class AppViewModel: ObservableObject {
     }
 
     private func applyProcessingProgressLocally(sessionID: UUID, update: ProcessingUpdate) {
-        guard let index = sessions.firstIndex(where: { $0.id == sessionID }) else { return }
+        guard let session = sessions.first(where: { $0.id == sessionID }) else { return }
         let now = Date()
-        sessions[index].status = .processing
-        sessions[index].lastErrorMessage = nil
-        sessions[index].updatedAt = now
-        sessions[index].processing = ProcessingSummary(
-            queuedAt: sessions[index].processing.queuedAt ?? now,
-            startedAt: sessions[index].processing.startedAt ?? now,
+        let previous = processingProgressSnapshots[sessionID] ?? session.processing
+        processingProgressSnapshots[sessionID] = ProcessingSummary(
+            queuedAt: previous.queuedAt ?? now,
+            startedAt: previous.startedAt ?? now,
             completedAt: nil,
             progressPhase: update.phase,
             progressLabel: update.label,
-            progressFraction: update.fraction ?? sessions[index].processing.progressFraction
+            progressFraction: update.fraction ?? previous.progressFraction
         )
+    }
+
+    private func markSessionProcessingLocally(sessionID: UUID) {
+        guard let index = sessions.firstIndex(where: { $0.id == sessionID }) else { return }
+        let now = Date()
+        var session = sessions[index]
+        let previous = processingProgressSnapshots[sessionID] ?? session.processing
+        let summary = ProcessingSummary(
+            queuedAt: previous.queuedAt ?? now,
+            startedAt: previous.startedAt,
+            completedAt: nil,
+            progressPhase: .preparing,
+            progressLabel: "Queued",
+            progressFraction: 0
+        )
+        session.status = .processing
+        session.lastErrorMessage = nil
+        session.processing = summary
+        session.updatedAt = now
+        sessions[index] = session
+        processingProgressSnapshots[sessionID] = summary
+        if selectedSessionID == sessionID {
+            activeTranscript = nil
+        }
     }
 
     private func persistTranscript(_ transcript: TranscriptDocument, sessionID: UUID) {
@@ -2142,11 +2213,13 @@ final class AppViewModel: ObservableObject {
                     return
                 }
                 if let index = self.sessions.firstIndex(where: { $0.id == sessionID }) {
-                    self.sessions[index].dirtyFlags.transcriptEdited = false
-                    self.sessions[index].dirtyFlags.speakerEdited = false
-                    self.sessions[index].transcriptFileName = "transcript.json"
-                    self.sessions[index].updatedAt = Date()
-                    try await self.dependencies.store.updateSession(self.sessions[index])
+                    let updated = try await self.dependencies.store.updateSession(id: sessionID) { session in
+                        session.dirtyFlags.transcriptEdited = false
+                        session.dirtyFlags.speakerEdited = false
+                        session.transcriptFileName = "transcript.json"
+                        session.updatedAt = Date()
+                    }
+                    self.sessions[index] = updated
                 }
             } catch {
                 await MainActor.run {
@@ -2215,6 +2288,12 @@ final class AppViewModel: ObservableObject {
     private func stopPlaybackMonitor() {
         playbackMonitorTask?.cancel()
         playbackMonitorTask = nil
+    }
+
+    private func handlePlaybackFinished() {
+        stopPlaybackMonitor()
+        dependencies.playback.stop()
+        refreshPlaybackState()
     }
 
     private func stopPlaybackAndResetState() {
@@ -2298,10 +2377,13 @@ final class AppViewModel: ObservableObject {
             while !Task.isCancelled {
                 await MainActor.run {
                     if let started = self.currentRecordingStartedAt {
-                        self.recordingElapsedSeconds = Date().timeIntervalSince(started)
+                        let roundedSeconds = Double(Int(Date().timeIntervalSince(started)))
+                        if self.recordingElapsedSeconds != roundedSeconds {
+                            self.recordingElapsedSeconds = roundedSeconds
+                        }
                     }
                 }
-                try? await Task.sleep(for: .milliseconds(100))
+                try? await Task.sleep(for: .milliseconds(200))
             }
         }
 
@@ -2674,6 +2756,7 @@ final class AppViewModel: ObservableObject {
         modelPreparationStatusLine = "Models ready"
         modelPreparationDetailLine = formattedModelPreparationDetail(snapshot)
         modelPreparationProgress = 1.0
+        modelPreparationLastPreparedAt = snapshot.preparedAt
     }
 
     private func makeModelPreparationSnapshot(preparedAt: Date) -> ModelPreparationSnapshot {
@@ -2759,5 +2842,10 @@ final class AppViewModel: ObservableObject {
         } else {
             cachedFilteredSessions = filteredByView
         }
+    }
+
+    private func rebuildDerivedSessionStateIfNeeded() {
+        guard !isBatchingDerivedSessionState else { return }
+        rebuildDerivedSessionState()
     }
 }

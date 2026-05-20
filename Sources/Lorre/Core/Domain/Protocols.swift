@@ -5,6 +5,10 @@ protocol SessionStore: Sendable {
     func loadSession(id: UUID) async throws -> SessionManifest?
     func createSession(_ draft: NewSessionDraft) async throws -> SessionManifest
     func updateSession(_ session: SessionManifest) async throws
+    func updateSession(
+        id: UUID,
+        _ transform: @Sendable (inout SessionManifest) throws -> Void
+    ) async throws -> SessionManifest
     func deleteSession(id: UUID) async throws
     func loadTranscript(sessionId: UUID) async throws -> TranscriptDocument?
     func saveTranscript(_ transcript: TranscriptDocument) async throws
@@ -71,6 +75,7 @@ protocol ExportService: Sendable {
 }
 
 protocol AudioPlaybackService: AnyObject {
+    var onPlaybackFinished: (@Sendable () -> Void)? { get set }
     var preparedURL: URL? { get }
     var currentTimeSeconds: Double { get }
     var durationSeconds: Double { get }

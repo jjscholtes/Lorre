@@ -12,6 +12,10 @@ actor KnownSpeakerStore {
     }
 
     func load() async throws -> [KnownSpeaker] {
+        try loadFromDisk()
+    }
+
+    private func loadFromDisk() throws -> [KnownSpeaker] {
         guard FileManager.default.fileExists(atPath: fileURL.path(percentEncoded: false)) else {
             return []
         }
@@ -29,7 +33,7 @@ actor KnownSpeakerStore {
         enrollmentData: KnownSpeakerEnrollmentData?,
         preferredVariant: SpeakerBadgeVariant? = nil
     ) async throws -> KnownSpeaker {
-        var speakers = try await load()
+        var speakers = try loadFromDisk()
         let nextID = Self.nextSpeakerID(from: speakers)
         let variant = preferredVariant ?? Self.nextVariant(for: speakers.count)
         let referenceClip = try copyReferenceClipIfNeeded(
@@ -55,7 +59,7 @@ actor KnownSpeakerStore {
         replacingReferenceAudioAt sourceURL: URL? = nil,
         enrollmentData: KnownSpeakerEnrollmentData? = nil
     ) async throws -> KnownSpeaker {
-        var speakers = try await load()
+        var speakers = try loadFromDisk()
         guard let index = speakers.firstIndex(where: { $0.id == speaker.id }) else {
             throw LorreError.persistenceFailed("Known speaker not found.")
         }
@@ -73,7 +77,7 @@ actor KnownSpeakerStore {
     }
 
     func deleteSpeaker(id: String) async throws {
-        var speakers = try await load()
+        var speakers = try loadFromDisk()
         guard let speaker = speakers.first(where: { $0.id == id }) else {
             throw LorreError.persistenceFailed("Known speaker not found.")
         }
@@ -84,7 +88,7 @@ actor KnownSpeakerStore {
 
     func referenceAudioURL(for speaker: KnownSpeaker) async -> URL? {
         guard let referenceClip = speaker.referenceClip else { return nil }
-        let url = samplesDirectoryURL.appendingPathComponent(referenceClip.storedFileName)
+        guard let url = try? safeReferenceClipURL(for: referenceClip.storedFileName) else { return nil }
         guard FileManager.default.fileExists(atPath: url.path(percentEncoded: false)) else { return nil }
         return url
     }
@@ -144,7 +148,7 @@ actor KnownSpeakerStore {
 
         let ext = sourceURL.pathExtension.isEmpty ? "m4a" : sourceURL.pathExtension.lowercased()
         let storedFileName = "\(speakerID).\(ext)"
-        let destinationURL = samplesDirectoryURL.appendingPathComponent(storedFileName)
+        let destinationURL = try safeReferenceClipURL(for: storedFileName)
         let temporaryURL = samplesDirectoryURL.appendingPathComponent(".\(speakerID)-\(UUID().uuidString).\(ext)")
         try FileManager.default.copyItem(at: sourceURL, to: temporaryURL)
         defer {
@@ -168,8 +172,28 @@ actor KnownSpeakerStore {
 
     private func deleteReferenceClipIfPresent(_ referenceClip: KnownSpeakerReferenceClip?) throws {
         guard let referenceClip else { return }
-        let fileURL = samplesDirectoryURL.appendingPathComponent(referenceClip.storedFileName)
+        let fileURL = try safeReferenceClipURL(for: referenceClip.storedFileName)
         guard FileManager.default.fileExists(atPath: fileURL.path(percentEncoded: false)) else { return }
         try FileManager.default.removeItem(at: fileURL)
+    }
+
+    private func safeReferenceClipURL(for storedFileName: String) throws -> URL {
+        let trimmed = storedFileName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty,
+              trimmed == (trimmed as NSString).lastPathComponent,
+              !trimmed.contains(".."),
+              !trimmed.contains("/"),
+              !trimmed.contains("\\") else {
+            throw LorreError.persistenceFailed("Invalid known speaker reference clip path.")
+        }
+
+        let base = samplesDirectoryURL.standardizedFileURL
+        let candidate = base.appendingPathComponent(trimmed, isDirectory: false).standardizedFileURL
+        let basePath = base.path(percentEncoded: false)
+        let candidatePath = candidate.path(percentEncoded: false)
+        guard candidatePath == basePath || candidatePath.hasPrefix(basePath + "/") else {
+            throw LorreError.persistenceFailed("Known speaker reference clip is outside the samples directory.")
+        }
+        return candidate
     }
 }

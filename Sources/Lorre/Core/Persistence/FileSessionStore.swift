@@ -26,11 +26,11 @@ actor FileSessionStore: SessionStore {
             options: [.skipsHiddenFiles]
         )
 
-        var manifests: [SessionManifest] = []
-        for url in urls {
+        let manifests = await Task.detached(priority: .utility) {
+            urls.compactMap { url -> SessionManifest? in
             let sessionJSON = url.appendingPathComponent("session.json")
             guard FileManager.default.fileExists(atPath: sessionJSON.path(percentEncoded: false)) else {
-                continue
+                return nil
             }
             do {
                 let data = try Data(contentsOf: sessionJSON)
@@ -38,14 +38,12 @@ actor FileSessionStore: SessionStore {
                 if manifest.id.uuidString.lowercased() != url.lastPathComponent.lowercased() {
                     manifest.id = UUID(uuidString: url.lastPathComponent) ?? manifest.id
                 }
-                manifests.append(manifest)
+                return manifest
             } catch {
-                if let damaged = damagedSessionManifest(for: url, manifestURL: sessionJSON, error: error) {
-                    manifests.append(damaged)
-                }
-                continue
+                return Self.damagedSessionManifest(for: url, manifestURL: sessionJSON, error: error)
             }
-        }
+            }
+        }.value
 
         return manifests.sorted { lhs, rhs in
             if lhs.updatedAt == rhs.updatedAt { return lhs.createdAt > rhs.createdAt }
@@ -54,10 +52,18 @@ actor FileSessionStore: SessionStore {
     }
 
     func loadSession(id: UUID) async throws -> SessionManifest? {
+        try loadSessionFromDisk(id: id)
+    }
+
+    private func loadSessionFromDisk(id: UUID) throws -> SessionManifest? {
         let url = sessionManifestURL(for: id)
         guard FileManager.default.fileExists(atPath: url.path(percentEncoded: false)) else { return nil }
         let data = try Data(contentsOf: url)
-        return try Self.decoder.decode(SessionManifest.self, from: data)
+        var manifest = try Self.decoder.decode(SessionManifest.self, from: data)
+        if manifest.id != id {
+            manifest.id = id
+        }
+        return manifest
     }
 
     func createSession(_ draft: NewSessionDraft) async throws -> SessionManifest {
@@ -102,12 +108,31 @@ actor FileSessionStore: SessionStore {
         try save(session)
     }
 
+    func updateSession(
+        id: UUID,
+        _ transform: @Sendable (inout SessionManifest) throws -> Void
+    ) async throws -> SessionManifest {
+        try ensureBaseDirectories()
+        guard var session = try loadSessionFromDisk(id: id) else {
+            throw LorreError.sessionNotFound
+        }
+        try transform(&session)
+        session.id = id
+        try save(session)
+        return session
+    }
+
     func deleteSession(id: UUID) async throws {
         try ensureBaseDirectories()
         let sessionDir = sessionsRootURL.appendingPathComponent(id.uuidString, isDirectory: true)
         let fileManager = FileManager.default
         guard fileManager.fileExists(atPath: sessionDir.path(percentEncoded: false)) else { return }
-        try fileManager.removeItem(at: sessionDir)
+        do {
+            var trashedURL: NSURL?
+            try fileManager.trashItem(at: sessionDir, resultingItemURL: &trashedURL)
+        } catch {
+            try fileManager.removeItem(at: sessionDir)
+        }
     }
 
     func loadTranscript(sessionId: UUID) async throws -> TranscriptDocument? {
@@ -162,7 +187,7 @@ actor FileSessionStore: SessionStore {
         try FileManager.default.createDirectory(at: sessionsRootURL, withIntermediateDirectories: true)
     }
 
-    private func damagedSessionManifest(for folderURL: URL, manifestURL: URL, error: Error) -> SessionManifest? {
+    private static func damagedSessionManifest(for folderURL: URL, manifestURL: URL, error: Error) -> SessionManifest? {
         guard let id = UUID(uuidString: folderURL.lastPathComponent) else { return nil }
         let fileValues = try? manifestURL.resourceValues(forKeys: [.creationDateKey, .contentModificationDateKey])
         let fallbackDate = Date()
@@ -175,7 +200,7 @@ actor FileSessionStore: SessionStore {
             createdAt: createdAt,
             updatedAt: updatedAt,
             recordingSource: .microphone,
-            audioFileName: "",
+            audioFileName: "__damaged_session_audio_unavailable__",
             audioDeletedAt: updatedAt,
             processing: ProcessingSummary(
                 queuedAt: nil,

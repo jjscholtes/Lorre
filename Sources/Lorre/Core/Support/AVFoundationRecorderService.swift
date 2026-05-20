@@ -1,5 +1,5 @@
 #if canImport(AVFoundation)
-import AVFoundation
+@preconcurrency import AVFoundation
 #if canImport(AppKit)
 import AppKit
 #endif
@@ -39,6 +39,34 @@ actor AVFoundationRecorderService: RecorderService {
             lock.lock()
             defer { lock.unlock() }
             return writeFailureMessage
+        }
+
+        func markFailure(_ message: String) {
+            lock.lock()
+            if writeFailureMessage == nil {
+                writeFailureMessage = message
+            }
+            lock.unlock()
+        }
+    }
+
+    private final class PCMBufferBox: @unchecked Sendable {
+        let buffer: AVAudioPCMBuffer
+
+        init(_ buffer: AVAudioPCMBuffer) {
+            self.buffer = buffer
+        }
+    }
+
+    private final class AudioEngineBox: @unchecked Sendable {
+        private let engine: AVAudioEngine
+
+        init(_ engine: AVAudioEngine) {
+            self.engine = engine
+        }
+
+        func stop() {
+            engine.stop()
         }
     }
 
@@ -198,6 +226,14 @@ actor AVFoundationRecorderService: RecorderService {
         }
 
         #if canImport(FluidAudio)
+        func prepareRecognitionBuffering() {
+            lock.lock()
+            if recognitionQueue == nil {
+                recognitionQueue = RecognitionBufferQueue(maxBufferedBuffers: maxBufferedRecognitionBuffers)
+            }
+            lock.unlock()
+        }
+
         func setRecognizer(_ recognizer: FluidAudioLiveStreamingRecognizer?) {
             let queueToFinish: RecognitionBufferQueue?
             let workerToCancel: Task<Void, Never>?
@@ -241,10 +277,6 @@ actor AVFoundationRecorderService: RecorderService {
 
             let queue: RecognitionBufferQueue?
             lock.lock()
-            guard recognizer != nil else {
-                lock.unlock()
-                return
-            }
             queue = recognitionQueue
             lock.unlock()
 
@@ -260,6 +292,23 @@ actor AVFoundationRecorderService: RecorderService {
             if let queue {
                 await queue.drain()
             }
+        }
+
+        func discardRecognitionWork() async {
+            let queueToFinish: RecognitionBufferQueue?
+            let workerToCancel: Task<Void, Never>?
+
+            lock.lock()
+            queueToFinish = recognitionQueue
+            recognitionQueue = nil
+            recognizer = nil
+            workerToCancel = recognitionWorkerTask
+            recognitionWorkerTask = nil
+            recognitionWorkerGeneration += 1
+            lock.unlock()
+
+            workerToCancel?.cancel()
+            await queueToFinish?.finish()
         }
 
         private func startRecognitionWorkerIfNeeded() {
@@ -322,6 +371,8 @@ actor AVFoundationRecorderService: RecorderService {
             lock.unlock()
         }
         #else
+        func prepareRecognitionBuffering() {}
+
         func setRecognizer(_ recognizer: Any?) {
             _ = recognizer
         }
@@ -331,6 +382,8 @@ actor AVFoundationRecorderService: RecorderService {
         }
 
         func drainRecognitionWork() async {}
+
+        func discardRecognitionWork() async {}
         #endif
     }
 
@@ -371,53 +424,87 @@ actor AVFoundationRecorderService: RecorderService {
             case systemAudio
         }
 
-        private let lock = NSLock()
-        private var microphoneSamples: [Float] = []
-        private var systemSamples: [Float] = []
+        private struct SampleQueue {
+            private var storage: [Float] = []
+            private var startIndex = 0
+
+            var count: Int { storage.count - startIndex }
+
+            mutating func append(_ samples: [Float], maxBufferedSamples: Int) {
+                storage.append(contentsOf: samples)
+                if count > maxBufferedSamples {
+                    startIndex += count - maxBufferedSamples
+                }
+                compactIfNeeded()
+            }
+
+            func sample(at index: Int) -> Float {
+                guard index >= 0, index < count else { return 0 }
+                return storage[startIndex + index]
+            }
+
+            mutating func removeFirst(_ amount: Int) {
+                startIndex += min(max(amount, 0), count)
+                compactIfNeeded()
+            }
+
+            mutating func removeAll(keepingCapacity: Bool = false) {
+                storage.removeAll(keepingCapacity: keepingCapacity)
+                startIndex = 0
+            }
+
+            private mutating func compactIfNeeded() {
+                guard startIndex > 0, startIndex > max(4096, storage.count / 2) else { return }
+                storage.removeFirst(startIndex)
+                startIndex = 0
+            }
+        }
+
+        private let workQueue = DispatchQueue(label: "Lorre.MixedPreviewMixer")
+        private var microphoneSamples = SampleQueue()
+        private var systemSamples = SampleQueue()
         private let chunkSize = 1600
         private let maxBufferedSamples = 1600 * 24
         private let outputFormat = RecorderAudioUtilities.previewFormat
+        private let converter: RecorderAudioUtilities.ReusableConverterBox
         private let outputHandler: @Sendable (AVAudioPCMBuffer) -> Void
 
         init(outputHandler: @escaping @Sendable (AVAudioPCMBuffer) -> Void) {
             self.outputHandler = outputHandler
+            self.converter = RecorderAudioUtilities.ReusableConverterBox(outputFormat: outputFormat)
         }
 
         func enqueue(_ buffer: AVAudioPCMBuffer, source: Source) {
-            guard let converted = try? RecorderAudioUtilities.convert(buffer, to: outputFormat),
-                  let channelData = converted.floatChannelData else {
-                return
+            guard let copiedBuffer = buffer.lorre_deepCopy() else { return }
+            let bufferBox = PCMBufferBox(copiedBuffer)
+            workQueue.async { [weak self, bufferBox] in
+                self?.process(bufferBox.buffer, source: source, flushAll: false)
             }
-            let samples = Array(UnsafeBufferPointer(start: channelData[0], count: Int(converted.frameLength)))
-
-            let chunks: [[Float]]
-            lock.lock()
-            switch source {
-            case .microphone:
-                microphoneSamples.append(contentsOf: samples)
-                if microphoneSamples.count > maxBufferedSamples {
-                    microphoneSamples.removeFirst(microphoneSamples.count - maxBufferedSamples)
-                }
-            case .systemAudio:
-                systemSamples.append(contentsOf: samples)
-                if systemSamples.count > maxBufferedSamples {
-                    systemSamples.removeFirst(systemSamples.count - maxBufferedSamples)
-                }
-            }
-            chunks = drainLocked(flushAll: false)
-            lock.unlock()
-            emit(chunks)
         }
 
         func flushRemaining() {
-            let chunks: [[Float]]
-            lock.lock()
-            chunks = drainLocked(flushAll: true)
-            lock.unlock()
+            workQueue.sync {
+                let chunks = drain(flushAll: true)
+                emit(chunks)
+            }
+        }
+
+        private func process(_ buffer: AVAudioPCMBuffer, source: Source, flushAll: Bool) {
+            guard let converted = try? converter.convert(buffer),
+                  let channelData = converted.floatChannelData else { return }
+            let samples = Array(UnsafeBufferPointer(start: channelData[0], count: Int(converted.frameLength)))
+
+            switch source {
+            case .microphone:
+                microphoneSamples.append(samples, maxBufferedSamples: maxBufferedSamples)
+            case .systemAudio:
+                systemSamples.append(samples, maxBufferedSamples: maxBufferedSamples)
+            }
+            let chunks = drain(flushAll: flushAll)
             emit(chunks)
         }
 
-        private func drainLocked(flushAll: Bool) -> [[Float]] {
+        private func drain(flushAll: Bool) -> [[Float]] {
             var chunks: [[Float]] = []
 
             while max(microphoneSamples.count, systemSamples.count) >= chunkSize || (
@@ -427,8 +514,8 @@ actor AVFoundationRecorderService: RecorderService {
                 var mixed = Array(repeating: Float(0), count: frameCount)
 
                 for index in 0..<frameCount {
-                    let microphone = index < microphoneSamples.count ? microphoneSamples[index] : 0
-                    let system = index < systemSamples.count ? systemSamples[index] : 0
+                    let microphone = microphoneSamples.sample(at: index)
+                    let system = systemSamples.sample(at: index)
                     let value = ((microphone * 0.70710677) + (system * 0.70710677)) * 0.8
                     mixed[index] = max(-0.98, min(0.98, value))
                 }
@@ -466,6 +553,8 @@ actor AVFoundationRecorderService: RecorderService {
         private let outputURL: URL
         private let writer: CaptureFileWriterBox
         private let outputQueue = DispatchQueue(label: "Lorre.SystemAudioCapture")
+        private let outputFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 48_000, channels: 2, interleaved: false)!
+        private let converter: RecorderAudioUtilities.ReusableConverterBox
         private let onPCMBuffer: @Sendable (AVAudioPCMBuffer) -> Void
         private let onMeterLevel: @Sendable (Double) -> Void
         private let lock = NSLock()
@@ -480,13 +569,8 @@ actor AVFoundationRecorderService: RecorderService {
         ) throws {
             self.filter = filter
             self.outputURL = outputURL
-            let fileFormat = AVAudioFormat(
-                commonFormat: .pcmFormatFloat32,
-                sampleRate: 48_000,
-                channels: 2,
-                interleaved: false
-            )!
-            self.writer = try CaptureFileWriterBox(file: AVAudioFile(forWriting: outputURL, settings: fileFormat.settings))
+            self.converter = RecorderAudioUtilities.ReusableConverterBox(outputFormat: outputFormat)
+            self.writer = try CaptureFileWriterBox(file: AVAudioFile(forWriting: outputURL, settings: outputFormat.settings))
             self.onPCMBuffer = onPCMBuffer
             self.onMeterLevel = onMeterLevel
         }
@@ -533,10 +617,7 @@ actor AVFoundationRecorderService: RecorderService {
             guard CMSampleBufferIsValid(sampleBuffer) else { return }
             do {
                 let buffer = try RecorderAudioUtilities.extractPCMBuffer(from: sampleBuffer)
-                let converted = try RecorderAudioUtilities.convert(
-                    buffer,
-                    to: AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 48_000, channels: 2, interleaved: false)!
-                )
+                let converted = try converter.convert(buffer)
                 writer.write(converted)
                 onMeterLevel(converted.lorre_meterLevel())
                 onPCMBuffer(converted)
@@ -618,6 +699,7 @@ actor AVFoundationRecorderService: RecorderService {
         var engine: AVAudioEngine
         var writer: CaptureFileWriterBox
         var tempURL: URL
+        var configurationObserver: NSObjectProtocol?
     }
 
     #if canImport(ScreenCaptureKit)
@@ -629,6 +711,7 @@ actor AVFoundationRecorderService: RecorderService {
 
     private var microphoneEngine: AVAudioEngine?
     private var microphoneWriter: CaptureFileWriterBox?
+    private var microphoneConfigurationObserver: NSObjectProtocol?
     #if canImport(ScreenCaptureKit)
     private var systemCapture: SystemAudioCaptureBox?
     #endif
@@ -681,6 +764,15 @@ actor AVFoundationRecorderService: RecorderService {
 
         let monitorBridge = LiveMonitorBridgeBox()
         let combinedMeter = request.source == .microphoneAndSystemAudio ? CombinedMeterBox() : nil
+        let shouldRunLiveTranscription: Bool
+        if isLiveTranscriptionEnabled {
+            shouldRunLiveTranscription = await supportsLiveTranscription(for: request.source)
+        } else {
+            shouldRunLiveTranscription = false
+        }
+        if shouldRunLiveTranscription {
+            monitorBridge.prepareRecognitionBuffering()
+        }
         let previewMixer = request.source == .microphoneAndSystemAudio
             ? MixedPreviewMixerBox { monitorBridge.enqueueRecognitionBuffer($0) }
             : nil
@@ -721,6 +813,7 @@ actor AVFoundationRecorderService: RecorderService {
             self.previewMixer = previewMixer
             self.microphoneEngine = micStart?.engine
             self.microphoneWriter = micStart?.writer
+            self.microphoneConfigurationObserver = micStart?.configurationObserver
             #if canImport(ScreenCaptureKit)
             self.systemCapture = systemStart?.capture
             #endif
@@ -743,7 +836,7 @@ actor AVFoundationRecorderService: RecorderService {
                 #endif
             }
 
-            if isLiveTranscriptionEnabled, await supportsLiveTranscription(for: request.source) {
+            if shouldRunLiveTranscription {
                 livePreviewFallback = LiveTranscriptPreview(
                     confirmedText: "",
                     partialText: "Preparing live transcript… recording has already started.",
@@ -1035,7 +1128,19 @@ actor AVFoundationRecorderService: RecorderService {
         let engine = AVAudioEngine()
         let inputNode = engine.inputNode
         let inputFormat = inputNode.inputFormat(forBus: 0)
+        guard inputFormat.sampleRate > 0, inputFormat.channelCount > 0 else {
+            throw LorreError.recordingStartFailed("No usable microphone input device is available.")
+        }
         let writer = try CaptureFileWriterBox(file: AVAudioFile(forWriting: tempURL, settings: inputFormat.settings))
+        let engineBox = AudioEngineBox(engine)
+        let configurationObserver = NotificationCenter.default.addObserver(
+            forName: .AVAudioEngineConfigurationChange,
+            object: engine,
+            queue: nil
+        ) { [engineBox, writer] _ in
+            writer.markFailure("The audio input device changed during recording.")
+            engineBox.stop()
+        }
         let targetFrames = Int((inputFormat.sampleRate * 0.45).rounded())
         let bufferSize = AVAudioFrameCount(max(4096, min(32_768, targetFrames)))
 
@@ -1059,11 +1164,12 @@ actor AVFoundationRecorderService: RecorderService {
         do {
             try engine.start()
         } catch {
+            NotificationCenter.default.removeObserver(configurationObserver)
             inputNode.removeTap(onBus: 0)
             throw LorreError.recordingStartFailed("AVAudioEngine failed to start. \(error.localizedDescription)")
         }
 
-        return MicrophoneCaptureStartResult(engine: engine, writer: writer, tempURL: tempURL)
+        return MicrophoneCaptureStartResult(engine: engine, writer: writer, tempURL: tempURL, configurationObserver: configurationObserver)
     }
 
     #if canImport(ScreenCaptureKit)
@@ -1121,7 +1227,7 @@ actor AVFoundationRecorderService: RecorderService {
         guard !Task.isCancelled else { return }
         guard activeRecordingSource != nil, activeRecordingToken == recordingToken else { return }
         do {
-            try await startLiveRecognizerIfNeeded()
+            try await startLiveRecognizerIfNeeded(for: recordingToken)
             guard activeRecordingSource != nil, activeRecordingToken == recordingToken else { return }
             livePreviewFallback = LiveTranscriptPreview(
                 confirmedText: "",
@@ -1146,10 +1252,13 @@ actor AVFoundationRecorderService: RecorderService {
         }
     }
 
-    private func startLiveRecognizerIfNeeded() async throws {
+    private func startLiveRecognizerIfNeeded(for recordingToken: UUID) async throws {
         #if canImport(FluidAudio)
         guard isLiveTranscriptionEnabled else { return }
         try Task.checkCancellation()
+        guard activeRecordingSource != nil, activeRecordingToken == recordingToken else {
+            throw CancellationError()
+        }
 
         let recognizer = liveRecognizer ?? FluidAudioLiveStreamingRecognizer(
             speakerEnrollmentService: speakerEnrollmentService,
@@ -1162,6 +1271,12 @@ actor AVFoundationRecorderService: RecorderService {
         try await recognizer.start { [weak previewBridge] preview in
             previewBridge?.setPreview(preview)
         }
+        guard !Task.isCancelled,
+              activeRecordingSource != nil,
+              activeRecordingToken == recordingToken else {
+            _ = try? await recognizer.finish()
+            throw CancellationError()
+        }
         self.liveRecognizer = recognizer
         previewBridge?.setRecognizer(recognizer)
         try Task.checkCancellation()
@@ -1170,14 +1285,16 @@ actor AVFoundationRecorderService: RecorderService {
 
     private func stopLiveStreamingCaptureIfNeeded() async {
         previewMixer?.flushRemaining()
-        await liveMonitorBridge?.drainRecognitionWork()
         liveMonitorBridge?.setMeterLevel(0.05)
 
         #if canImport(FluidAudio)
         guard let liveRecognizer else {
+            await liveMonitorBridge?.discardRecognitionWork()
             liveMonitorBridge?.finishMonitoring()
             return
         }
+
+        await liveMonitorBridge?.drainRecognitionWork()
 
         do {
             _ = try await liveRecognizer.finish()
@@ -1192,8 +1309,10 @@ actor AVFoundationRecorderService: RecorderService {
             )
             liveMonitorBridge?.setPreview(livePreviewFallback)
         }
-        liveMonitorBridge?.setRecognizer(nil)
+        await liveMonitorBridge?.discardRecognitionWork()
         self.liveRecognizer = nil
+        #else
+        await liveMonitorBridge?.discardRecognitionWork()
         #endif
 
         liveMonitorBridge?.finishMonitoring()
@@ -1203,6 +1322,10 @@ actor AVFoundationRecorderService: RecorderService {
         if let engine = microphoneEngine {
             engine.inputNode.removeTap(onBus: 0)
             engine.stop()
+        }
+        if let microphoneConfigurationObserver {
+            NotificationCenter.default.removeObserver(microphoneConfigurationObserver)
+            self.microphoneConfigurationObserver = nil
         }
         #if canImport(ScreenCaptureKit)
         if let systemCapture {
@@ -1223,6 +1346,10 @@ actor AVFoundationRecorderService: RecorderService {
 
         self.microphoneEngine = nil
         self.microphoneWriter = nil
+        if let microphoneConfigurationObserver {
+            NotificationCenter.default.removeObserver(microphoneConfigurationObserver)
+            self.microphoneConfigurationObserver = nil
+        }
         #if canImport(ScreenCaptureKit)
         self.systemCapture = nil
         #endif
@@ -1249,6 +1376,10 @@ actor AVFoundationRecorderService: RecorderService {
     private func clearActiveRecordingState() {
         self.microphoneEngine = nil
         self.microphoneWriter = nil
+        if let microphoneConfigurationObserver {
+            NotificationCenter.default.removeObserver(microphoneConfigurationObserver)
+            self.microphoneConfigurationObserver = nil
+        }
         #if canImport(ScreenCaptureKit)
         self.systemCapture = nil
         #endif

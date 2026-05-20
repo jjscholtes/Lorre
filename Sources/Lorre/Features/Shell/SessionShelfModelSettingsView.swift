@@ -161,6 +161,7 @@ struct ModelStatusCompactPanelView: View {
 struct ModelStatusPanelView: View {
     @ObservedObject var viewModel: AppViewModel
     @State private var activeTooltipRowID: String?
+    @State private var vocabularyDraft = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: DS.Space.x2) {
@@ -377,12 +378,12 @@ struct ModelStatusPanelView: View {
                         )
 
                         Spacer()
-                        Text("\(viewModel.customVocabularyTermLineCount) lines")
+                        Text("\(vocabularyDraftLineCount) lines")
                             .font(DS.FontStyle.mono)
                             .foregroundStyle(DS.ColorToken.fgTertiary)
                     }
 
-                    TextEditor(text: $viewModel.customVocabularySimpleFormatTerms)
+                    TextEditor(text: $vocabularyDraft)
                         .font(DS.FontStyle.mono)
                         .foregroundStyle(DS.ColorToken.fgPrimary)
                         .scrollContentBackground(.hidden)
@@ -396,6 +397,7 @@ struct ModelStatusPanelView: View {
 
                     HStack(spacing: DS.Space.x2) {
                         Button(viewModel.isVocabularyBoostingAvailable ? "Save Terms" : "Save Terms for Later") {
+                            viewModel.customVocabularySimpleFormatTerms = vocabularyDraft
                             viewModel.saveCustomVocabularyTerms()
                         }
                         .buttonStyle(SecondaryControlButtonStyle())
@@ -436,6 +438,20 @@ struct ModelStatusPanelView: View {
         .padding(DS.Space.x3)
         .frame(maxWidth: .infinity, alignment: .leading)
         .dsPanelSurface(alt: true, cornerRadius: DS.Radius.md)
+        .onAppear {
+            vocabularyDraft = viewModel.customVocabularySimpleFormatTerms
+        }
+        .onChange(of: viewModel.customVocabularySimpleFormatTerms) { _, newValue in
+            if vocabularyDraft != newValue {
+                vocabularyDraft = newValue
+            }
+        }
+    }
+
+    private var vocabularyDraftLineCount: Int {
+        VocabularyBoostingConfiguration(simpleFormatTerms: vocabularyDraft)
+            .simpleFormatEntries
+            .count
     }
 
     private var railMode: IndexRailMode {
@@ -585,13 +601,8 @@ struct ModelStatusPanelView: View {
         guard case .ready = viewModel.modelPreparationState else {
             return "Not prepared yet"
         }
-
-        let prefix = "Last prepared "
-        let parts = viewModel.modelPreparationDetailLine.split(separator: "•").map {
-            $0.trimmingCharacters(in: .whitespacesAndNewlines)
-        }
-        if let first = parts.first, first.hasPrefix(prefix) {
-            return String(first.dropFirst(prefix.count))
+        if let preparedAt = viewModel.modelPreparationLastPreparedAt {
+            return preparedAt.formatted(date: .abbreviated, time: .shortened)
         }
         return "Ready"
     }

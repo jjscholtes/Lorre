@@ -8,6 +8,5 @@ struct CapsLabel: View {
             .font(DS.FontStyle.control)
             .tracking(0.8)
             .foregroundStyle(DS.ColorToken.fgSecondary)
-            .textCase(.uppercase)
     }
 }

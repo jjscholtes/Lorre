@@ -110,6 +110,7 @@ struct SpeakerRecognitionQuickAccessView: View {
 
 struct KnownSpeakerLibraryQuickAccessView: View {
     @ObservedObject var viewModel: AppViewModel
+    @State private var draftName = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: DS.Space.x2) {
@@ -122,7 +123,7 @@ struct KnownSpeakerLibraryQuickAccessView: View {
             }
 
             HStack(spacing: DS.Space.x2) {
-                TextField("Speaker name", text: $viewModel.knownSpeakerDraftName)
+                TextField("Speaker name", text: $draftName)
                     .textFieldStyle(.plain)
                     .font(DS.FontStyle.body)
                     .padding(.horizontal, DS.Space.x2)
@@ -134,10 +135,19 @@ struct KnownSpeakerLibraryQuickAccessView: View {
                     )
 
                 Button("Add Sample") {
+                    viewModel.knownSpeakerDraftName = draftName
                     viewModel.importKnownSpeaker()
                 }
                 .buttonStyle(SecondaryControlButtonStyle())
                 .disabled(viewModel.isKnownSpeakerOperationInFlight)
+            }
+            .onAppear {
+                draftName = viewModel.knownSpeakerDraftName
+            }
+            .onChange(of: viewModel.knownSpeakerDraftName) { _, newValue in
+                if draftName != newValue {
+                    draftName = newValue
+                }
             }
 
             Text(viewModel.knownSpeakerOperationDescription ?? viewModel.knownSpeakerLibraryStatusLine)

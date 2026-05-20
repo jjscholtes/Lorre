@@ -1,8 +1,83 @@
 import Foundation
+#if canImport(AVFoundation)
+@preconcurrency import AVFoundation
+#endif
 import XCTest
 @testable import Lorre
 
 final class LorreCoreTests: XCTestCase {
+    func testFormattersUseHourFieldsForLongDurations() {
+        XCTAssertEqual(Formatters.duration(14_400), "04:00:00")
+        XCTAssertEqual(Formatters.timestamp(ms: 14_400_123), "04:00:00.123")
+    }
+
+    #if canImport(AVFoundation)
+    func testMixToCanonicalFileKeepsDifferentSampleRatesOnTargetTimeline() throws {
+        let root = makeTemporaryRoot(named: "LorreMixTimelineTests")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let microphoneURL = root.appendingPathComponent("microphone.caf")
+        let systemURL = root.appendingPathComponent("system.caf")
+        let mixedURL = root.appendingPathComponent("mixed.caf")
+        let durationSeconds = 3.0
+        let impulseSeconds = 2.0
+
+        try writeImpulseAudio(
+            to: microphoneURL,
+            sampleRate: 48_000,
+            durationSeconds: durationSeconds,
+            impulseSeconds: impulseSeconds
+        )
+        try writeImpulseAudio(
+            to: systemURL,
+            sampleRate: 44_100,
+            durationSeconds: durationSeconds,
+            impulseSeconds: impulseSeconds
+        )
+
+        try RecorderAudioUtilities.mixToCanonicalFile(
+            microphoneURL: microphoneURL,
+            systemAudioURL: systemURL,
+            destinationURL: mixedURL
+        )
+
+        let mixedSamples = try RecorderAudioUtilities.loadSamples(
+            from: mixedURL,
+            targetFormat: RecorderAudioUtilities.previewFormat
+        )
+        let expectedFrameCount = Int(durationSeconds * RecorderAudioUtilities.previewFormat.sampleRate)
+        let expectedImpulseIndex = Int(impulseSeconds * RecorderAudioUtilities.previewFormat.sampleRate)
+        let peakIndex = mixedSamples.indices.max { abs(mixedSamples[$0]) < abs(mixedSamples[$1]) }
+
+        XCTAssertLessThanOrEqual(abs(mixedSamples.count - expectedFrameCount), 2)
+        XCTAssertNotNil(peakIndex)
+        XCTAssertLessThanOrEqual(abs((peakIndex ?? 0) - expectedImpulseIndex), 4)
+    }
+
+    private func writeImpulseAudio(
+        to url: URL,
+        sampleRate: Double,
+        durationSeconds: Double,
+        impulseSeconds: Double
+    ) throws {
+        guard let format = AVAudioFormat(
+            commonFormat: .pcmFormatFloat32,
+            sampleRate: sampleRate,
+            channels: 1,
+            interleaved: false
+        ) else {
+            XCTFail("Could not create test audio format")
+            return
+        }
+        let frameCount = Int((durationSeconds * sampleRate).rounded())
+        var samples = Array(repeating: Float(0), count: frameCount)
+        let impulseIndex = min(max(0, Int((impulseSeconds * sampleRate).rounded())), frameCount - 1)
+        samples[impulseIndex] = 1
+        let buffer = try RecorderAudioUtilities.makePCMBuffer(from: samples, format: format)
+        let file = try AVAudioFile(forWriting: url, settings: format.settings)
+        try file.write(from: buffer)
+    }
+    #endif
+
     func testFileSessionStoreRoundTripPersistsSessionAndTranscript() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("LorreTests-\(UUID().uuidString)", isDirectory: true)
@@ -87,6 +162,61 @@ final class LorreCoreTests: XCTestCase {
         XCTAssertTrue(markdown.contains("Speaker S1"))
         XCTAssertTrue(markdown.contains("`00:00.000 - 00:01.234`"))
         XCTAssertTrue(markdown.contains("Second line"))
+    }
+
+    func testMarkdownExporterEscapesUserControlledMarkdown() {
+        let exporter = MarkdownExportService()
+        let session = SessionManifest(
+            title: "# Heading\n<script>",
+            status: .ready,
+            audioFileName: "audio.m4a"
+        )
+        let transcript = TranscriptDocument(
+            sessionId: session.id,
+            sourceEngine: "TestEngine",
+            segments: [
+                TranscriptSegment(startMs: 0, endMs: 1000, text: "# not a heading <script>", speakerId: "S1")
+            ],
+            speakers: [
+                SpeakerProfile.defaultProfile(id: "S1")
+            ]
+        )
+
+        let markdown = exporter.render(session: session, transcript: transcript)
+        XCTAssertTrue(markdown.contains("# \\# Heading &lt;script&gt;"))
+        XCTAssertTrue(markdown.contains("\\# not a heading &lt;script&gt;"))
+    }
+
+    func testMarkdownExporterUsesSafeCodeSpanForSpeakerIDsWithBackticks() {
+        let exporter = MarkdownExportService()
+        let session = SessionManifest(
+            title: "Export Session",
+            status: .ready,
+            audioFileName: "audio.m4a"
+        )
+        let transcript = TranscriptDocument(
+            sessionId: session.id,
+            sourceEngine: "TestEngine",
+            segments: [
+                TranscriptSegment(startMs: 0, endMs: 1000, text: "hello", speakerId: "S`1")
+            ],
+            speakers: [
+                SpeakerProfile(id: "S`1", displayName: "Speaker Backtick", styleVariant: .filled, isUserRenamed: false)
+            ]
+        )
+
+        let markdown = exporter.render(session: session, transcript: transcript)
+
+        XCTAssertTrue(markdown.contains("### Speaker Backtick (``S`1``)"))
+        XCTAssertFalse(markdown.contains("`S\\`1`"))
+    }
+
+    func testDiarizationSpeakerLabelNormalizerAvoidsNumericCollisions() {
+        XCTAssertEqual(DiarizationSpeakerLabelNormalizer.normalize("0"), "S1")
+        XCTAssertEqual(DiarizationSpeakerLabelNormalizer.normalize("1"), "S2")
+        XCTAssertEqual(DiarizationSpeakerLabelNormalizer.normalize("2"), "S3")
+        XCTAssertEqual(DiarizationSpeakerLabelNormalizer.normalize("S2"), "S2")
+        XCTAssertEqual(DiarizationSpeakerLabelNormalizer.normalize(""), "UNK")
     }
 
     func testTranscriptAssemblerAssignsSpeakerByLargestOverlap() {
@@ -370,6 +500,46 @@ final class LorreCoreTests: XCTestCase {
     }
 
     @MainActor
+    func testRetryProcessingImmediatelyMovesFailedSessionToProcessingState() async throws {
+        let root = makeTemporaryRoot(named: "LorreRetryLocalStateTests")
+        let store = FileSessionStore(baseURL: root)
+        let failed = try await store.createSession(
+            NewSessionDraft(
+                title: "Failed",
+                folderId: nil,
+                status: .error,
+                durationSeconds: nil,
+                recordingSource: .microphone,
+                audioFileName: "audio.m4a",
+                microphoneStemFileName: nil,
+                systemAudioStemFileName: nil,
+                recordedAt: nil
+            )
+        )
+        try Data("audio".utf8).write(
+            to: (await store.sessionDirectoryURL(for: failed.id)).appendingPathComponent("audio.m4a")
+        )
+
+        let viewModel = AppViewModel(
+            dependencies: makeTestDependencies(
+                root: root,
+                store: store,
+                recorder: ControlledRecorderService()
+            )
+        )
+        await viewModel.start()
+
+        XCTAssertEqual(viewModel.workStageRoute, .transcript(failed.id))
+
+        viewModel.retryProcessing(failed.id)
+
+        XCTAssertEqual(viewModel.workStageRoute, .processing(failed.id))
+        XCTAssertTrue(viewModel.sessionsForViewBrowser(.processing).contains(where: { $0.id == failed.id }))
+        XCTAssertFalse(viewModel.sessionsForViewBrowser(.errors).contains(where: { $0.id == failed.id }))
+        XCTAssertEqual(viewModel.processingSummary(for: viewModel.selectedSession!).progressLabel, "Queued")
+    }
+
+    @MainActor
     func testCuePlaybackPresentationMentionsActiveRecordingWhenArchiveAudioExists() {
         let presentation = AppViewModel.makeCuePlaybackPresentation(
             hasRetainedAudio: true,
@@ -583,6 +753,7 @@ final class LorreCoreTests: XCTestCase {
         XCTAssertEqual(sessions.first?.id, damagedID)
         XCTAssertEqual(sessions.first?.status, .error)
         XCTAssertEqual(sessions.first?.displayTitle, "Damaged Session")
+        XCTAssertEqual(sessions.first?.hasRetainedAudio, false)
         XCTAssertTrue(sessions.first?.lastErrorMessage?.contains("Session metadata could not be read") == true)
     }
 
@@ -626,6 +797,66 @@ final class LorreCoreTests: XCTestCase {
         XCTAssertEqual(settings.vocabularyBoosting.simpleFormatTerms, "")
         XCTAssertEqual(settings.batchTranscription, BatchTranscriptionConfiguration())
         XCTAssertEqual(settings.liveTranscriptionPreset, .balanced)
+    }
+
+    func testAppSettingsStoreRejectsDuplicateFolderNamesWithoutHanging() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("LorreDuplicateFolderTests-\(UUID().uuidString)", isDirectory: true)
+        let store = AppSettingsStore(baseURL: root)
+
+        _ = try await store.createFolder(named: "Interviews")
+
+        do {
+            _ = try await store.createFolder(named: " interviews ")
+            XCTFail("Expected duplicate folder creation to fail")
+        } catch LorreError.persistenceFailed(let message) {
+            XCTAssertTrue(message.localizedCaseInsensitiveContains("already exists"))
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+
+        let folders = try await store.loadFolders()
+        XCTAssertEqual(folders.count, 1)
+    }
+
+    func testSessionStoreAtomicTransformPreservesConcurrentSessionFields() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("LorreAtomicSessionUpdateTests-\(UUID().uuidString)", isDirectory: true)
+        let store = FileSessionStore(baseURL: root)
+        let created = try await store.createSession(
+            NewSessionDraft(
+                title: "Original",
+                folderId: nil,
+                status: .processing,
+                durationSeconds: nil,
+                recordingSource: .microphone,
+                audioFileName: "audio.m4a",
+                microphoneStemFileName: nil,
+                systemAudioStemFileName: nil,
+                recordedAt: nil
+            )
+        )
+
+        async let renamed: SessionManifest = store.updateSession(id: created.id) { session in
+            session.title = "Renamed"
+            session.dirtyFlags.titleEdited = true
+        }
+        async let progressed: SessionManifest = store.updateSession(id: created.id) { session in
+            session.processing = ProcessingSummary(
+                queuedAt: session.processing.queuedAt,
+                startedAt: Date(),
+                completedAt: nil,
+                progressPhase: .transcribing,
+                progressLabel: "Transcribing",
+                progressFraction: 0.4
+            )
+        }
+
+        _ = try await (renamed, progressed)
+        let loaded = try await store.loadSession(id: created.id)
+        XCTAssertEqual(loaded?.title, "Renamed")
+        XCTAssertEqual(loaded?.processing.progressLabel, "Transcribing")
+        XCTAssertEqual(loaded?.dirtyFlags.titleEdited, true)
     }
 
     func testTranscriptDocumentDecodesLegacyJSONWithEmptyAlternatives() throws {
@@ -699,6 +930,30 @@ final class LorreCoreTests: XCTestCase {
         XCTAssertTrue(session.hasRetainedAudio)
     }
 
+    func testSessionManifestRequiresPersistedID() throws {
+        let legacyJSONWithoutID = """
+        {
+          "audioFileName" : "audio.m4a",
+          "createdAt" : "2026-02-23T10:20:01Z",
+          "dirtyFlags" : {
+            "speakerEdited" : false,
+            "titleEdited" : false,
+            "transcriptEdited" : false
+          },
+          "exports" : [],
+          "processing" : {},
+          "status" : "ready",
+          "title" : "Missing ID",
+          "updatedAt" : "2026-02-23T10:21:01Z"
+        }
+        """
+
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+
+        XCTAssertThrowsError(try decoder.decode(SessionManifest.self, from: Data(legacyJSONWithoutID.utf8)))
+    }
+
     func testKnownSpeakerStoreRoundTripCopiesReferenceClipAndDeletesIt() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("LorreKnownSpeakerTests-\(UUID().uuidString)", isDirectory: true)
@@ -734,6 +989,29 @@ final class LorreCoreTests: XCTestCase {
         let afterDelete = try await store.load()
         XCTAssertTrue(afterDelete.isEmpty)
         XCTAssertFalse(FileManager.default.fileExists(atPath: storedReferenceURL!.path(percentEncoded: false)))
+    }
+
+    func testKnownSpeakerStoreRejectsReferenceClipTraversalLoadedFromJSON() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("LorreKnownSpeakerTraversalTests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let store = KnownSpeakerStore(baseURL: root)
+        let speaker = KnownSpeaker(
+            id: "K1",
+            displayName: "Mallory",
+            embedding: [0.1],
+            styleVariant: .filled,
+            referenceClip: KnownSpeakerReferenceClip(
+                sourceFileName: "sample.m4a",
+                storedFileName: "../../outside.m4a",
+                durationSeconds: 1,
+                sampleRate: 16_000,
+                importedAt: Date()
+            )
+        )
+
+        let url = await store.referenceAudioURL(for: speaker)
+        XCTAssertNil(url)
     }
 
     func testKnownSpeakerStoreUpdateReplacesEmbeddingAndReferenceClip() async throws {

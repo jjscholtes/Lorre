@@ -18,6 +18,8 @@ struct TranscriptSegmentRowView: View {
     @State private var draftText: String = ""
     @State private var showSpeakerPopover = false
     @State private var isRowHovered = false
+    @State private var focusedOriginalText: String?
+    @State private var hasLocalTextEdits = false
     @FocusState private var isTextFocused: Bool
 
     init(
@@ -139,11 +141,26 @@ struct TranscriptSegmentRowView: View {
                     .onSubmit {
                         commitIfNeeded()
                     }
+                    .onChange(of: draftText) { _, newText in
+                        guard isTextFocused, let focusedOriginalText else { return }
+                        hasLocalTextEdits = newText != focusedOriginalText
+                    }
                     .onChange(of: isTextFocused) { _, focused in
-                        if !focused { commitIfNeeded() }
+                        if focused {
+                            focusedOriginalText = segment.text
+                            hasLocalTextEdits = draftText != segment.text
+                        } else {
+                            commitIfNeeded()
+                            focusedOriginalText = nil
+                            hasLocalTextEdits = false
+                        }
                     }
                     .onChange(of: segment.text) { _, newText in
-                        if !isTextFocused, draftText != newText {
+                        if isTextFocused {
+                            guard !hasLocalTextEdits else { return }
+                            draftText = newText
+                            focusedOriginalText = newText
+                        } else if draftText != newText {
                             draftText = newText
                         }
                     }
@@ -168,11 +185,6 @@ struct TranscriptSegmentRowView: View {
         }
         .padding(DS.Space.x3)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .contentShape(Rectangle())
-        .onTapGesture {
-            guard canCuePlayback else { return }
-            onSeekRequested()
-        }
         .onHover { hovering in
             isRowHovered = hovering
         }

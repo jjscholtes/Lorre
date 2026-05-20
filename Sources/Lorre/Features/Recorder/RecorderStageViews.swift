@@ -932,11 +932,12 @@ struct ProcessingPipelineView: View {
     let session: SessionManifest
 
     var body: some View {
+        let processing = viewModel.processingSummary(for: session)
         VStack(alignment: .leading, spacing: DS.Space.x4) {
             StageHeaderCard(
                 title: session.displayTitle,
-                statusLine: session.processing.progressLabel ?? "Processing",
-                rail: .progress(session.processing.progressFraction ?? 0.1),
+                statusLine: processing.progressLabel ?? "Processing",
+                rail: .progress(processing.progressFraction ?? 0.1),
                 trailingActions: {
                     HStack(spacing: DS.Space.x2) {
                         ForEach(viewModel.sessionActions(for: .processingStage, session: session)) { actionState in
@@ -952,20 +953,20 @@ struct ProcessingPipelineView: View {
 
             VStack(alignment: .leading, spacing: DS.Space.x3) {
                 CapsLabel(text: "Processing Pipeline")
-                Text(session.processing.progressPhase?.label ?? "Processing")
+                Text(processing.progressPhase?.label ?? "Processing")
                     .font(DS.FontStyle.panelTitle)
                     .foregroundStyle(DS.ColorToken.fgPrimary)
-                Text(session.processing.progressLabel ?? "Working on transcript…")
+                Text(processing.progressLabel ?? "Working on transcript…")
                     .font(DS.FontStyle.body)
                     .foregroundStyle(DS.ColorToken.fgSecondary)
 
-                IndexRailView(mode: .progress(session.processing.progressFraction ?? 0.1), height: 10)
+                IndexRailView(mode: .progress(processing.progressFraction ?? 0.1), height: 10)
                     .frame(maxWidth: .infinity)
 
                 HStack(spacing: DS.Space.x4) {
                     pipelineMetadata(label: "STATUS", value: session.status.label)
-                    pipelineMetadata(label: "PHASE", value: session.processing.progressPhase?.rawValue.uppercased() ?? "WAITING")
-                    pipelineMetadata(label: "FLUIDAUDIO", value: "SEAM READY")
+                    pipelineMetadata(label: "PHASE", value: processing.progressPhase?.rawValue.uppercased() ?? "WAITING")
+                    pipelineMetadata(label: "PIPELINE", value: viewModel.runtimeCapabilities.pipelineLabel.uppercased())
                 }
 
                 Text("Processing stays in the main work stage so the user keeps context while the transcript is prepared.")

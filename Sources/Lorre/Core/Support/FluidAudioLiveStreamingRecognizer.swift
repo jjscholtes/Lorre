@@ -9,6 +9,33 @@ import Foundation
 #endif
 
 #if canImport(AVFoundation) && canImport(FluidAudio)
+private final class LiveSerialProgressDispatcher: @unchecked Sendable {
+    private let lock = NSLock()
+    private var tail: Task<Void, Never>?
+
+    func submit(
+        _ update: ProcessingUpdate,
+        to onProgress: @escaping @Sendable (ProcessingUpdate) async -> Void
+    ) {
+        lock.lock()
+        let previous = tail
+        let task = Task {
+            await previous?.value
+            await onProgress(update)
+        }
+        tail = task
+        lock.unlock()
+    }
+
+    func drain() async {
+        let task: Task<Void, Never>?
+        lock.lock()
+        task = tail
+        lock.unlock()
+        await task?.value
+    }
+}
+
 final class LiveTranscriptionPCMBufferBox: @unchecked Sendable {
     let buffer: AVAudioPCMBuffer
 
@@ -194,6 +221,10 @@ actor FluidAudioLiveStreamingRecognizer {
         } catch is CancellationError {
             return
         } catch {
+            isStreaming = false
+            gateSpeechSeenForCurrentUtterance = false
+            vadRemainderSamples.removeAll(keepingCapacity: false)
+            resetSpeakerHintTracking()
             preview.errorMessage = "Live transcript error: \(error.localizedDescription)"
             preview.isFinalizing = false
             preview.updatedAt = Date()
@@ -324,6 +355,7 @@ actor FluidAudioLiveStreamingRecognizer {
                 )
             }
 
+            let progressDispatcher = LiveSerialProgressDispatcher()
             let modelDir = try await Self.ensureEouModelDirectory(
                 for: selectedPreset.repo,
                 progressHandler: { progress in
@@ -335,11 +367,10 @@ actor FluidAudioLiveStreamingRecognizer {
                         progress: progress
                     )
                     let scaled = FluidAudioProgressSupport.scale(update, into: 0.0...0.46)
-                    Task {
-                        await onProgress(scaled)
-                    }
+                    progressDispatcher.submit(scaled, to: onProgress)
                 }
             )
+            await progressDispatcher.drain()
 
             let manager = StreamingEouAsrManager(
                 chunkSize: selectedPreset.chunkSize,
@@ -376,6 +407,7 @@ actor FluidAudioLiveStreamingRecognizer {
                     )
                 )
             }
+            let progressDispatcher = LiveSerialProgressDispatcher()
             vadManager = try await VadManager(
                 progressHandler: { progress in
                     guard let onProgress else { return }
@@ -386,11 +418,10 @@ actor FluidAudioLiveStreamingRecognizer {
                         progress: progress
                     )
                     let scaled = FluidAudioProgressSupport.scale(update, into: 0.46...0.76)
-                    Task {
-                        await onProgress(scaled)
-                    }
+                    progressDispatcher.submit(scaled, to: onProgress)
                 }
             )
+            await progressDispatcher.drain()
         }
 
         if let vadManager, vadStreamState == nil {
@@ -444,6 +475,7 @@ actor FluidAudioLiveStreamingRecognizer {
                     )
                 )
             }
+            let progressDispatcher = LiveSerialProgressDispatcher()
             sortformerModels = try await SortformerModels.loadFromHuggingFace(
                 config: Self.liveSortformerConfig,
                 progressHandler: { progress in
@@ -455,11 +487,10 @@ actor FluidAudioLiveStreamingRecognizer {
                         progress: progress
                     )
                     let scaled = FluidAudioProgressSupport.scale(update, into: 0.76...0.93)
-                    Task {
-                        await onProgress(scaled)
-                    }
+                    progressDispatcher.submit(scaled, to: onProgress)
                 }
             )
+            await progressDispatcher.drain()
         }
 
         guard let sortformerModels else {

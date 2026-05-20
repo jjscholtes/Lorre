@@ -58,6 +58,15 @@ struct RuntimeCapabilities: Equatable, Sendable {
         pipeline == .fluidAudio
     }
 
+    var pipelineLabel: String {
+        switch pipeline {
+        case .fluidAudio:
+            return "FluidAudio"
+        case .mock:
+            return "Mock"
+        }
+    }
+
     var featureLabels: [String] {
         var labels: [String] = []
         if supportsSpeechToText {

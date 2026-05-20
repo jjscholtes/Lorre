@@ -555,6 +555,7 @@ enum TranscriptAssembler {
                 if shouldMergeFragment(current, into: next) {
                     next.text = smartJoin(current.text, next.text)
                     next.startMs = min(current.startMs, next.startMs)
+                    next.endMs = max(current.endMs, next.endMs)
                     next.confidence = mergeConfidence(current.confidence, next.confidence)
                     merged.append(next)
                     index += 2

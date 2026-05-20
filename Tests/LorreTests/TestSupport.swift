@@ -162,6 +162,7 @@ actor TestSpeakerEnrollmentService: SpeakerEnrollmentService {
 }
 
 final class TestPlaybackService: AudioPlaybackService {
+    var onPlaybackFinished: (@Sendable () -> Void)?
     var preparedURL: URL?
     var currentTimeSeconds: Double = 0
     var durationSeconds: Double = 0

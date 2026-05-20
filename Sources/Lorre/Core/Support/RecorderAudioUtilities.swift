@@ -1,12 +1,20 @@
 #if canImport(AVFoundation)
 @preconcurrency import AVFoundation
+#if canImport(Accelerate)
+import Accelerate
+#endif
 import CoreMedia
 import Foundation
 
 enum RecorderAudioUtilities {
     private final class ConversionInputState: @unchecked Sendable {
         private let lock = NSLock()
+        private let exhaustedStatus: AVAudioConverterInputStatus
         private var hasSuppliedInput = false
+
+        init(exhaustedStatus: AVAudioConverterInputStatus) {
+            self.exhaustedStatus = exhaustedStatus
+        }
 
         func nextBuffer(
             from buffer: AVAudioPCMBuffer,
@@ -16,7 +24,7 @@ enum RecorderAudioUtilities {
             defer { lock.unlock() }
 
             guard hasSuppliedInput == false else {
-                outStatus.pointee = .endOfStream
+                outStatus.pointee = exhaustedStatus
                 return nil
             }
 
@@ -29,6 +37,153 @@ enum RecorderAudioUtilities {
     static let previewFormat: AVAudioFormat = {
         AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16_000, channels: 1, interleaved: false)!
     }()
+
+    final class ReusableConverterBox: @unchecked Sendable {
+        private let outputFormat: AVAudioFormat
+        private let lock = NSLock()
+        private var inputFormat: AVAudioFormat?
+        private var converter: AVAudioConverter?
+
+        init(outputFormat: AVAudioFormat) {
+            self.outputFormat = outputFormat
+        }
+
+        func convert(_ buffer: AVAudioPCMBuffer) throws -> AVAudioPCMBuffer {
+            if buffer.format == outputFormat {
+                guard let copy = buffer.lorre_deepCopy() else {
+                    throw LorreError.recordingStartFailed("Could not copy audio buffer.")
+                }
+                return copy
+            }
+
+            lock.lock()
+            defer { lock.unlock() }
+
+            if inputFormat != buffer.format || converter == nil {
+                guard let nextConverter = AVAudioConverter(from: buffer.format, to: outputFormat) else {
+                    throw LorreError.recordingStartFailed("Could not prepare audio format converter.")
+                }
+                inputFormat = buffer.format
+                converter = nextConverter
+            }
+
+            guard let converter else {
+                throw LorreError.recordingStartFailed("Could not prepare audio format converter.")
+            }
+
+            return try RecorderAudioUtilities.convert(buffer, to: outputFormat, using: converter, endOfStream: false)
+        }
+    }
+
+    private final class StreamingConvertedSampleReader: @unchecked Sendable {
+        private let file: AVAudioFile
+        private let targetFormat: AVAudioFormat
+        private let converter: AVAudioConverter?
+        private var didReachEnd = false
+        private var readError: Error?
+
+        init(file: AVAudioFile, targetFormat: AVAudioFormat) throws {
+            self.file = file
+            self.targetFormat = targetFormat
+            if file.processingFormat == targetFormat {
+                self.converter = nil
+            } else {
+                guard let converter = AVAudioConverter(from: file.processingFormat, to: targetFormat) else {
+                    throw LorreError.recordingStopFailed("Could not prepare audio format converter for mixing.")
+                }
+                self.converter = converter
+            }
+        }
+
+        func readSamples(targetFrameCount: AVAudioFrameCount) throws -> [Float] {
+            guard targetFrameCount > 0 else { return [] }
+            if converter == nil {
+                return try readDirectSamples(targetFrameCount: targetFrameCount)
+            }
+            return try readConvertedSamples(targetFrameCount: targetFrameCount)
+        }
+
+        private func readDirectSamples(targetFrameCount: AVAudioFrameCount) throws -> [Float] {
+            let remainingFrames = file.length - file.framePosition
+            guard remainingFrames > 0 else { return [] }
+            let framesToRead = AVAudioFrameCount(min(Int64(targetFrameCount), remainingFrames))
+            guard let buffer = AVAudioPCMBuffer(pcmFormat: targetFormat, frameCapacity: framesToRead) else {
+                throw LorreError.recordingStopFailed("Could not allocate recorded audio buffer for mixing.")
+            }
+            try file.read(into: buffer, frameCount: framesToRead)
+            return Self.samples(from: buffer)
+        }
+
+        private func readConvertedSamples(targetFrameCount: AVAudioFrameCount) throws -> [Float] {
+            guard let converter else { return [] }
+            guard !didReachEnd else { return [] }
+            guard let outputBuffer = AVAudioPCMBuffer(pcmFormat: targetFormat, frameCapacity: targetFrameCount) else {
+                throw LorreError.recordingStopFailed("Could not allocate converted audio buffer for mixing.")
+            }
+
+            readError = nil
+            var conversionError: NSError?
+            let status = converter.convert(to: outputBuffer, error: &conversionError) { [self] requestedPackets, outStatus in
+                guard !didReachEnd else {
+                    outStatus.pointee = .endOfStream
+                    return nil
+                }
+
+                let remainingFrames = file.length - file.framePosition
+                guard remainingFrames > 0 else {
+                    didReachEnd = true
+                    outStatus.pointee = .endOfStream
+                    return nil
+                }
+
+                let requestedFrames = max(1, Int64(requestedPackets))
+                let framesToRead = AVAudioFrameCount(min(requestedFrames, remainingFrames))
+                guard let inputBuffer = AVAudioPCMBuffer(
+                    pcmFormat: file.processingFormat,
+                    frameCapacity: framesToRead
+                ) else {
+                    readError = LorreError.recordingStopFailed("Could not allocate recorded audio buffer for mixing.")
+                    didReachEnd = true
+                    outStatus.pointee = .endOfStream
+                    return nil
+                }
+
+                do {
+                    try file.read(into: inputBuffer, frameCount: framesToRead)
+                } catch {
+                    readError = error
+                    didReachEnd = true
+                    outStatus.pointee = .endOfStream
+                    return nil
+                }
+
+                guard inputBuffer.frameLength > 0 else {
+                    didReachEnd = true
+                    outStatus.pointee = .endOfStream
+                    return nil
+                }
+
+                outStatus.pointee = .haveData
+                return inputBuffer
+            }
+
+            if let readError {
+                throw LorreError.recordingStopFailed(readError.localizedDescription)
+            }
+            if let conversionError {
+                throw LorreError.recordingStopFailed(conversionError.localizedDescription)
+            }
+            guard status == .haveData || status == .inputRanDry || status == .endOfStream else {
+                throw LorreError.recordingStopFailed("Audio conversion failed while mixing.")
+            }
+            return Self.samples(from: outputBuffer)
+        }
+
+        private static func samples(from buffer: AVAudioPCMBuffer) -> [Float] {
+            guard buffer.frameLength > 0, let channelData = buffer.floatChannelData else { return [] }
+            return Array(UnsafeBufferPointer(start: channelData[0], count: Int(buffer.frameLength)))
+        }
+    }
 
     static func extractPCMBuffer(from sampleBuffer: CMSampleBuffer) throws -> AVAudioPCMBuffer {
         guard let formatDescription = CMSampleBufferGetFormatDescription(sampleBuffer),
@@ -71,6 +226,15 @@ enum RecorderAudioUtilities {
             throw LorreError.recordingStartFailed("Could not prepare audio format converter.")
         }
 
+        return try convert(buffer, to: outputFormat, using: converter, endOfStream: true)
+    }
+
+    private static func convert(
+        _ buffer: AVAudioPCMBuffer,
+        to outputFormat: AVAudioFormat,
+        using converter: AVAudioConverter,
+        endOfStream: Bool
+    ) throws -> AVAudioPCMBuffer {
         let ratio = outputFormat.sampleRate / buffer.format.sampleRate
         let estimatedCapacity = max(1, Int(ceil(Double(buffer.frameLength) * ratio)) + 32)
         guard let outputBuffer = AVAudioPCMBuffer(
@@ -80,7 +244,7 @@ enum RecorderAudioUtilities {
             throw LorreError.recordingStartFailed("Could not allocate converted audio buffer.")
         }
 
-        let inputState = ConversionInputState()
+        let inputState = ConversionInputState(exhaustedStatus: endOfStream ? .endOfStream : .noDataNow)
         var conversionError: NSError?
         let status = converter.convert(to: outputBuffer, error: &conversionError) { _, outStatus in
             inputState.nextBuffer(from: buffer, outStatus: outStatus)
@@ -149,36 +313,39 @@ enum RecorderAudioUtilities {
         destinationURL: URL,
         targetFormat: AVAudioFormat = RecorderAudioUtilities.previewFormat
     ) throws {
-        let microphoneSamples = try loadSamples(from: microphoneURL, targetFormat: targetFormat)
-        let systemSamples = try loadSamples(from: systemAudioURL, targetFormat: targetFormat)
-        let count = max(microphoneSamples.count, systemSamples.count)
-        guard count > 0 else {
-            try write(samples: [], to: destinationURL, format: targetFormat)
-            return
+        try FileManager.default.createDirectory(at: destinationURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        if FileManager.default.fileExists(atPath: destinationURL.path(percentEncoded: false)) {
+            try FileManager.default.removeItem(at: destinationURL)
         }
 
+        let microphoneFile = try AVAudioFile(forReading: microphoneURL)
+        let systemFile = try AVAudioFile(forReading: systemAudioURL)
+        let outputFile = try AVAudioFile(forWriting: destinationURL, settings: targetFormat.settings)
+        let microphoneReader = try StreamingConvertedSampleReader(file: microphoneFile, targetFormat: targetFormat)
+        let systemReader = try StreamingConvertedSampleReader(file: systemFile, targetFormat: targetFormat)
+        let chunkFrames: AVAudioFrameCount = 16_000
         let voiceGain: Float = 0.70710677
         let systemGain: Float = 0.70710677
         let headroom: Float = 0.8
-        var mixed = Array(repeating: Float(0), count: count)
-        var peak: Float = 0
 
-        for index in 0..<count {
-            let microphone = index < microphoneSamples.count ? microphoneSamples[index] : 0
-            let system = index < systemSamples.count ? systemSamples[index] : 0
-            let value = ((microphone * voiceGain) + (system * systemGain)) * headroom
-            mixed[index] = value
-            peak = max(peak, abs(value))
-        }
+        while true {
+            let microphoneSamples = try microphoneReader.readSamples(targetFrameCount: chunkFrames)
+            let systemSamples = try systemReader.readSamples(targetFrameCount: chunkFrames)
 
-        if peak > 0.98 {
-            let gain = 0.98 / peak
-            for index in mixed.indices {
-                mixed[index] *= gain
+            let count = max(microphoneSamples.count, systemSamples.count)
+            guard count > 0 else { break }
+
+            var mixed = Array(repeating: Float(0), count: count)
+            for index in 0..<count {
+                let microphone = index < microphoneSamples.count ? microphoneSamples[index] : 0
+                let system = index < systemSamples.count ? systemSamples[index] : 0
+                let value = ((microphone * voiceGain) + (system * systemGain)) * headroom
+                mixed[index] = max(-0.98, min(0.98, value))
             }
-        }
 
-        try write(samples: mixed, to: destinationURL, format: targetFormat)
+            let buffer = try makePCMBuffer(from: mixed, format: targetFormat)
+            try outputFile.write(from: buffer)
+        }
     }
 }
 
@@ -228,6 +395,32 @@ extension AVAudioPCMBuffer {
 
         switch format.commonFormat {
         case .pcmFormatFloat32:
+            #if canImport(Accelerate)
+            if let channels = floatChannelData {
+                for channel in 0..<channelCount {
+                    let values = channels[channel]
+                    var channelPeak: Float = 0
+                    var channelMeanSquare: Float = 0
+                    vDSP_maxmgv(values, 1, &channelPeak, vDSP_Length(frameCount))
+                    vDSP_measqv(values, 1, &channelMeanSquare, vDSP_Length(frameCount))
+                    peak = max(peak, Double(channelPeak))
+                    sumSquares += Double(channelMeanSquare) * Double(frameCount)
+                    sampleCount += frameCount
+                }
+            } else {
+                let audioBuffers = UnsafeMutableAudioBufferListPointer(mutableAudioBufferList)
+                guard let first = audioBuffers.first, let data = first.mData else { return 0.05 }
+                let samples = data.assumingMemoryBound(to: Float.self)
+                let total = frameCount * channelCount
+                var channelPeak: Float = 0
+                var channelMeanSquare: Float = 0
+                vDSP_maxmgv(samples, 1, &channelPeak, vDSP_Length(total))
+                vDSP_measqv(samples, 1, &channelMeanSquare, vDSP_Length(total))
+                peak = Double(channelPeak)
+                sumSquares = Double(channelMeanSquare) * Double(total)
+                sampleCount = total
+            }
+            #else
             if let channels = floatChannelData {
                 for channel in 0..<channelCount {
                     let values = UnsafeBufferPointer(start: channels[channel], count: frameCount)
@@ -250,6 +443,7 @@ extension AVAudioPCMBuffer {
                 }
                 sampleCount = total
             }
+            #endif
         case .pcmFormatInt16:
             if let channels = int16ChannelData {
                 for channel in 0..<channelCount {

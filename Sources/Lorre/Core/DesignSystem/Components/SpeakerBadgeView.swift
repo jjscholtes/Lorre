@@ -17,8 +17,7 @@ struct SpeakerBadgeView: View {
             .overlay {
                 switch variant {
                 case .filled:
-                    Capsule(style: .continuous)
-                        .stroke(DS.ColorToken.black, lineWidth: 0)
+                    EmptyView()
                 case .outline:
                     Capsule(style: .continuous)
                         .stroke(DS.ColorToken.borderStrong, lineWidth: 1)

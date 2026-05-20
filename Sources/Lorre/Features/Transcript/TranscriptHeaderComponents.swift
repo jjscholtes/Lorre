@@ -60,8 +60,8 @@ private struct TranscriptKeyboardShortcutBridge: NSViewRepresentable {
             guard monitor == nil else { return }
             monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
                 guard let self else { return event }
-                let isEditingText = MainActor.assumeIsolated { Self.isEditingText }
-                guard !isEditingText else { return event }
+                let isBlockingShortcutContext = MainActor.assumeIsolated { Self.isBlockingShortcutContext }
+                guard !isBlockingShortcutContext else { return event }
                 guard let action = Self.map(event) else { return event }
                 self.onAction(action)
                 return nil
@@ -76,12 +76,13 @@ private struct TranscriptKeyboardShortcutBridge: NSViewRepresentable {
         }
 
         @MainActor
-        private static var isEditingText: Bool {
+        private static var isBlockingShortcutContext: Bool {
+            if NSApp.keyWindow?.attachedSheet != nil { return true }
             guard let responder = NSApp.keyWindow?.firstResponder else { return false }
             if let textView = responder as? NSTextView {
                 return textView.isEditable
             }
-            return responder is NSTextField
+            return responder is NSTextField || responder is NSSearchField || responder is NSComboBox
         }
 
         private static func map(_ event: NSEvent) -> TranscriptKeyboardAction? {
@@ -571,6 +572,7 @@ struct TranscriptHeaderView: View {
     }
 
     private func handleKeyboardShortcut(_ action: TranscriptKeyboardAction) {
+        guard !isShowingRenameAlert, !isShowingDeleteConfirmation, !isShowingNotesSheet else { return }
         switch action {
         case .togglePlayPause:
             viewModel.toggleSelectedSessionPlayback()

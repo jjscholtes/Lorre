@@ -24,10 +24,10 @@ struct MarkdownExportService: ExportService {
 
     func render(session: SessionManifest, transcript: TranscriptDocument) -> String {
         var lines: [String] = []
-        lines.append("# \(session.displayTitle)")
+        lines.append("# \(escapeMarkdownLine(session.displayTitle))")
         lines.append("")
-        lines.append("- Status: \(session.status.label)")
-        lines.append("- Source: \(session.recordingSource.label)")
+        lines.append("- Status: \(escapeMarkdownLine(session.status.label))")
+        lines.append("- Source: \(escapeMarkdownLine(session.recordingSource.label))")
         if let recordedAt = session.recordedAt {
             lines.append("- Recorded: \(recordedAt.formatted(date: .abbreviated, time: .shortened))")
         }
@@ -47,11 +47,11 @@ struct MarkdownExportService: ExportService {
         for segment in transcript.segments {
             let speaker = transcript.speaker(for: segment.speakerId)
             let timestamp = "\(Formatters.timestamp(ms: segment.startMs)) - \(Formatters.timestamp(ms: segment.endMs))"
-            lines.append("### \(speaker.safeDisplayName) (`\(speaker.id)`)")
+            lines.append("### \(escapeMarkdownLine(speaker.safeDisplayName)) (\(markdownCodeSpan(speaker.id)))")
             lines.append("")
             lines.append("`\(timestamp)`")
             lines.append("")
-            lines.append(segment.text.trimmingCharacters(in: .whitespacesAndNewlines))
+            lines.append(escapeMarkdownBody(segment.text.trimmingCharacters(in: .whitespacesAndNewlines)))
             lines.append("")
         }
 
@@ -133,5 +133,52 @@ struct MarkdownExportService: ExportService {
         formatter.formatOptions = [.withInternetDateTime]
         return formatter.string(from: date)
             .replacingOccurrences(of: ":", with: "-")
+    }
+
+    private func escapeMarkdownLine(_ text: String) -> String {
+        escapeMarkdownBody(text)
+            .replacingOccurrences(of: "\r", with: " ")
+            .replacingOccurrences(of: "\n", with: " ")
+    }
+
+    private func escapeMarkdownBody(_ text: String) -> String {
+        var escaped = ""
+        escaped.reserveCapacity(text.count)
+        for character in text {
+            switch character {
+            case "\\", "`", "*", "_", "{", "}", "[", "]", "(", ")", "#", "+", "-", ".", "!", "|":
+                escaped.append("\\")
+                escaped.append(character)
+            case "<":
+                escaped.append("&lt;")
+            case ">":
+                escaped.append("&gt;")
+            default:
+                escaped.append(character)
+            }
+        }
+        return escaped
+    }
+
+    private func markdownCodeSpan(_ text: String) -> String {
+        let longestRun = longestBacktickRun(in: text)
+        let delimiter = String(repeating: "`", count: longestRun + 1)
+        let needsPadding = text.first == "`" || text.last == "`"
+        let content = needsPadding ? " \(text) " : text
+        return "\(delimiter)\(content)\(delimiter)"
+    }
+
+    private func longestBacktickRun(in text: String) -> Int {
+        var longest = 0
+        var current = 0
+        for character in text {
+            if character == "`" {
+                current += 1
+                longest = max(longest, current)
+            } else {
+                current = 0
+            }
+        }
+        return longest
     }
 }

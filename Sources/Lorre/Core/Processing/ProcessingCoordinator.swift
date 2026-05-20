@@ -82,9 +82,10 @@ actor ProcessingCoordinator {
                     )
                 )
                 try await store.saveTranscript(draftTranscript)
-                session.transcriptFileName = "transcript.json"
-                session.updatedAt = Date()
-                try await store.updateSession(session)
+                session = try await store.updateSession(id: session.id) { session in
+                    session.transcriptFileName = "transcript.json"
+                    session.updatedAt = Date()
+                }
                 try Task.checkCancellation()
 
                 try await updateSession(
@@ -152,42 +153,48 @@ actor ProcessingCoordinator {
             try Task.checkCancellation()
             if deleteAudioAfterTranscription {
                 try await deleteAudioArtifacts(for: session, in: sessionDir)
-                session.audioDeletedAt = Date()
-            } else {
-                session.audioDeletedAt = nil
             }
 
-            session.status = .ready
-            session.transcriptFileName = "transcript.json"
-            session.lastErrorMessage = nil
-            session.updatedAt = Date()
-            session.processing = ProcessingSummary(
-                queuedAt: session.processing.queuedAt,
-                startedAt: session.processing.startedAt,
-                completedAt: Date(),
-                progressPhase: nil,
-                progressLabel: "Ready",
-                progressFraction: 1
-            )
-            try await store.updateSession(session)
+            let audioDeletedAt = deleteAudioAfterTranscription ? Date() : nil
+            session = try await store.updateSession(id: session.id) { session in
+                session.status = .ready
+                session.transcriptFileName = "transcript.json"
+                session.audioDeletedAt = audioDeletedAt
+                session.lastErrorMessage = nil
+                session.updatedAt = Date()
+                session.processing = ProcessingSummary(
+                    queuedAt: session.processing.queuedAt,
+                    startedAt: session.processing.startedAt,
+                    completedAt: Date(),
+                    progressPhase: nil,
+                    progressLabel: "Ready",
+                    progressFraction: 1
+                )
+            }
             await onProgress(ProcessingUpdate(phase: .saving, label: "Ready", fraction: 1))
             return transcript
         } catch let error as CancellationError {
             throw error
         } catch {
-            session.status = .error
-            session.updatedAt = Date()
-            session.lastErrorMessage = error.localizedDescription
-            session.processing = ProcessingSummary(
-                queuedAt: session.processing.queuedAt,
-                startedAt: session.processing.startedAt,
-                completedAt: Date(),
-                progressPhase: nil,
-                progressLabel: "Error",
-                progressFraction: session.processing.progressFraction
-            )
-            try? await store.updateSession(session)
-            throw LorreError.processingFailed(error.localizedDescription)
+            let message = error.localizedDescription
+            let typedError = error as? LorreError
+            _ = try? await store.updateSession(id: session.id) { session in
+                session.status = .error
+                session.updatedAt = Date()
+                session.lastErrorMessage = message
+                session.processing = ProcessingSummary(
+                    queuedAt: session.processing.queuedAt,
+                    startedAt: session.processing.startedAt,
+                    completedAt: Date(),
+                    progressPhase: nil,
+                    progressLabel: "Error",
+                    progressFraction: session.processing.progressFraction
+                )
+            }
+            if let typedError {
+                throw typedError
+            }
+            throw LorreError.processingFailed(message)
         }
     }
 
@@ -243,17 +250,18 @@ actor ProcessingCoordinator {
         fraction: Double
     ) async throws {
         let now = Date()
-        session.status = status
-        session.updatedAt = now
-        session.processing = ProcessingSummary(
-            queuedAt: session.processing.queuedAt ?? now,
-            startedAt: session.processing.startedAt ?? now,
-            completedAt: nil,
-            progressPhase: phase,
-            progressLabel: label,
-            progressFraction: fraction
-        )
-        try await store.updateSession(session)
+        session = try await store.updateSession(id: session.id) { session in
+            session.status = status
+            session.updatedAt = now
+            session.processing = ProcessingSummary(
+                queuedAt: session.processing.queuedAt ?? now,
+                startedAt: session.processing.startedAt ?? now,
+                completedAt: nil,
+                progressPhase: phase,
+                progressLabel: label,
+                progressFraction: fraction
+            )
+        }
     }
 
     private func writeDiarizationDebugArtifact(

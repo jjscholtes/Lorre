@@ -8,6 +8,10 @@ actor AppSettingsStore {
     }
 
     func load() async throws -> AppSettings {
+        try loadFromDisk()
+    }
+
+    private func loadFromDisk() throws -> AppSettings {
         guard FileManager.default.fileExists(atPath: fileURL.path(percentEncoded: false)) else {
             return AppSettings()
         }
@@ -18,7 +22,7 @@ actor AppSettingsStore {
 
     @discardableResult
     func recordModelPreparation(_ snapshot: ModelPreparationSnapshot) async throws -> AppSettings {
-        var settings = try await load()
+        var settings = try loadFromDisk()
         settings.modelPreparation = snapshot
         settings.updatedAt = Date()
         try save(settings)
@@ -27,7 +31,7 @@ actor AppSettingsStore {
 
     @discardableResult
     func setModelRegistryConfiguration(_ configuration: ModelRegistryConfiguration) async throws -> AppSettings {
-        var settings = try await load()
+        var settings = try loadFromDisk()
         settings.modelRegistryConfiguration = ModelRegistryConfiguration(
             customBaseURL: configuration.normalizedBaseURL
         )
@@ -38,7 +42,7 @@ actor AppSettingsStore {
 
     @discardableResult
     func setSelectedRecordingSource(_ source: RecordingSource) async throws -> AppSettings {
-        var settings = try await load()
+        var settings = try loadFromDisk()
         settings.selectedRecordingSource = source
         settings.updatedAt = Date()
         try save(settings)
@@ -47,7 +51,7 @@ actor AppSettingsStore {
 
     @discardableResult
     func setSpeakerDiarizationEnabled(_ isEnabled: Bool) async throws -> AppSettings {
-        var settings = try await load()
+        var settings = try loadFromDisk()
         settings.isSpeakerDiarizationEnabled = isEnabled
         settings.updatedAt = Date()
         try save(settings)
@@ -56,7 +60,7 @@ actor AppSettingsStore {
 
     @discardableResult
     func setDiarizationEngine(_ engine: DiarizationEngine) async throws -> AppSettings {
-        var settings = try await load()
+        var settings = try loadFromDisk()
         settings.diarizationEngine = engine
         settings.updatedAt = Date()
         try save(settings)
@@ -65,7 +69,7 @@ actor AppSettingsStore {
 
     @discardableResult
     func setDiarizationExpectedSpeakerCountHint(_ hint: DiarizationSpeakerCountHint) async throws -> AppSettings {
-        var settings = try await load()
+        var settings = try loadFromDisk()
         settings.diarizationExpectedSpeakerCountHint = hint.normalized()
         settings.updatedAt = Date()
         try save(settings)
@@ -74,7 +78,7 @@ actor AppSettingsStore {
 
     @discardableResult
     func setDiarizationDebugExportEnabled(_ isEnabled: Bool) async throws -> AppSettings {
-        var settings = try await load()
+        var settings = try loadFromDisk()
         settings.isDiarizationDebugExportEnabled = isEnabled
         settings.updatedAt = Date()
         try save(settings)
@@ -83,7 +87,7 @@ actor AppSettingsStore {
 
     @discardableResult
     func setLiveTranscriptionEnabled(_ isEnabled: Bool) async throws -> AppSettings {
-        var settings = try await load()
+        var settings = try loadFromDisk()
         settings.isLiveTranscriptionEnabled = isEnabled
         settings.updatedAt = Date()
         try save(settings)
@@ -92,7 +96,7 @@ actor AppSettingsStore {
 
     @discardableResult
     func setDeleteAudioAfterTranscriptionEnabled(_ isEnabled: Bool) async throws -> AppSettings {
-        var settings = try await load()
+        var settings = try loadFromDisk()
         settings.isDeleteAudioAfterTranscriptionEnabled = isEnabled
         settings.updatedAt = Date()
         try save(settings)
@@ -101,7 +105,7 @@ actor AppSettingsStore {
 
     @discardableResult
     func setTranscriptConfidenceVisible(_ isVisible: Bool) async throws -> AppSettings {
-        var settings = try await load()
+        var settings = try loadFromDisk()
         settings.isTranscriptConfidenceVisible = isVisible
         settings.updatedAt = Date()
         try save(settings)
@@ -110,7 +114,7 @@ actor AppSettingsStore {
 
     @discardableResult
     func saveVocabularyBoosting(_ configuration: VocabularyBoostingConfiguration) async throws -> AppSettings {
-        var settings = try await load()
+        var settings = try loadFromDisk()
         settings.vocabularyBoosting = VocabularyBoostingConfiguration(
             isEnabled: configuration.isEnabled,
             simpleFormatTerms: configuration.simpleFormatTerms
@@ -122,7 +126,7 @@ actor AppSettingsStore {
 
     @discardableResult
     func setBatchTranscriptionConfiguration(_ configuration: BatchTranscriptionConfiguration) async throws -> AppSettings {
-        var settings = try await load()
+        var settings = try loadFromDisk()
         settings.batchTranscription = configuration.normalized
         settings.updatedAt = Date()
         try save(settings)
@@ -131,7 +135,7 @@ actor AppSettingsStore {
 
     @discardableResult
     func setLiveTranscriptionPreset(_ preset: LiveTranscriptionPreset) async throws -> AppSettings {
-        var settings = try await load()
+        var settings = try loadFromDisk()
         settings.liveTranscriptionPreset = preset
         settings.updatedAt = Date()
         try save(settings)
@@ -139,7 +143,7 @@ actor AppSettingsStore {
     }
 
     func loadFolders() async throws -> [SessionFolder] {
-        let settings = try await load()
+        let settings = try loadFromDisk()
         return settings.folders.sorted { lhs, rhs in
             if lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedSame {
                 return lhs.createdAt < rhs.createdAt
@@ -155,11 +159,18 @@ actor AppSettingsStore {
             throw LorreError.persistenceFailed("Folder name cannot be empty.")
         }
 
-        var settings = try await load()
+        var settings = try loadFromDisk()
+        let duplicateName = settings.folders.contains { folder in
+            folder.name.caseInsensitiveCompare(trimmed) == .orderedSame
+        }
+        guard !duplicateName else {
+            throw LorreError.persistenceFailed("A folder with that name already exists.")
+        }
+
         let baseID = SessionFolder.makeID(from: trimmed)
         var candidateID = baseID
         var suffix = 2
-        while settings.folders.contains(where: { $0.id == candidateID || $0.name.caseInsensitiveCompare(trimmed) == .orderedSame }) {
+        while settings.folders.contains(where: { $0.id == candidateID }) {
             candidateID = "\(baseID)-\(suffix)"
             suffix += 1
         }
@@ -178,7 +189,7 @@ actor AppSettingsStore {
             throw LorreError.persistenceFailed("Folder name cannot be empty.")
         }
 
-        var settings = try await load()
+        var settings = try loadFromDisk()
         guard let index = settings.folders.firstIndex(where: { $0.id == id }) else {
             throw LorreError.persistenceFailed("Folder not found.")
         }
@@ -196,7 +207,7 @@ actor AppSettingsStore {
     }
 
     func deleteFolder(id: String) async throws {
-        var settings = try await load()
+        var settings = try loadFromDisk()
         let before = settings.folders.count
         settings.folders.removeAll { $0.id == id }
         guard settings.folders.count != before else {
@@ -209,7 +220,7 @@ actor AppSettingsStore {
 
     @discardableResult
     func saveSidebarExpansion(expandedViewFilterIDs: [String], expandedFolderIDs: [String]) async throws -> AppSettings {
-        var settings = try await load()
+        var settings = try loadFromDisk()
         settings.sidebarExpandedViewFilterIDs = expandedViewFilterIDs
         settings.sidebarExpandedFolderIDs = expandedFolderIDs
         settings.updatedAt = Date()

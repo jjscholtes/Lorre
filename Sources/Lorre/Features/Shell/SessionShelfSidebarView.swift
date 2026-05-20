@@ -15,6 +15,8 @@ struct SessionShelfView: View {
     @State private var contextRenameFolderDraft = ""
     @State private var contextDeleteFolder: SessionFolder?
     @State private var isShowingModelSettings = false
+    @State private var searchText = ""
+    @State private var searchDebounceTask: Task<Void, Never>?
 
     var body: some View {
         ScrollView(.vertical) {
@@ -31,7 +33,15 @@ struct SessionShelfView: View {
                         .minimumScaleFactor(0.9)
                 }
 
-                SearchFieldView(label: "Sessions", text: $viewModel.searchQuery)
+                SearchFieldView(label: "Sessions", text: $searchText)
+                    .onChange(of: searchText) { _, newValue in
+                        searchDebounceTask?.cancel()
+                        searchDebounceTask = Task { @MainActor in
+                            try? await Task.sleep(for: .milliseconds(180))
+                            guard !Task.isCancelled else { return }
+                            viewModel.searchQuery = newValue
+                        }
+                    }
 
                 HStack(spacing: DS.Space.x2) {
                     Button {
@@ -328,6 +338,18 @@ struct SessionShelfView: View {
             }
         } message: {
             Text("This removes the session audio, transcript, and local exports from Lorre storage.")
+        }
+        .onAppear {
+            searchText = viewModel.searchQuery
+        }
+        .onChange(of: viewModel.searchQuery) { _, newValue in
+            if searchText != newValue {
+                searchText = newValue
+            }
+        }
+        .onDisappear {
+            searchDebounceTask?.cancel()
+            searchDebounceTask = nil
         }
     }
 }

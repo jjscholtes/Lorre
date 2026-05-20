@@ -7,6 +7,7 @@ final class AVFoundationAudioPlaybackService: NSObject, AudioPlaybackService {
     private var player: AVAudioPlayer?
     private(set) var preparedURL: URL?
     private var configuredRate: Double = 1.0
+    var onPlaybackFinished: (@Sendable () -> Void)?
 
     var currentTimeSeconds: Double { player?.currentTime ?? 0 }
     var durationSeconds: Double {
@@ -20,6 +21,7 @@ final class AVFoundationAudioPlaybackService: NSObject, AudioPlaybackService {
         if preparedURL == url, player != nil { return }
         do {
             let nextPlayer = try AVAudioPlayer(contentsOf: url)
+            nextPlayer.delegate = self
             nextPlayer.enableRate = true
             nextPlayer.rate = Float(configuredRate)
             nextPlayer.prepareToPlay()
@@ -61,9 +63,18 @@ final class AVFoundationAudioPlaybackService: NSObject, AudioPlaybackService {
         player?.rate = Float(bounded)
     }
 }
+
+extension AVFoundationAudioPlaybackService: AVAudioPlayerDelegate {
+    func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
+        _ = player
+        _ = flag
+        onPlaybackFinished?()
+    }
+}
 #else
 
 final class UnsupportedAudioPlaybackService: AudioPlaybackService {
+    var onPlaybackFinished: (@Sendable () -> Void)?
     let preparedURL: URL? = nil
     let currentTimeSeconds: Double = 0
     let durationSeconds: Double = 0

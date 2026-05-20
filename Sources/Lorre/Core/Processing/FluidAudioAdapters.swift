@@ -1,9 +1,53 @@
 import Foundation
 import OSLog
+#if canImport(AVFoundation)
+@preconcurrency import AVFoundation
+#endif
 
 #if canImport(FluidAudio)
 @preconcurrency import FluidAudio
 #endif
+
+#if canImport(FluidAudio)
+private final class SerialProgressDispatcher: @unchecked Sendable {
+    private let lock = NSLock()
+    private var tail: Task<Void, Never>?
+
+    func submit(
+        _ update: ProcessingUpdate,
+        to onProgress: @escaping @Sendable (ProcessingUpdate) async -> Void
+    ) {
+        lock.lock()
+        let previous = tail
+        let task = Task {
+            await previous?.value
+            await onProgress(update)
+        }
+        tail = task
+        lock.unlock()
+    }
+
+    func drain() async {
+        let task: Task<Void, Never>?
+        lock.lock()
+        task = tail
+        lock.unlock()
+        await task?.value
+    }
+}
+#endif
+
+enum DiarizationSpeakerLabelNormalizer {
+    static func normalize(_ rawSpeakerID: String) -> String {
+        let trimmed = rawSpeakerID.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty { return "UNK" }
+        if trimmed.uppercased().hasPrefix("S") { return trimmed.uppercased() }
+        if let numeric = Int(trimmed) {
+            return "S\(max(1, numeric + 1))"
+        }
+        return "S\(trimmed)"
+    }
+}
 
 enum FluidAudioIntegrationProbe {
     static var isAvailable: Bool {
@@ -132,6 +176,7 @@ actor FluidAudioTranscriptionService: TranscriptionService {
             )
         }
 
+        let progressDispatcher = SerialProgressDispatcher()
         let models = try await AsrModels.downloadAndLoad(
             version: .v3,
             progressHandler: { progress in
@@ -143,9 +188,7 @@ actor FluidAudioTranscriptionService: TranscriptionService {
                     progress: progress
                 )
                 let scaled = FluidAudioProgressSupport.scale(update, into: 0.0...0.78)
-                Task {
-                    await onProgress(scaled)
-                }
+                progressDispatcher.submit(scaled, to: onProgress)
             }
         )
         let manager = AsrManager(
@@ -176,11 +219,10 @@ actor FluidAudioTranscriptionService: TranscriptionService {
                     progress: progress
                 )
                 let scaled = FluidAudioProgressSupport.scale(update, into: 0.78...1.0)
-                Task {
-                    await onProgress(scaled)
-                }
+                progressDispatcher.submit(scaled, to: onProgress)
             }
         )
+        await progressDispatcher.drain()
 
         self.managerBox = AsrManagerBox(manager: manager)
         self.vadManagerBox = VadManagerBox(manager: vadManager)
@@ -207,15 +249,15 @@ actor FluidAudioTranscriptionService: TranscriptionService {
             throw LorreError.processingFailed("ASR manager is not initialized.")
         }
 
-        _ = sessionTitle
-        _ = source
+        logger.debug("transcribing session=\"\(sessionTitle, privacy: .public)\" source=\(source.rawValue, privacy: .public)")
         var result = try await managerBox.transcribe(
             url,
             language: parakeetLanguage(for: batchTranscriptionConfiguration.languageCode)
         )
         result = await applyVocabularyBoostingIfNeeded(to: result, audioURL: url)
         let speechWindows = await loadSpeechWindowsIfAvailable(from: url)
-        let utterances = buildUtterances(from: result, speechWindows: speechWindows)
+        let fallbackEndMs = audioDurationMilliseconds(for: url) ?? 1000
+        let utterances = buildUtterances(from: result, speechWindows: speechWindows, fallbackEndMs: fallbackEndMs)
         let alternatives = await makeAlternativesIfNeeded(for: url)
         let languageCode = batchTranscriptionConfiguration.languageCode
         let engineName = result.ctcAppliedTerms?.isEmpty == false
@@ -236,7 +278,7 @@ actor FluidAudioTranscriptionService: TranscriptionService {
         return TranscriptionResult(
             engineName: engineName,
             utterances: [
-                TranscriptionUtterance(startMs: 0, endMs: 1000, text: fallbackText, confidence: nil)
+                TranscriptionUtterance(startMs: 0, endMs: fallbackEndMs, text: fallbackText, confidence: nil)
             ],
             languageCode: languageCode,
             alternatives: alternatives
@@ -300,6 +342,9 @@ actor FluidAudioTranscriptionService: TranscriptionService {
 
     private func makeAlternativesIfNeeded(for url: URL) async -> [TranscriptAlternative] {
         guard batchTranscriptionConfiguration.mode == .parakeetV3WithCohereQualityPass else {
+            return []
+        }
+        guard parakeetLanguage(for: batchTranscriptionConfiguration.languageCode) != nil else {
             return []
         }
         guard let language = cohereLanguage(for: batchTranscriptionConfiguration.languageCode) else {
@@ -397,7 +442,11 @@ actor FluidAudioTranscriptionService: TranscriptionService {
         }
     }
 
-    private func buildUtterances(from result: ASRResult, speechWindows: [SpeechWindow]?) -> [TranscriptionUtterance] {
+    private func buildUtterances(
+        from result: ASRResult,
+        speechWindows: [SpeechWindow]?,
+        fallbackEndMs: Int
+    ) -> [TranscriptionUtterance] {
         let tokenTimings = result.tokenTimings ?? []
         if tokenTimings.isEmpty {
             let text = result.text.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
@@ -405,7 +454,7 @@ actor FluidAudioTranscriptionService: TranscriptionService {
             return [
                 TranscriptionUtterance(
                     startMs: 0,
-                    endMs: 1000,
+                    endMs: fallbackEndMs,
                     text: text,
                     confidence: Double(result.confidence),
                     tokenTimings: nil
@@ -560,6 +609,18 @@ actor FluidAudioTranscriptionService: TranscriptionService {
         }
 
         return normalizePunctuationArtifacts(in: utterances)
+    }
+
+    private func audioDurationMilliseconds(for url: URL) -> Int? {
+        #if canImport(AVFoundation)
+        guard let file = try? AVAudioFile(forReading: url), file.fileFormat.sampleRate > 0 else { return nil }
+        let seconds = Double(file.length) / file.fileFormat.sampleRate
+        guard seconds.isFinite, seconds > 0 else { return nil }
+        return max(1, Int((seconds * 1000).rounded()))
+        #else
+        _ = url
+        return nil
+        #endif
     }
 
     private func normalizePunctuationArtifacts(in utterances: [TranscriptionUtterance]) -> [TranscriptionUtterance] {
@@ -759,33 +820,28 @@ actor FluidAudioDiarizationService: SpeakerDiarizationService {
 
     private final class AsyncProgressDispatcher: @unchecked Sendable {
         private let lock = NSLock()
-        private var tasks: [Task<Void, Never>] = []
+        private var tail: Task<Void, Never>?
 
         func submit(
             _ update: ProcessingUpdate,
             to onProgress: @escaping @Sendable (ProcessingUpdate) async -> Void
         ) {
+            lock.lock()
+            let previous = tail
             let task = Task {
+                await previous?.value
                 await onProgress(update)
             }
-            lock.lock()
-            tasks.append(task)
+            tail = task
             lock.unlock()
         }
 
         func drain() async {
-            let pendingTasks = takePendingTasks()
-            for task in pendingTasks {
-                await task.value
-            }
-        }
-
-        private func takePendingTasks() -> [Task<Void, Never>] {
+            let task: Task<Void, Never>?
             lock.lock()
-            defer { lock.unlock() }
-            let pendingTasks = tasks
-            tasks.removeAll()
-            return pendingTasks
+            task = tail
+            lock.unlock()
+            await task?.value
         }
     }
 
@@ -892,6 +948,7 @@ actor FluidAudioDiarizationService: SpeakerDiarizationService {
         }
 
         let manager = OfflineDiarizerManager(config: qualityTunedConfig(expectedSpeakers: normalizedHint))
+        let progressDispatcher = SerialProgressDispatcher()
         let models = try await OfflineDiarizerModels.load(
             progressHandler: { progress in
                 guard let onProgress else { return }
@@ -902,11 +959,10 @@ actor FluidAudioDiarizationService: SpeakerDiarizationService {
                     progress: progress
                 )
                 let scaled = FluidAudioProgressSupport.scale(update, into: 0.0...0.94)
-                Task {
-                    await onProgress(scaled)
-                }
+                progressDispatcher.submit(scaled, to: onProgress)
             }
         )
+        await progressDispatcher.drain()
         manager.initialize(models: models)
         if let onProgress {
             await onProgress(
@@ -970,6 +1026,7 @@ actor FluidAudioDiarizationService: SpeakerDiarizationService {
         }
 
         if sortformerModels == nil {
+            let progressDispatcher = SerialProgressDispatcher()
             sortformerModels = try await SortformerModels.loadFromHuggingFace(
                 config: Self.sortformerConfig,
                 progressHandler: { progress in
@@ -980,11 +1037,10 @@ actor FluidAudioDiarizationService: SpeakerDiarizationService {
                         label: "Preparing diarization models",
                         progress: progress
                     )
-                    Task {
-                        await onProgress(update)
-                    }
+                    progressDispatcher.submit(update, to: onProgress)
                 }
             )
+            await progressDispatcher.drain()
         }
 
         guard let sortformerModels else {
@@ -1037,6 +1093,7 @@ actor FluidAudioDiarizationService: SpeakerDiarizationService {
         }
 
         if lsEendModel == nil {
+            let progressDispatcher = SerialProgressDispatcher()
             lsEendModel = try await LSEENDModel.loadFromHuggingFace(
                 variant: .dihard3,
                 progressHandler: { progress in
@@ -1047,11 +1104,10 @@ actor FluidAudioDiarizationService: SpeakerDiarizationService {
                         label: "Preparing diarization models",
                         progress: progress
                     )
-                    Task {
-                        await onProgress(update)
-                    }
+                    progressDispatcher.submit(update, to: onProgress)
                 }
             )
+            await progressDispatcher.drain()
         }
 
         guard let lsEendModel else {
@@ -1310,13 +1366,7 @@ actor FluidAudioDiarizationService: SpeakerDiarizationService {
     }
 
     private func normalizedClusterLabel(from rawSpeakerID: String) -> String {
-        let trimmed = rawSpeakerID.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.isEmpty { return "UNK" }
-        if trimmed.uppercased().hasPrefix("S") { return trimmed.uppercased() }
-        if let numeric = Int(trimmed) {
-            return "S\(max(1, numeric + 1))"
-        }
-        return "S\(trimmed)"
+        DiarizationSpeakerLabelNormalizer.normalize(rawSpeakerID)
     }
 
     private func diarizerSpans(from segments: [DiarizerSegment]) -> [DiarizationSpan] {

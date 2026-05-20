@@ -177,6 +177,7 @@ struct ExportRecord: Identifiable, Codable, Equatable, Sendable {
 }
 
 struct SessionManifest: Identifiable, Codable, Equatable, Sendable {
+    var schemaVersion: Int
     var id: UUID
     var title: String
     var folderId: String?
@@ -198,6 +199,7 @@ struct SessionManifest: Identifiable, Codable, Equatable, Sendable {
     var dirtyFlags: SessionDirtyFlags
 
     init(
+        schemaVersion: Int = 1,
         id: UUID = UUID(),
         title: String,
         folderId: String? = nil,
@@ -218,6 +220,7 @@ struct SessionManifest: Identifiable, Codable, Equatable, Sendable {
         lastErrorMessage: String? = nil,
         dirtyFlags: SessionDirtyFlags = .clean
     ) {
+        self.schemaVersion = schemaVersion
         self.id = id
         self.title = title
         self.folderId = folderId
@@ -249,10 +252,11 @@ struct SessionManifest: Identifiable, Codable, Equatable, Sendable {
     }
 
     var hasRetainedAudio: Bool {
-        audioDeletedAt == nil
+        audioDeletedAt == nil && !audioFileName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     private enum CodingKeys: String, CodingKey {
+        case schemaVersion
         case id
         case title
         case folderId
@@ -276,7 +280,8 @@ struct SessionManifest: Identifiable, Codable, Equatable, Sendable {
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        self.id = try container.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        self.schemaVersion = try container.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 1
+        self.id = try container.decode(UUID.self, forKey: .id)
         self.title = try container.decode(String.self, forKey: .title)
         self.folderId = try container.decodeIfPresent(String.self, forKey: .folderId)
         self.status = try container.decode(SessionStatus.self, forKey: .status)
@@ -299,6 +304,7 @@ struct SessionManifest: Identifiable, Codable, Equatable, Sendable {
 
     func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(schemaVersion, forKey: .schemaVersion)
         try container.encode(id, forKey: .id)
         try container.encode(title, forKey: .title)
         try container.encodeIfPresent(folderId, forKey: .folderId)
@@ -328,7 +334,7 @@ struct SpeakerProfile: Identifiable, Codable, Equatable, Sendable {
     var isUserRenamed: Bool
 
     var isKnownSpeaker: Bool {
-        id != "UNK" && !id.uppercased().hasPrefix("S")
+        id.uppercased().hasPrefix("K")
     }
 
     var safeDisplayName: String {
@@ -470,14 +476,54 @@ struct TranscriptSegment: Identifiable, Codable, Equatable, Sendable {
         lastEditedAt: Date? = nil
     ) {
         self.id = id
-        self.startMs = startMs
-        self.endMs = endMs
+        self.startMs = max(0, startMs)
+        self.endMs = max(self.startMs, endMs)
         self.text = text
         self.speakerId = speakerId
         self.sourceSpeakerId = sourceSpeakerId
         self.confidence = confidence
         self.isEdited = isEdited
         self.lastEditedAt = lastEditedAt
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case startMs
+        case endMs
+        case text
+        case speakerId
+        case sourceSpeakerId
+        case confidence
+        case isEdited
+        case lastEditedAt
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            id: try container.decodeIfPresent(UUID.self, forKey: .id) ?? UUID(),
+            startMs: try container.decode(Int.self, forKey: .startMs),
+            endMs: try container.decode(Int.self, forKey: .endMs),
+            text: try container.decode(String.self, forKey: .text),
+            speakerId: try container.decodeIfPresent(String.self, forKey: .speakerId),
+            sourceSpeakerId: try container.decodeIfPresent(String.self, forKey: .sourceSpeakerId),
+            confidence: try container.decodeIfPresent(Double.self, forKey: .confidence),
+            isEdited: try container.decodeIfPresent(Bool.self, forKey: .isEdited) ?? false,
+            lastEditedAt: try container.decodeIfPresent(Date.self, forKey: .lastEditedAt)
+        )
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(startMs, forKey: .startMs)
+        try container.encode(endMs, forKey: .endMs)
+        try container.encode(text, forKey: .text)
+        try container.encodeIfPresent(speakerId, forKey: .speakerId)
+        try container.encodeIfPresent(sourceSpeakerId, forKey: .sourceSpeakerId)
+        try container.encodeIfPresent(confidence, forKey: .confidence)
+        try container.encode(isEdited, forKey: .isEdited)
+        try container.encodeIfPresent(lastEditedAt, forKey: .lastEditedAt)
     }
 }
 
@@ -797,28 +843,26 @@ struct DiarizationSpeakerCountHint: Codable, Equatable, Hashable, Sendable {
     }
 
     var shortLabel: String {
-        switch normalized() {
+        let value = normalized()
+        switch value.mode {
         case .auto:
             return "Auto"
-        case let value where value.mode == .exact:
+        case .exact:
             return "=\(value.exactCount ?? 0)"
-        case let value where value.mode == .range:
+        case .range:
             return "\(value.minCount ?? 0)-\(value.maxCount ?? 0)"
-        default:
-            return "Auto"
         }
     }
 
     var detailLabel: String {
-        switch normalized() {
+        let value = normalized()
+        switch value.mode {
         case .auto:
             return "Auto"
-        case let value where value.mode == .exact:
+        case .exact:
             return "Exact \(value.exactCount ?? 0)"
-        case let value where value.mode == .range:
+        case .range:
             return "Range \(value.minCount ?? 0)-\(value.maxCount ?? 0)"
-        default:
-            return "Auto"
         }
     }
 }
