@@ -276,7 +276,10 @@ struct SessionManifest: Identifiable, Codable, Equatable, Sendable {
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        self.id = try container.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        // The session id doubles as the on-disk folder name, so silently minting a fresh UUID
+        // here would orphan the audio on the next save. Require a valid id and let the damaged-
+        // session recovery path in FileSessionStore.loadSessions surface the problem instead.
+        self.id = try container.decode(UUID.self, forKey: .id)
         self.title = try container.decode(String.self, forKey: .title)
         self.folderId = try container.decodeIfPresent(String.self, forKey: .folderId)
         self.status = try container.decode(SessionStatus.self, forKey: .status)

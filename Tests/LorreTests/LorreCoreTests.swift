@@ -566,6 +566,45 @@ final class LorreCoreTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: sessionDir.path(percentEncoded: false)))
     }
 
+    func testFileSessionStoreAtomicUpdatePinsManifestIDToFolderID() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("LorreAtomicManifestIDTests-\(UUID().uuidString)", isDirectory: true)
+        let store = FileSessionStore(baseURL: root)
+        let created = try await store.createSession(
+            NewSessionDraft(
+                title: "Original",
+                folderId: nil,
+                status: .ready,
+                durationSeconds: nil,
+                recordingSource: .microphone,
+                audioFileName: "audio.m4a",
+                microphoneStemFileName: nil,
+                systemAudioStemFileName: nil,
+                recordedAt: nil
+            )
+        )
+
+        let poisonedID = UUID()
+        var poisoned = created
+        poisoned.id = poisonedID
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        encoder.dateEncodingStrategy = .iso8601
+        let sessionDir = await store.sessionDirectoryURL(for: created.id)
+        try encoder.encode(poisoned).write(to: sessionDir.appendingPathComponent("session.json"))
+
+        let updated = try await store.updateSession(id: created.id) { manifest in
+            manifest.title = "Recovered"
+        }
+
+        XCTAssertEqual(updated.id, created.id)
+        XCTAssertEqual(updated.title, "Recovered")
+        XCTAssertEqual(try await store.loadSession(id: created.id)?.id, created.id)
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: root.appendingPathComponent("sessions").appendingPathComponent(poisonedID.uuidString).path(percentEncoded: false))
+        )
+    }
+
     func testFileSessionStoreSurfacesDamagedSessionManifests() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("LorreDamagedSessionTests-\(UUID().uuidString)", isDirectory: true)
@@ -848,6 +887,74 @@ final class LorreCoreTests: XCTestCase {
         XCTAssertEqual(loaded.folders.first?.name, "Client Interviews")
         XCTAssertEqual(loaded.sidebarExpandedViewFilterIDs, ["all", "ready"])
         XCTAssertEqual(loaded.sidebarExpandedFolderIDs, [interviews.id])
+    }
+
+    func testAppSettingsStoreCreateFolderRejectsDuplicateNameCaseInsensitive() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("LorreFolderCreateDuplicateTests-\(UUID().uuidString)", isDirectory: true)
+        let store = AppSettingsStore(baseURL: root)
+
+        _ = try await store.createFolder(named: "Interviews")
+
+        do {
+            _ = try await store.createFolder(named: " interviews ")
+            XCTFail("Expected duplicate-name create to throw")
+        } catch {
+            guard case let LorreError.persistenceFailed(message) = error else {
+                XCTFail("Unexpected error: \(error)")
+                return
+            }
+            XCTAssertTrue(message.localizedCaseInsensitiveContains("already exists"))
+        }
+
+        let folders = try await store.loadFolders()
+        XCTAssertEqual(folders.count, 1)
+    }
+
+    func testKnownSpeakerStoreRejectsTraversalInStoredFileName() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("LorreKnownSpeakerTraversalTests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        // Plant a file outside the samples directory that a poisoned storedFileName would target.
+        let bystanderURL = root.appendingPathComponent("bystander.txt")
+        try Data("must-not-be-touched".utf8).write(to: bystanderURL)
+
+        // Hand-craft a known-speakers.json with a path-traversal storedFileName.
+        let poisonedJSON = """
+        [
+          {
+            "id" : "K1",
+            "displayName" : "Mallory",
+            "embedding" : [0.0, 0.0, 0.0],
+            "styleVariant" : "filled",
+            "createdAt" : "2026-02-23T10:20:01Z",
+            "updatedAt" : "2026-02-23T10:20:01Z",
+            "enrollmentCount" : 1,
+            "referenceClip" : {
+              "sourceFileName" : "evil.m4a",
+              "storedFileName" : "../bystander.txt",
+              "durationSeconds" : 1.0,
+              "sampleRate" : 16000,
+              "importedAt" : "2026-02-23T10:20:01Z"
+            }
+          }
+        ]
+        """
+        try poisonedJSON.data(using: .utf8)?.write(to: root.appendingPathComponent("known-speakers.json"))
+
+        let store = KnownSpeakerStore(baseURL: root)
+        let speakers = try await store.load()
+        XCTAssertEqual(speakers.count, 1)
+
+        let resolvedURL = await store.referenceAudioURL(for: speakers[0])
+        XCTAssertNil(resolvedURL, "Path-traversing storedFileName must not resolve to a URL")
+
+        try await store.deleteSpeaker(id: speakers[0].id)
+        XCTAssertTrue(
+            FileManager.default.fileExists(atPath: bystanderURL.path(percentEncoded: false)),
+            "Deleting a speaker with a poisoned storedFileName must not delete files outside the samples directory"
+        )
     }
 
     func testAppSettingsStoreRenameFolderRejectsDuplicateNamesCaseInsensitive() async throws {
@@ -1287,6 +1394,41 @@ final class LorreCoreTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: sessionDir.path(percentEncoded: false)))
     }
 
+    func testProcessingCoordinatorPreservesUserManifestEditsDuringProcessing() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("LorreProcessingManifestMergeTests-\(UUID().uuidString)", isDirectory: true)
+        let store = FileSessionStore(baseURL: root)
+        let session = try await store.createSession(
+            NewSessionDraft(
+                title: "Original Title",
+                folderId: nil,
+                status: .processing,
+                durationSeconds: 8.0,
+                recordingSource: .microphone,
+                audioFileName: "audio.m4a",
+                microphoneStemFileName: nil,
+                systemAudioStemFileName: nil,
+                recordedAt: Date()
+            )
+        )
+        let coordinator = ProcessingCoordinator(
+            store: store,
+            transcriptionService: RenameDuringTranscriptionService(store: store, sessionID: session.id),
+            diarizationService: MockSpeakerDiarizationService()
+        )
+
+        _ = try await coordinator.process(
+            sessionId: session.id,
+            enableDiarization: false,
+            onProgress: { _ in }
+        )
+
+        let loaded = try await store.loadSession(id: session.id)
+        XCTAssertEqual(loaded?.displayTitle, "User Renamed Title")
+        XCTAssertEqual(loaded?.status, .ready)
+        XCTAssertEqual(loaded?.transcriptFileName, "transcript.json")
+    }
+
     func testProcessingCoordinatorDeletesAudioArtifactsAfterSuccessfulTranscriptionWhenEnabled() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("LorreDeleteAudioAfterProcessingTests-\(UUID().uuidString)", isDirectory: true)
@@ -1509,5 +1651,48 @@ final class LorreCoreTests: XCTestCase {
             XCTAssertEqual(viewModel.selectedRecordingSource, .microphone)
             XCTAssertTrue(viewModel.isLiveTranscriptionSupported)
         }
+    }
+}
+
+private actor RenameDuringTranscriptionService: TranscriptionService {
+    let store: FileSessionStore
+    let sessionID: UUID
+
+    init(store: FileSessionStore, sessionID: UUID) {
+        self.store = store
+        self.sessionID = sessionID
+    }
+
+    func ensureModelsReady(
+        onProgress: (@Sendable (ProcessingUpdate) async -> Void)?
+    ) async throws {
+        if let onProgress {
+            await onProgress(ProcessingUpdate(phase: .preparing, component: .asr, label: "Ready", fraction: 1))
+        }
+    }
+
+    func setVocabularyBoostingConfiguration(_ configuration: VocabularyBoostingConfiguration) async {
+        _ = configuration
+    }
+
+    func setBatchTranscriptionConfiguration(_ configuration: BatchTranscriptionConfiguration) async {
+        _ = configuration
+    }
+
+    func transcribe(url: URL, sessionTitle: String, source: RecordingSource) async throws -> TranscriptionResult {
+        _ = url
+        _ = sessionTitle
+        _ = source
+        try await store.updateSession(id: sessionID) { manifest in
+            manifest.title = "User Renamed Title"
+            manifest.updatedAt = Date()
+        }
+        return TranscriptionResult(
+            engineName: "RenameDuringTranscriptionService",
+            utterances: [
+                TranscriptionUtterance(startMs: 0, endMs: 1_000, text: "hello", confidence: 0.95)
+            ],
+            languageCode: "en"
+        )
     }
 }

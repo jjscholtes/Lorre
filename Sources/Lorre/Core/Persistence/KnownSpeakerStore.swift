@@ -12,6 +12,10 @@ actor KnownSpeakerStore {
     }
 
     func load() async throws -> [KnownSpeaker] {
+        try loadFromDisk()
+    }
+
+    private func loadFromDisk() throws -> [KnownSpeaker] {
         guard FileManager.default.fileExists(atPath: fileURL.path(percentEncoded: false)) else {
             return []
         }
@@ -29,7 +33,7 @@ actor KnownSpeakerStore {
         enrollmentData: KnownSpeakerEnrollmentData?,
         preferredVariant: SpeakerBadgeVariant? = nil
     ) async throws -> KnownSpeaker {
-        var speakers = try await load()
+        var speakers = try loadFromDisk()
         let nextID = Self.nextSpeakerID(from: speakers)
         let variant = preferredVariant ?? Self.nextVariant(for: speakers.count)
         let referenceClip = try copyReferenceClipIfNeeded(
@@ -55,7 +59,7 @@ actor KnownSpeakerStore {
         replacingReferenceAudioAt sourceURL: URL? = nil,
         enrollmentData: KnownSpeakerEnrollmentData? = nil
     ) async throws -> KnownSpeaker {
-        var speakers = try await load()
+        var speakers = try loadFromDisk()
         guard let index = speakers.firstIndex(where: { $0.id == speaker.id }) else {
             throw LorreError.persistenceFailed("Known speaker not found.")
         }
@@ -73,7 +77,7 @@ actor KnownSpeakerStore {
     }
 
     func deleteSpeaker(id: String) async throws {
-        var speakers = try await load()
+        var speakers = try loadFromDisk()
         guard let speaker = speakers.first(where: { $0.id == id }) else {
             throw LorreError.persistenceFailed("Known speaker not found.")
         }
@@ -83,10 +87,25 @@ actor KnownSpeakerStore {
     }
 
     func referenceAudioURL(for speaker: KnownSpeaker) async -> URL? {
-        guard let referenceClip = speaker.referenceClip else { return nil }
-        let url = samplesDirectoryURL.appendingPathComponent(referenceClip.storedFileName)
+        guard let referenceClip = speaker.referenceClip,
+              let url = referenceClipURL(for: referenceClip) else { return nil }
         guard FileManager.default.fileExists(atPath: url.path(percentEncoded: false)) else { return nil }
         return url
+    }
+
+    private func referenceClipURL(for referenceClip: KnownSpeakerReferenceClip) -> URL? {
+        let storedFileName = referenceClip.storedFileName
+        // Reject any path component that could escape the samples directory. The writer side
+        // always produces "K<int>.<ext>", but the JSON file is user-writable, so a hand-edited
+        // entry like "../../foo" would otherwise let us read/delete files outside the samples dir.
+        guard !storedFileName.isEmpty,
+              !storedFileName.contains("/"),
+              !storedFileName.contains("\\"),
+              storedFileName != ".",
+              storedFileName != ".." else {
+            return nil
+        }
+        return samplesDirectoryURL.appendingPathComponent(storedFileName)
     }
 
     private func saveAll(_ speakers: [KnownSpeaker]) throws {
@@ -167,8 +186,8 @@ actor KnownSpeakerStore {
     }
 
     private func deleteReferenceClipIfPresent(_ referenceClip: KnownSpeakerReferenceClip?) throws {
-        guard let referenceClip else { return }
-        let fileURL = samplesDirectoryURL.appendingPathComponent(referenceClip.storedFileName)
+        guard let referenceClip,
+              let fileURL = referenceClipURL(for: referenceClip) else { return }
         guard FileManager.default.fileExists(atPath: fileURL.path(percentEncoded: false)) else { return }
         try FileManager.default.removeItem(at: fileURL)
     }

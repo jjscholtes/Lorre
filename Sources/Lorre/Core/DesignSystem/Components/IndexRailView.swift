@@ -1,7 +1,7 @@
 import SwiftUI
 
 struct IndexRailSpeakerBin: Identifiable {
-    let id = UUID()
+    let id: String
     let variant: SpeakerBadgeVariant
     let weight: Double
 }

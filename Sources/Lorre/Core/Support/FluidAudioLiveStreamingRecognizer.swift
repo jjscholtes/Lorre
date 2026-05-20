@@ -198,6 +198,10 @@ actor FluidAudioLiveStreamingRecognizer {
             preview.isFinalizing = false
             preview.updatedAt = Date()
             emitPreview()
+            // Stop accepting further audio so we don't keep failing on every chunk. The caller
+            // must call `cancel()` (or restart via `start(onPreview:)`) to recover.
+            isStreaming = false
+            gateSpeechSeenForCurrentUtterance = false
         }
     }
 

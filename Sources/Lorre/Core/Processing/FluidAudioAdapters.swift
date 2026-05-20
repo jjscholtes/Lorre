@@ -58,6 +58,40 @@ enum FluidAudioIntegrationProbe {
 }
 
 #if canImport(FluidAudio)
+/// Bridges synchronous `progressHandler` callbacks (called from FluidAudio's downloader threads)
+/// to an async `onProgress` callback, preserving FIFO ordering. Without this, multiple
+/// `Task { await onProgress(...) }` spawns inside a single progressHandler closure could deliver
+/// out of order, causing the UI progress fraction to jump backwards. A single consumer Task pulls
+/// from the stream and awaits each callback to completion before processing the next.
+private final class SerialProgressForwarder: @unchecked Sendable {
+    private let continuation: AsyncStream<ProcessingUpdate>.Continuation
+    private let consumerTask: Task<Void, Never>
+
+    init(_ onProgress: @escaping @Sendable (ProcessingUpdate) async -> Void) {
+        var capturedContinuation: AsyncStream<ProcessingUpdate>.Continuation!
+        let stream = AsyncStream<ProcessingUpdate>(bufferingPolicy: .unbounded) { continuation in
+            capturedContinuation = continuation
+        }
+        self.continuation = capturedContinuation
+        self.consumerTask = Task {
+            for await update in stream {
+                await onProgress(update)
+            }
+        }
+    }
+
+    func submit(_ update: ProcessingUpdate) {
+        continuation.yield(update)
+    }
+
+    /// Closes the stream and waits for the consumer to drain. Call before the calling function
+    /// returns so the caller can rely on every submitted update having been delivered.
+    func finish() async {
+        continuation.finish()
+        await consumerTask.value
+    }
+}
+
 actor FluidAudioTranscriptionService: TranscriptionService {
     private let logger = Logger(subsystem: "Lorre", category: "FluidAudio")
 
@@ -120,8 +154,10 @@ actor FluidAudioTranscriptionService: TranscriptionService {
             return
         }
 
-        if let onProgress {
-            await onProgress(
+        let forwarder = onProgress.map(SerialProgressForwarder.init)
+        let submit: @Sendable (ProcessingUpdate) -> Void = { update in forwarder?.submit(update) }
+        do {
+            submit(
                 ProcessingUpdate(
                     phase: .preparing,
                     component: .asr,
@@ -130,33 +166,27 @@ actor FluidAudioTranscriptionService: TranscriptionService {
                     fraction: 0.01
                 )
             )
-        }
 
-        let models = try await AsrModels.downloadAndLoad(
-            version: .v3,
-            progressHandler: { progress in
-                guard let onProgress else { return }
-                let update = FluidAudioProgressSupport.makeUpdate(
-                    phase: .preparing,
-                    component: .asr,
-                    label: "Preparing ASR models",
-                    progress: progress
-                )
-                let scaled = FluidAudioProgressSupport.scale(update, into: 0.0...0.78)
-                Task {
-                    await onProgress(scaled)
+            let models = try await AsrModels.downloadAndLoad(
+                version: .v3,
+                progressHandler: { progress in
+                    let update = FluidAudioProgressSupport.makeUpdate(
+                        phase: .preparing,
+                        component: .asr,
+                        label: "Preparing ASR models",
+                        progress: progress
+                    )
+                    submit(FluidAudioProgressSupport.scale(update, into: 0.0...0.78))
                 }
-            }
-        )
-        let manager = AsrManager(
-            config: ASRConfig(
-                parallelChunkConcurrency: batchTranscriptionConfiguration.parallelChunkConcurrency,
-                streamingEnabled: true
             )
-        )
-        try await manager.loadModels(models)
-        if let onProgress {
-            await onProgress(
+            let manager = AsrManager(
+                config: ASRConfig(
+                    parallelChunkConcurrency: batchTranscriptionConfiguration.parallelChunkConcurrency,
+                    streamingEnabled: true
+                )
+            )
+            try await manager.loadModels(models)
+            submit(
                 ProcessingUpdate(
                     phase: .preparing,
                     component: .vad,
@@ -165,26 +195,26 @@ actor FluidAudioTranscriptionService: TranscriptionService {
                     fraction: 0.80
                 )
             )
-        }
-        let vadManager = try await VadManager(
-            progressHandler: { progress in
-                guard let onProgress else { return }
-                let update = FluidAudioProgressSupport.makeUpdate(
-                    phase: .preparing,
-                    component: .vad,
-                    label: "Preparing VAD model",
-                    progress: progress
-                )
-                let scaled = FluidAudioProgressSupport.scale(update, into: 0.78...1.0)
-                Task {
-                    await onProgress(scaled)
+            let vadManager = try await VadManager(
+                progressHandler: { progress in
+                    let update = FluidAudioProgressSupport.makeUpdate(
+                        phase: .preparing,
+                        component: .vad,
+                        label: "Preparing VAD model",
+                        progress: progress
+                    )
+                    submit(FluidAudioProgressSupport.scale(update, into: 0.78...1.0))
                 }
-            }
-        )
+            )
 
-        self.managerBox = AsrManagerBox(manager: manager)
-        self.vadManagerBox = VadManagerBox(manager: vadManager)
-        self.initialized = true
+            self.managerBox = AsrManagerBox(manager: manager)
+            self.vadManagerBox = VadManagerBox(manager: vadManager)
+            self.initialized = true
+            await forwarder?.finish()
+        } catch {
+            await forwarder?.finish()
+            throw error
+        }
     }
 
     func setVocabularyBoostingConfiguration(_ configuration: VocabularyBoostingConfiguration) async {
@@ -345,6 +375,10 @@ actor FluidAudioTranscriptionService: TranscriptionService {
         return modelsBaseDirectory.appendingPathComponent(Repo.cohereTranscribeCoreml.folderName, isDirectory: true)
     }
 
+    // Note: `Language` here is FluidAudio's *script* filter (Latin vs Cyrillic), not an ASR
+    // language hint. Languages that use the basic Latin script (e.g. Dutch) intentionally
+    // return `nil` — no script filter is needed. Cohere's `CohereAsrConfig.Language` below
+    // is a different enum and IS an actual language hint, so the two switches differ on purpose.
     private func parakeetLanguage(for languageCode: String) -> Language? {
         switch BatchTranscriptionConfiguration.normalizedLanguageCode(languageCode) {
         case "en": return .english
@@ -879,8 +913,10 @@ actor FluidAudioDiarizationService: SpeakerDiarizationService {
             return
         }
 
-        if let onProgress {
-            await onProgress(
+        let forwarder = onProgress.map(SerialProgressForwarder.init)
+        let submit: @Sendable (ProcessingUpdate) -> Void = { update in forwarder?.submit(update) }
+        do {
+            submit(
                 ProcessingUpdate(
                     phase: .preparing,
                     component: .diarization,
@@ -889,27 +925,21 @@ actor FluidAudioDiarizationService: SpeakerDiarizationService {
                     fraction: 0.01
                 )
             )
-        }
 
-        let manager = OfflineDiarizerManager(config: qualityTunedConfig(expectedSpeakers: normalizedHint))
-        let models = try await OfflineDiarizerModels.load(
-            progressHandler: { progress in
-                guard let onProgress else { return }
-                let update = FluidAudioProgressSupport.makeUpdate(
-                    phase: .preparing,
-                    component: .diarization,
-                    label: "Preparing diarization models",
-                    progress: progress
-                )
-                let scaled = FluidAudioProgressSupport.scale(update, into: 0.0...0.94)
-                Task {
-                    await onProgress(scaled)
+            let manager = OfflineDiarizerManager(config: qualityTunedConfig(expectedSpeakers: normalizedHint))
+            let models = try await OfflineDiarizerModels.load(
+                progressHandler: { progress in
+                    let update = FluidAudioProgressSupport.makeUpdate(
+                        phase: .preparing,
+                        component: .diarization,
+                        label: "Preparing diarization models",
+                        progress: progress
+                    )
+                    submit(FluidAudioProgressSupport.scale(update, into: 0.0...0.94))
                 }
-            }
-        )
-        manager.initialize(models: models)
-        if let onProgress {
-            await onProgress(
+            )
+            manager.initialize(models: models)
+            submit(
                 ProcessingUpdate(
                     phase: .preparing,
                     component: .diarization,
@@ -918,18 +948,16 @@ actor FluidAudioDiarizationService: SpeakerDiarizationService {
                     fraction: 0.97
                 )
             )
-        }
-        do {
-            _ = try await manager.process(audio: Array(repeating: 0, count: 32_000))
-        } catch OfflineDiarizationError.noSpeechDetected {
-            // Expected for silence-only warmup audio; the model graph has still been exercised.
-        } catch {
-            throw error
-        }
-        self.offlineManagerBox = OfflineDiarizerManagerBox(manager: manager)
-        self.offlinePreparedSpeakerHint = normalizedHint
-        if let onProgress {
-            await onProgress(
+            do {
+                _ = try await manager.process(audio: Array(repeating: 0, count: 32_000))
+            } catch OfflineDiarizationError.noSpeechDetected {
+                // Expected for silence-only warmup audio; the model graph has still been exercised.
+            } catch {
+                throw error
+            }
+            self.offlineManagerBox = OfflineDiarizerManagerBox(manager: manager)
+            self.offlinePreparedSpeakerHint = normalizedHint
+            submit(
                 FluidAudioProgressSupport.readyUpdate(
                     phase: .preparing,
                     component: .diarization,
@@ -937,6 +965,10 @@ actor FluidAudioDiarizationService: SpeakerDiarizationService {
                     detail: "Offline speaker models are warmed and ready."
                 )
             )
+            await forwarder?.finish()
+        } catch {
+            await forwarder?.finish()
+            throw error
         }
     }
 
@@ -957,8 +989,10 @@ actor FluidAudioDiarizationService: SpeakerDiarizationService {
             return
         }
 
-        if let onProgress {
-            await onProgress(
+        let forwarder = onProgress.map(SerialProgressForwarder.init)
+        let submit: @Sendable (ProcessingUpdate) -> Void = { update in forwarder?.submit(update) }
+        do {
+            submit(
                 ProcessingUpdate(
                     phase: .preparing,
                     component: .diarization,
@@ -967,36 +1001,31 @@ actor FluidAudioDiarizationService: SpeakerDiarizationService {
                     fraction: 0.01
                 )
             )
-        }
 
-        if sortformerModels == nil {
-            sortformerModels = try await SortformerModels.loadFromHuggingFace(
-                config: Self.sortformerConfig,
-                progressHandler: { progress in
-                    guard let onProgress else { return }
-                    let update = FluidAudioProgressSupport.makeUpdate(
-                        phase: .preparing,
-                        component: .diarization,
-                        label: "Preparing diarization models",
-                        progress: progress
-                    )
-                    Task {
-                        await onProgress(update)
+            if sortformerModels == nil {
+                sortformerModels = try await SortformerModels.loadFromHuggingFace(
+                    config: Self.sortformerConfig,
+                    progressHandler: { progress in
+                        let update = FluidAudioProgressSupport.makeUpdate(
+                            phase: .preparing,
+                            component: .diarization,
+                            label: "Preparing diarization models",
+                            progress: progress
+                        )
+                        submit(update)
                     }
-                }
-            )
-        }
+                )
+            }
 
-        guard let sortformerModels else {
-            throw LorreError.processingFailed("Sortformer diarization models are unavailable.")
-        }
+            guard let sortformerModels else {
+                throw LorreError.processingFailed("Sortformer diarization models are unavailable.")
+            }
 
-        let diarizer = SortformerDiarizer(config: Self.sortformerConfig)
-        diarizer.initialize(models: sortformerModels)
-        sortformerDiarizer = diarizer
+            let diarizer = SortformerDiarizer(config: Self.sortformerConfig)
+            diarizer.initialize(models: sortformerModels)
+            sortformerDiarizer = diarizer
 
-        if let onProgress {
-            await onProgress(
+            submit(
                 FluidAudioProgressSupport.readyUpdate(
                     phase: .preparing,
                     component: .diarization,
@@ -1004,6 +1033,10 @@ actor FluidAudioDiarizationService: SpeakerDiarizationService {
                     detail: "Sortformer diarization models are loaded."
                 )
             )
+            await forwarder?.finish()
+        } catch {
+            await forwarder?.finish()
+            throw error
         }
     }
 
@@ -1024,8 +1057,10 @@ actor FluidAudioDiarizationService: SpeakerDiarizationService {
             return
         }
 
-        if let onProgress {
-            await onProgress(
+        let forwarder = onProgress.map(SerialProgressForwarder.init)
+        let submit: @Sendable (ProcessingUpdate) -> Void = { update in forwarder?.submit(update) }
+        do {
+            submit(
                 ProcessingUpdate(
                     phase: .preparing,
                     component: .diarization,
@@ -1034,36 +1069,31 @@ actor FluidAudioDiarizationService: SpeakerDiarizationService {
                     fraction: 0.01
                 )
             )
-        }
 
-        if lsEendModel == nil {
-            lsEendModel = try await LSEENDModel.loadFromHuggingFace(
-                variant: .dihard3,
-                progressHandler: { progress in
-                    guard let onProgress else { return }
-                    let update = FluidAudioProgressSupport.makeUpdate(
-                        phase: .preparing,
-                        component: .diarization,
-                        label: "Preparing diarization models",
-                        progress: progress
-                    )
-                    Task {
-                        await onProgress(update)
+            if lsEendModel == nil {
+                lsEendModel = try await LSEENDModel.loadFromHuggingFace(
+                    variant: .dihard3,
+                    progressHandler: { progress in
+                        let update = FluidAudioProgressSupport.makeUpdate(
+                            phase: .preparing,
+                            component: .diarization,
+                            label: "Preparing diarization models",
+                            progress: progress
+                        )
+                        submit(update)
                     }
-                }
-            )
-        }
+                )
+            }
 
-        guard let lsEendModel else {
-            throw LorreError.processingFailed("LS-EEND diarization models are unavailable.")
-        }
+            guard let lsEendModel else {
+                throw LorreError.processingFailed("LS-EEND diarization models are unavailable.")
+            }
 
-        let diarizer = LSEENDDiarizer()
-        try diarizer.initialize(model: lsEendModel)
-        lsEendDiarizer = diarizer
+            let diarizer = LSEENDDiarizer()
+            try diarizer.initialize(model: lsEendModel)
+            lsEendDiarizer = diarizer
 
-        if let onProgress {
-            await onProgress(
+            submit(
                 FluidAudioProgressSupport.readyUpdate(
                     phase: .preparing,
                     component: .diarization,
@@ -1071,6 +1101,10 @@ actor FluidAudioDiarizationService: SpeakerDiarizationService {
                     detail: "LS-EEND diarization models are loaded."
                 )
             )
+            await forwarder?.finish()
+        } catch {
+            await forwarder?.finish()
+            throw error
         }
     }
 

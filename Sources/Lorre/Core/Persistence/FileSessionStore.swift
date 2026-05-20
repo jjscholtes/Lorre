@@ -102,6 +102,25 @@ actor FileSessionStore: SessionStore {
         try save(session)
     }
 
+    @discardableResult
+    func updateSession(id: UUID, apply: @Sendable (inout SessionManifest) -> Void) async throws -> SessionManifest {
+        try ensureBaseDirectories()
+        let url = sessionManifestURL(for: id)
+        guard FileManager.default.fileExists(atPath: url.path(percentEncoded: false)) else {
+            throw LorreError.sessionNotFound
+        }
+        // Load the freshest manifest from disk and persist the mutated copy in a single
+        // actor-isolated step so a concurrent rename / progress update cannot clobber it.
+        let data = try Data(contentsOf: url)
+        var manifest = try Self.decoder.decode(SessionManifest.self, from: data)
+        if manifest.id != id {
+            manifest.id = id
+        }
+        apply(&manifest)
+        try save(manifest)
+        return manifest
+    }
+
     func deleteSession(id: UUID) async throws {
         try ensureBaseDirectories()
         let sessionDir = sessionsRootURL.appendingPathComponent(id.uuidString, isDirectory: true)

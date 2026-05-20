@@ -583,6 +583,9 @@ struct TranscriptHeaderView: View {
         case .export:
             viewModel.exportSelectedSessionWithDefaultShortcut()
         case .deleteSession:
+            guard !isShowingDeleteConfirmation,
+                  !isShowingRenameAlert,
+                  !isShowingNotesSheet else { return }
             isShowingDeleteConfirmation = true
         }
     }

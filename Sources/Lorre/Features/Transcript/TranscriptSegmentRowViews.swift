@@ -18,6 +18,10 @@ struct TranscriptSegmentRowView: View {
     @State private var draftText: String = ""
     @State private var showSpeakerPopover = false
     @State private var isRowHovered = false
+    // The text the user saw when they began the current edit. Used as the commit baseline so
+    // that blurring after an external update doesn't spuriously revert the segment to whatever
+    // the user originally saw.
+    @State private var draftBaselineAtFocus: String?
     @FocusState private var isTextFocused: Bool
 
     init(
@@ -140,7 +144,12 @@ struct TranscriptSegmentRowView: View {
                         commitIfNeeded()
                     }
                     .onChange(of: isTextFocused) { _, focused in
-                        if !focused { commitIfNeeded() }
+                        if focused {
+                            draftBaselineAtFocus = draftText
+                        } else {
+                            commitIfNeeded()
+                            draftBaselineAtFocus = nil
+                        }
                     }
                     .onChange(of: segment.text) { _, newText in
                         if !isTextFocused, draftText != newText {
@@ -179,10 +188,18 @@ struct TranscriptSegmentRowView: View {
         .dsPanelSurface(selected: isPlaybackActive || isRowHovered, cornerRadius: DS.Radius.md)
     }
 
-    private func commitIfNeeded() {
+    @discardableResult
+    private func commitIfNeeded() -> Bool {
         let normalized = draftText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard normalized != segment.text else { return }
+        // Compare against the text we showed the user when they began editing, not against the
+        // current `segment.text`, which may have moved out from under us during processing.
+        // Without this, the user's untouched draft would silently overwrite the external update
+        // on blur.
+        let baseline = (draftBaselineAtFocus ?? segment.text).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard normalized != baseline else { return false }
         onCommitText(normalized)
+        draftBaselineAtFocus = normalized
+        return true
     }
 
     private var shouldShowMetadataRow: Bool {

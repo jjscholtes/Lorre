@@ -472,26 +472,27 @@ final class AppViewModel: ObservableObject {
     }
 
     func moveSession(_ sessionID: UUID, to folderID: String?) {
-        guard var session = sessions.first(where: { $0.id == sessionID }) else { return }
+        guard let session = sessions.first(where: { $0.id == sessionID }) else { return }
         guard session.folderId != folderID else { return }
 
         Task { [weak self] in
             guard let self else { return }
             do {
-                session.folderId = folderID
-                session.updatedAt = Date()
-                try await self.dependencies.store.updateSession(session)
+                let updated = try await self.dependencies.store.updateSession(id: sessionID) { manifest in
+                    manifest.folderId = folderID
+                    manifest.updatedAt = Date()
+                }
                 await self.reloadSessions(selectMostRecentIfNeeded: false)
                 await MainActor.run {
-                    if self.selectedSessionID == session.id {
-                        self.selectedSessionID = session.id
+                    if self.selectedSessionID == updated.id {
+                        self.selectedSessionID = updated.id
                     }
                     let label = self.folderName(for: folderID)
-                    self.banner = AppBanner(kind: .success, title: "Moved to folder", message: "\(session.displayTitle) → \(label)")
+                    self.banner = AppBanner(kind: .success, title: "Moved to folder", message: "\(updated.displayTitle) → \(label)")
                 }
                 await self.dependencies.metrics.log(
                     name: "session_moved_to_folder",
-                    sessionId: session.id,
+                    sessionId: updated.id,
                     attributes: ["folder_id": folderID ?? "unfiled"]
                 )
             } catch {
@@ -500,7 +501,7 @@ final class AppViewModel: ObservableObject {
                 }
                 await self.dependencies.metrics.log(
                     name: "session_move_to_folder_failed",
-                    sessionId: session.id,
+                    sessionId: sessionID,
                     attributes: ["error": error.localizedDescription]
                 )
             }
@@ -1026,7 +1027,7 @@ final class AppViewModel: ObservableObject {
     }
 
     func renameSession(_ sessionID: UUID, to newName: String) {
-        guard var session = sessions.first(where: { $0.id == sessionID }) else { return }
+        guard let session = sessions.first(where: { $0.id == sessionID }) else { return }
         let trimmed = newName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         guard session.title != trimmed else { return }
@@ -1034,15 +1035,16 @@ final class AppViewModel: ObservableObject {
         Task { [weak self] in
             guard let self else { return }
             do {
-                session.title = trimmed
-                session.updatedAt = Date()
-                session.dirtyFlags.titleEdited = true
-                try await self.dependencies.store.updateSession(session)
+                _ = try await self.dependencies.store.updateSession(id: sessionID) { manifest in
+                    manifest.title = trimmed
+                    manifest.updatedAt = Date()
+                    manifest.dirtyFlags.titleEdited = true
+                }
                 await self.reloadSessions(selectMostRecentIfNeeded: false)
                 await MainActor.run {
                     self.banner = AppBanner(kind: .success, title: "Session renamed", message: trimmed)
                 }
-                await self.dependencies.metrics.log(name: "session_renamed", sessionId: session.id)
+                await self.dependencies.metrics.log(name: "session_renamed", sessionId: sessionID)
             } catch {
                 await MainActor.run {
                     self.presentError(error, defaultTitle: "Rename failed")
@@ -1058,15 +1060,18 @@ final class AppViewModel: ObservableObject {
         let normalized: String? = trimmed.isEmpty ? nil : trimmed
         guard sessions[index].notes != normalized else { return }
 
-        var updated = sessions[index]
-        updated.notes = normalized
-        updated.updatedAt = Date()
-        sessions[index] = updated
+        var optimistic = sessions[index]
+        optimistic.notes = normalized
+        optimistic.updatedAt = Date()
+        sessions[index] = optimistic
 
         Task { [weak self] in
             guard let self else { return }
             do {
-                try await self.dependencies.store.updateSession(updated)
+                _ = try await self.dependencies.store.updateSession(id: sessionID) { manifest in
+                    manifest.notes = normalized
+                    manifest.updatedAt = Date()
+                }
                 await self.dependencies.metrics.log(
                     name: "session_notes_saved",
                     sessionId: sessionID,
@@ -1854,7 +1859,7 @@ final class AppViewModel: ObservableObject {
             .mapValues(\.count)
         return transcript.speakers.compactMap { speaker in
             guard let count = counts[speaker.id], count > 0 else { return nil }
-            return IndexRailSpeakerBin(variant: speaker.styleVariant, weight: Double(count))
+            return IndexRailSpeakerBin(id: speaker.id, variant: speaker.styleVariant, weight: Double(count))
         }
     }
 
@@ -2032,9 +2037,15 @@ final class AppViewModel: ObservableObject {
             activeTranscript = nil
             return
         }
+        let targetID = session.id
         do {
-            activeTranscript = try await dependencies.store.loadTranscript(sessionId: session.id)
+            let loaded = try await dependencies.store.loadTranscript(sessionId: targetID)
+            // The user may have switched sessions while the load was in flight — only apply
+            // the result if it still matches the current selection.
+            guard selectedSessionID == targetID else { return }
+            activeTranscript = loaded
         } catch {
+            guard selectedSessionID == targetID else { return }
             activeTranscript = nil
             presentError(error, defaultTitle: "Could not load transcript")
         }
@@ -2045,6 +2056,7 @@ final class AppViewModel: ObservableObject {
         guard let session = selectedSession, session.id == sessionID, session.status == .processing else { return }
         do {
             if let transcript = try await dependencies.store.loadTranscript(sessionId: sessionID) {
+                guard selectedSessionID == sessionID else { return }
                 activeTranscript = transcript
             }
         } catch {
