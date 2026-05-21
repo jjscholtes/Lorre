@@ -104,6 +104,10 @@ private struct ActiveRecordingWorkspaceView: View {
             IndexRailView(mode: .live(viewModel.liveMeterSamples), height: 12)
                 .frame(maxWidth: .infinity)
 
+            if viewModel.isLiveTranscriptionSupported && viewModel.isLiveTranscriptionEnabled {
+                LiveTranscriptPreviewCard(viewModel: viewModel)
+            }
+
             HStack(spacing: DS.Space.x2) {
                 Button("Open Recorder") {
                     viewModel.showRecorderScreenTapped()

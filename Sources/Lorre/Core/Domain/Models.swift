@@ -651,6 +651,12 @@ struct RecordingFileLayout: Equatable, Sendable {
 
 struct RecordingRequest: Sendable {
     var source: RecordingSource
+    var liveTranscriptionEnabled: Bool
+
+    init(source: RecordingSource, liveTranscriptionEnabled: Bool = false) {
+        self.source = source
+        self.liveTranscriptionEnabled = liveTranscriptionEnabled
+    }
 }
 
 struct RecordingCapture: Sendable {
@@ -1064,6 +1070,8 @@ struct SessionFolder: Identifiable, Codable, Equatable, Sendable {
 }
 
 struct AppSettings: Codable, Equatable, Sendable {
+    static let currentSchemaVersion = 4
+
     var schemaVersion: Int
     var updatedAt: Date
     var modelPreparation: ModelPreparationSnapshot?
@@ -1084,7 +1092,7 @@ struct AppSettings: Codable, Equatable, Sendable {
     var sidebarExpandedFolderIDs: [String]
 
     init(
-        schemaVersion: Int = 3,
+        schemaVersion: Int = AppSettings.currentSchemaVersion,
         updatedAt: Date = Date(),
         modelPreparation: ModelPreparationSnapshot? = nil,
         modelRegistryConfiguration: ModelRegistryConfiguration = .init(),
@@ -1093,7 +1101,7 @@ struct AppSettings: Codable, Equatable, Sendable {
         diarizationEngine: DiarizationEngine = .offlineVbx,
         diarizationExpectedSpeakerCountHint: DiarizationSpeakerCountHint = .auto,
         isDiarizationDebugExportEnabled: Bool = false,
-        isLiveTranscriptionEnabled: Bool = false,
+        isLiveTranscriptionEnabled: Bool = true,
         isDeleteAudioAfterTranscriptionEnabled: Bool = false,
         isTranscriptConfidenceVisible: Bool = false,
         vocabularyBoosting: VocabularyBoostingConfiguration = .init(),
@@ -1157,7 +1165,10 @@ struct AppSettings: Codable, Equatable, Sendable {
             try container.decodeIfPresent(DiarizationSpeakerCountHint.self, forKey: .diarizationExpectedSpeakerCountHint)
         )?.normalized() ?? .auto
         self.isDiarizationDebugExportEnabled = try container.decodeIfPresent(Bool.self, forKey: .isDiarizationDebugExportEnabled) ?? false
-        self.isLiveTranscriptionEnabled = try container.decodeIfPresent(Bool.self, forKey: .isLiveTranscriptionEnabled) ?? false
+        let decodedLiveTranscriptionEnabled = try container.decodeIfPresent(Bool.self, forKey: .isLiveTranscriptionEnabled)
+        self.isLiveTranscriptionEnabled = self.schemaVersion < 4
+            ? true
+            : (decodedLiveTranscriptionEnabled ?? true)
         self.isDeleteAudioAfterTranscriptionEnabled = try container.decodeIfPresent(Bool.self, forKey: .isDeleteAudioAfterTranscriptionEnabled) ?? false
         self.isTranscriptConfidenceVisible = try container.decodeIfPresent(Bool.self, forKey: .isTranscriptConfidenceVisible) ?? false
         self.vocabularyBoosting = try container.decodeIfPresent(VocabularyBoostingConfiguration.self, forKey: .vocabularyBoosting) ?? .init()
@@ -1168,6 +1179,12 @@ struct AppSettings: Codable, Equatable, Sendable {
         self.folders = try container.decodeIfPresent([SessionFolder].self, forKey: .folders) ?? []
         self.sidebarExpandedViewFilterIDs = try container.decodeIfPresent([String].self, forKey: .sidebarExpandedViewFilterIDs) ?? []
         self.sidebarExpandedFolderIDs = try container.decodeIfPresent([String].self, forKey: .sidebarExpandedFolderIDs) ?? []
+    }
+
+    var migratedToCurrentSchema: AppSettings {
+        var settings = self
+        settings.schemaVersion = Self.currentSchemaVersion
+        return settings
     }
 
     func encode(to encoder: Encoder) throws {

@@ -564,7 +564,9 @@ final class AppViewModel: ObservableObject {
                 }
                 await self.pushKnownSpeakersToServices()
                 await self.dependencies.recorder.setLiveTranscriptionEnabled(enableLiveTranscript)
-                try await self.dependencies.recorder.startRecording(RecordingRequest(source: source))
+                try await self.dependencies.recorder.startRecording(
+                    RecordingRequest(source: source, liveTranscriptionEnabled: enableLiveTranscript)
+                )
                 await self.dependencies.metrics.log(
                     name: "record_started",
                     attributes: ["source": source.rawValue]

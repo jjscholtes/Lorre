@@ -1,7 +1,10 @@
-import XCTest
+import Testing
 @testable import Lorre
 
-final class RuntimeCapabilitiesTests: XCTestCase {
+@Suite("RuntimeCapabilitiesTests")
+struct RuntimeCapabilitiesTests {
+
+    @Test
     func testFeatureLabelsReflectSupportedCapabilities() {
         let capabilities = RuntimeCapabilities(
             pipeline: .fluidAudio,
@@ -28,6 +31,8 @@ final class RuntimeCapabilitiesTests: XCTestCase {
         XCTAssertFalse(capabilities.usesMockPipeline)
     }
 
+
+    @Test
     func testMockCapabilitiesDescribeDemoPipeline() {
         XCTAssertEqual(RuntimeCapabilities.mock.featureLabels, [])
         XCTAssertTrue(RuntimeCapabilities.mock.usesMockPipeline)
@@ -35,6 +40,8 @@ final class RuntimeCapabilitiesTests: XCTestCase {
         XCTAssertTrue(RuntimeCapabilities.mock.processingModeDescription.contains("Test/demo"))
     }
 
+
+    @Test
     func testFeatureLabelsIncludeFluidAudioSpeechPassesWhenSupported() {
         let capabilities = RuntimeCapabilities(
             pipeline: .fluidAudio,

@@ -178,3 +178,61 @@ struct MockSpeakerDiarizationService: SpeakerDiarizationService {
         return speakers
     }
 }
+
+actor UnavailableTranscriptionService: TranscriptionService {
+    private let unavailableMessage = "FluidAudio is not linked in this build. Rebuild Lorre with the FluidAudio package resolved and linked before recording or importing audio."
+
+    func ensureModelsReady(
+        onProgress: (@Sendable (ProcessingUpdate) async -> Void)?
+    ) async throws {
+        _ = onProgress
+        throw LorreError.processingFailed(unavailableMessage)
+    }
+
+    func setVocabularyBoostingConfiguration(_ configuration: VocabularyBoostingConfiguration) async {
+        _ = configuration
+    }
+
+    func setBatchTranscriptionConfiguration(_ configuration: BatchTranscriptionConfiguration) async {
+        _ = configuration
+    }
+
+    func transcribe(url: URL, sessionTitle: String, source: RecordingSource) async throws -> TranscriptionResult {
+        _ = url
+        _ = sessionTitle
+        _ = source
+        throw LorreError.processingFailed(unavailableMessage)
+    }
+}
+
+struct UnavailableSpeakerDiarizationService: SpeakerDiarizationService {
+    private let unavailableMessage = "FluidAudio is not linked in this build. Speaker diarization is unavailable."
+
+    func ensureModelsReady(
+        onProgress: (@Sendable (ProcessingUpdate) async -> Void)?
+    ) async throws {
+        _ = onProgress
+        throw LorreError.processingFailed(unavailableMessage)
+    }
+
+    func setKnownSpeakers(_ speakers: [KnownSpeaker]) async {
+        _ = speakers
+    }
+
+    func setDiarizationEngine(_ engine: DiarizationEngine) async {
+        _ = engine
+    }
+
+    func diarize(
+        url: URL,
+        expectedDurationSeconds: Double?,
+        expectedSpeakers: DiarizationSpeakerCountHint,
+        onProgress: (@Sendable (ProcessingUpdate) async -> Void)? = nil
+    ) async throws -> DiarizationResult? {
+        _ = url
+        _ = expectedDurationSeconds
+        _ = expectedSpeakers
+        _ = onProgress
+        throw LorreError.processingFailed(unavailableMessage)
+    }
+}

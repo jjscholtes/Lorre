@@ -2,6 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+XCODE_DEVELOPER_DIR="/Applications/Xcode.app/Contents/Developer"
 RELEASE_CONFIG_PATH="$ROOT_DIR/Config/app_release.env"
 if [[ ! -f "$RELEASE_CONFIG_PATH" ]]; then
   echo "Missing release config: $RELEASE_CONFIG_PATH" >&2
@@ -39,6 +40,16 @@ done
 if [[ ! -f "$ICON_PATH" ]]; then
   echo "Missing icon file: $ICON_PATH" >&2
   exit 1
+fi
+
+if [[ -z "${DEVELOPER_DIR:-}" ]]; then
+  CURRENT_DEV_DIR="$(xcode-select -p 2>/dev/null || true)"
+  if [[ -d "$XCODE_DEVELOPER_DIR" ]]; then
+    if [[ -z "$CURRENT_DEV_DIR" || "$CURRENT_DEV_DIR" == /Library/Developer/CommandLineTools* ]]; then
+      export DEVELOPER_DIR="$XCODE_DEVELOPER_DIR"
+      echo "Using Xcode toolchain for app packaging: $DEVELOPER_DIR" >&2
+    fi
+  fi
 fi
 
 cd "$ROOT_DIR"

@@ -38,6 +38,13 @@ enum RecorderAudioUtilities {
         AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16_000, channels: 1, interleaved: false)!
     }()
 
+    private static func formatsMatch(_ lhs: AVAudioFormat, _ rhs: AVAudioFormat) -> Bool {
+        lhs.commonFormat == rhs.commonFormat
+            && lhs.sampleRate == rhs.sampleRate
+            && lhs.channelCount == rhs.channelCount
+            && lhs.isInterleaved == rhs.isInterleaved
+    }
+
     final class ReusableConverterBox: @unchecked Sendable {
         private let outputFormat: AVAudioFormat
         private let lock = NSLock()
@@ -49,7 +56,7 @@ enum RecorderAudioUtilities {
         }
 
         func convert(_ buffer: AVAudioPCMBuffer) throws -> AVAudioPCMBuffer {
-            if buffer.format == outputFormat {
+            if RecorderAudioUtilities.formatsMatch(buffer.format, outputFormat) {
                 guard let copy = buffer.lorre_deepCopy() else {
                     throw LorreError.recordingStartFailed("Could not copy audio buffer.")
                 }
@@ -85,7 +92,7 @@ enum RecorderAudioUtilities {
         init(file: AVAudioFile, targetFormat: AVAudioFormat) throws {
             self.file = file
             self.targetFormat = targetFormat
-            if file.processingFormat == targetFormat {
+            if RecorderAudioUtilities.formatsMatch(file.processingFormat, targetFormat) {
                 self.converter = nil
             } else {
                 guard let converter = AVAudioConverter(from: file.processingFormat, to: targetFormat) else {
@@ -215,7 +222,7 @@ enum RecorderAudioUtilities {
     }
 
     static func convert(_ buffer: AVAudioPCMBuffer, to outputFormat: AVAudioFormat) throws -> AVAudioPCMBuffer {
-        if buffer.format == outputFormat {
+        if formatsMatch(buffer.format, outputFormat) {
             guard let copy = buffer.lorre_deepCopy() else {
                 throw LorreError.recordingStartFailed("Could not copy audio buffer.")
             }
@@ -294,7 +301,11 @@ enum RecorderAudioUtilities {
         try file.read(into: inputBuffer)
         let converted = try convert(inputBuffer, to: targetFormat)
         guard let channelData = converted.floatChannelData else { return [] }
-        return Array(UnsafeBufferPointer(start: channelData[0], count: Int(converted.frameLength)))
+        var samples = Array(UnsafeBufferPointer(start: channelData[0], count: Int(converted.frameLength)))
+        if formatsMatch(file.processingFormat, targetFormat), samples.count < Int(frameCount) {
+            samples.append(contentsOf: repeatElement(0, count: Int(frameCount) - samples.count))
+        }
+        return samples
     }
 
     static func write(samples: [Float], to url: URL, format: AVAudioFormat) throws {
@@ -323,16 +334,23 @@ enum RecorderAudioUtilities {
         let outputFile = try AVAudioFile(forWriting: destinationURL, settings: targetFormat.settings)
         let microphoneReader = try StreamingConvertedSampleReader(file: microphoneFile, targetFormat: targetFormat)
         let systemReader = try StreamingConvertedSampleReader(file: systemFile, targetFormat: targetFormat)
+        let microphoneDuration = Double(microphoneFile.length) / microphoneFile.processingFormat.sampleRate
+        let systemDuration = Double(systemFile.length) / systemFile.processingFormat.sampleRate
+        let expectedFrameCount = Int64((max(microphoneDuration, systemDuration) * targetFormat.sampleRate).rounded(.up))
+        var writtenFrameCount: Int64 = 0
         let chunkFrames: AVAudioFrameCount = 16_000
         let voiceGain: Float = 0.70710677
         let systemGain: Float = 0.70710677
         let headroom: Float = 0.8
 
         while true {
+            let remainingFrames = Int(expectedFrameCount - writtenFrameCount)
+            guard remainingFrames > 0 else { break }
+
             let microphoneSamples = try microphoneReader.readSamples(targetFrameCount: chunkFrames)
             let systemSamples = try systemReader.readSamples(targetFrameCount: chunkFrames)
 
-            let count = max(microphoneSamples.count, systemSamples.count)
+            let count = min(max(microphoneSamples.count, systemSamples.count), remainingFrames)
             guard count > 0 else { break }
 
             var mixed = Array(repeating: Float(0), count: count)
@@ -345,6 +363,7 @@ enum RecorderAudioUtilities {
 
             let buffer = try makePCMBuffer(from: mixed, format: targetFormat)
             try outputFile.write(from: buffer)
+            writtenFrameCount += Int64(count)
         }
     }
 }

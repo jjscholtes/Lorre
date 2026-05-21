@@ -1,7 +1,10 @@
-import XCTest
+import Testing
 @testable import Lorre
 
-final class TextNormalizationRuntimeSupportTests: XCTestCase {
+@Suite("TextNormalizationRuntimeSupportTests")
+struct TextNormalizationRuntimeSupportTests {
+
+    @Test
     func testRuntimeStateSummaryForUnavailableLibrary() {
         let state = TextNormalizationRuntimeSupport.RuntimeState(
             isNativeAvailable: false,
@@ -14,6 +17,8 @@ final class TextNormalizationRuntimeSupportTests: XCTestCase {
         #endif
     }
 
+
+    @Test
     func testRuntimeStateSummaryForLoadedLibrary() {
         let state = TextNormalizationRuntimeSupport.RuntimeState(
             isNativeAvailable: true,

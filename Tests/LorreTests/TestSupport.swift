@@ -1,6 +1,179 @@
 import Foundation
-import XCTest
+import Testing
 @testable import Lorre
+
+private func issueSourceLocation(
+    fileID: String,
+    filePath: String,
+    line: Int,
+    column: Int
+) -> SourceLocation {
+    SourceLocation(fileID: fileID, filePath: filePath, line: line, column: column)
+}
+
+private func assertionMessage(
+    _ assertion: String,
+    _ detail: String,
+    _ message: String
+) -> Comment {
+    let suffix = message.isEmpty ? "" : ": \(message)"
+    return Comment(rawValue: "\(assertion) failed: \(detail)\(suffix)")
+}
+
+func XCTAssertEqual<T: Equatable>(
+    _ expression1: @autoclosure () throws -> T,
+    _ expression2: @autoclosure () throws -> T,
+    _ message: @autoclosure () -> String = "",
+    fileID: String = #fileID,
+    filePath: String = #filePath,
+    line: Int = #line,
+    column: Int = #column
+) rethrows {
+    let value1 = try expression1()
+    let value2 = try expression2()
+    if value1 != value2 {
+        Issue.record(
+            assertionMessage("XCTAssertEqual", "\(String(describing: value1)) is not equal to \(String(describing: value2))", message()),
+            sourceLocation: issueSourceLocation(fileID: fileID, filePath: filePath, line: line, column: column)
+        )
+    }
+}
+
+func XCTAssertTrue(
+    _ expression: @autoclosure () throws -> Bool,
+    _ message: @autoclosure () -> String = "",
+    fileID: String = #fileID,
+    filePath: String = #filePath,
+    line: Int = #line,
+    column: Int = #column
+) rethrows {
+    if try !expression() {
+        Issue.record(
+            assertionMessage("XCTAssertTrue", "expression is false", message()),
+            sourceLocation: issueSourceLocation(fileID: fileID, filePath: filePath, line: line, column: column)
+        )
+    }
+}
+
+func XCTAssertFalse(
+    _ expression: @autoclosure () throws -> Bool,
+    _ message: @autoclosure () -> String = "",
+    fileID: String = #fileID,
+    filePath: String = #filePath,
+    line: Int = #line,
+    column: Int = #column
+) rethrows {
+    if try expression() {
+        Issue.record(
+            assertionMessage("XCTAssertFalse", "expression is true", message()),
+            sourceLocation: issueSourceLocation(fileID: fileID, filePath: filePath, line: line, column: column)
+        )
+    }
+}
+
+func XCTAssertNil<T>(
+    _ expression: @autoclosure () throws -> T?,
+    _ message: @autoclosure () -> String = "",
+    fileID: String = #fileID,
+    filePath: String = #filePath,
+    line: Int = #line,
+    column: Int = #column
+) rethrows {
+    let value = try expression()
+    if value != nil {
+        Issue.record(
+            assertionMessage("XCTAssertNil", "\(String(describing: value)) is not nil", message()),
+            sourceLocation: issueSourceLocation(fileID: fileID, filePath: filePath, line: line, column: column)
+        )
+    }
+}
+
+func XCTAssertNotNil<T>(
+    _ expression: @autoclosure () throws -> T?,
+    _ message: @autoclosure () -> String = "",
+    fileID: String = #fileID,
+    filePath: String = #filePath,
+    line: Int = #line,
+    column: Int = #column
+) rethrows {
+    let value = try expression()
+    if value == nil {
+        Issue.record(
+            assertionMessage("XCTAssertNotNil", "expression is nil", message()),
+            sourceLocation: issueSourceLocation(fileID: fileID, filePath: filePath, line: line, column: column)
+        )
+    }
+}
+
+func XCTAssertLessThanOrEqual<T: Comparable>(
+    _ expression1: @autoclosure () throws -> T,
+    _ expression2: @autoclosure () throws -> T,
+    _ message: @autoclosure () -> String = "",
+    fileID: String = #fileID,
+    filePath: String = #filePath,
+    line: Int = #line,
+    column: Int = #column
+) rethrows {
+    let value1 = try expression1()
+    let value2 = try expression2()
+    if value1 > value2 {
+        Issue.record(
+            assertionMessage("XCTAssertLessThanOrEqual", "\(String(describing: value1)) is greater than \(String(describing: value2))", message()),
+            sourceLocation: issueSourceLocation(fileID: fileID, filePath: filePath, line: line, column: column)
+        )
+    }
+}
+
+func XCTAssertGreaterThanOrEqual<T: Comparable>(
+    _ expression1: @autoclosure () throws -> T,
+    _ expression2: @autoclosure () throws -> T,
+    _ message: @autoclosure () -> String = "",
+    fileID: String = #fileID,
+    filePath: String = #filePath,
+    line: Int = #line,
+    column: Int = #column
+) rethrows {
+    let value1 = try expression1()
+    let value2 = try expression2()
+    if value1 < value2 {
+        Issue.record(
+            assertionMessage("XCTAssertGreaterThanOrEqual", "\(String(describing: value1)) is less than \(String(describing: value2))", message()),
+            sourceLocation: issueSourceLocation(fileID: fileID, filePath: filePath, line: line, column: column)
+        )
+    }
+}
+
+func XCTAssertThrowsError<T>(
+    _ expression: @autoclosure () throws -> T,
+    _ message: @autoclosure () -> String = "",
+    fileID: String = #fileID,
+    filePath: String = #filePath,
+    line: Int = #line,
+    column: Int = #column
+) {
+    do {
+        _ = try expression()
+        Issue.record(
+            assertionMessage("XCTAssertThrowsError", "expression did not throw", message()),
+            sourceLocation: issueSourceLocation(fileID: fileID, filePath: filePath, line: line, column: column)
+        )
+    } catch {
+        return
+    }
+}
+
+func XCTFail(
+    _ message: @autoclosure () -> String = "",
+    fileID: String = #fileID,
+    filePath: String = #filePath,
+    line: Int = #line,
+    column: Int = #column
+) {
+    Issue.record(
+        assertionMessage("XCTFail", "failure recorded", message()),
+        sourceLocation: issueSourceLocation(fileID: fileID, filePath: filePath, line: line, column: column)
+    )
+}
 
 actor ControlledRecorderService: RecorderService {
     enum StopBehavior: Sendable {
@@ -13,6 +186,7 @@ actor ControlledRecorderService: RecorderService {
     private let supportBySource: [RecordingSource: Bool]
     private let supportDelayBySource: [RecordingSource: Duration]
     private(set) var startCallCount = 0
+    private(set) var lastStartRequest: RecordingRequest?
     private var startedAt: Date?
     private var activeSource: RecordingSource = .microphone
 
@@ -30,6 +204,7 @@ actor ControlledRecorderService: RecorderService {
 
     func startRecording(_ request: RecordingRequest) async throws {
         startCallCount += 1
+        lastStartRequest = request
         guard startedAt == nil else {
             throw LorreError.recordingStartFailed("A recording is already active.")
         }

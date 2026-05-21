@@ -92,6 +92,7 @@ struct RecorderConsoleView: View {
             RecorderSetupHeaderView()
             RecorderSectionDivider()
             RecorderSourceQuickAccessView(viewModel: viewModel)
+            RecorderLivePreviewQuickAccessView(viewModel: viewModel)
             RecorderInsetPanel {
                 VStack(alignment: .leading, spacing: DS.Space.x3) {
                     RecorderPrivacyQuickAccessView(viewModel: viewModel)
@@ -413,7 +414,7 @@ private struct RecorderStartActionButtonStyle: ButtonStyle {
     }
 }
 
-private struct LiveTranscriptPreviewCard: View {
+struct LiveTranscriptPreviewCard: View {
     @ObservedObject var viewModel: AppViewModel
 
     var body: some View {
@@ -739,23 +740,6 @@ private struct RecorderProcessingProfileView: View {
                     }
                 )
 
-                processingRow(
-                    title: "Live preview",
-                    detail: livePreviewDetail,
-                    control: {
-                        Toggle(
-                            "Enable English-only live transcript preview while recording",
-                            isOn: Binding(
-                                get: { viewModel.isLiveTranscriptionEnabled },
-                                set: { viewModel.setLiveTranscriptionEnabled($0) }
-                            )
-                        )
-                        .labelsHidden()
-                        .toggleStyle(.switch)
-                        .tint(DS.ColorToken.fgPrimary)
-                        .disabled(!viewModel.isLiveTranscriptionSupported || isLockedDuringCapture)
-                    }
-                )
             }
 
             if viewModel.isSpeakerDiarizationEnabled {
@@ -916,15 +900,6 @@ private struct RecorderProcessingProfileView: View {
         return "Turn this on if you want Lorre to assign speaker labels automatically after capture."
     }
 
-    private var livePreviewDetail: String {
-        if !viewModel.isLiveTranscriptionSupported {
-            return "Not available in this build. The final transcript still runs after you stop."
-        }
-        if viewModel.isLiveTranscriptionEnabled {
-            return "Shows an English-only preview while recording. Final post-pass remains the source of truth."
-        }
-        return "Capture first, then let Lorre transcribe after you stop."
-    }
 }
 
 struct ProcessingPipelineView: View {

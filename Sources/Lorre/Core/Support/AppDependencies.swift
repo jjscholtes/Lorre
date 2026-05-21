@@ -39,11 +39,11 @@ struct AppDependencies {
         modelPreparationComponentsSummary = "Parakeet v3 ASR • Cohere quality pass on demand • CTC vocabulary boost • Silero VAD • Speaker enrollment • VBx / Sortformer / LS-EEND diarizers • Live Parakeet EOU"
         #else
         speakerEnrollmentService = FluidAudioSpeakerEnrollmentService()
-        transcriptionService = MockTranscriptionService()
-        diarizationService = MockSpeakerDiarizationService()
-        fluidAudioStatus = "FluidAudio unavailable in this build; using mock ASR + diarization"
+        transcriptionService = UnavailableTranscriptionService()
+        diarizationService = UnavailableSpeakerDiarizationService()
+        fluidAudioStatus = "FluidAudio unavailable in this build; transcription is disabled"
         runtimeCapabilities = .mock
-        modelPreparationComponentsSummary = "Mock ASR • Mock diarizer"
+        modelPreparationComponentsSummary = "FluidAudio unavailable"
         #endif
 
         #if canImport(AVFoundation)

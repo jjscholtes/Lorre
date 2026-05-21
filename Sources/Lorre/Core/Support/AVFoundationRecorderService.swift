@@ -295,20 +295,27 @@ actor AVFoundationRecorderService: RecorderService {
         }
 
         func discardRecognitionWork() async {
+            let work = takeRecognitionWorkForDiscard()
+            work.workerToCancel?.cancel()
+            await work.queueToFinish?.finish()
+        }
+
+        private func takeRecognitionWorkForDiscard() -> (
+            queueToFinish: RecognitionBufferQueue?,
+            workerToCancel: Task<Void, Never>?
+        ) {
             let queueToFinish: RecognitionBufferQueue?
             let workerToCancel: Task<Void, Never>?
 
             lock.lock()
+            defer { lock.unlock() }
             queueToFinish = recognitionQueue
             recognitionQueue = nil
             recognizer = nil
             workerToCancel = recognitionWorkerTask
             recognitionWorkerTask = nil
             recognitionWorkerGeneration += 1
-            lock.unlock()
-
-            workerToCancel?.cancel()
-            await queueToFinish?.finish()
+            return (queueToFinish, workerToCancel)
         }
 
         private func startRecognitionWorkerIfNeeded() {
@@ -765,11 +772,12 @@ actor AVFoundationRecorderService: RecorderService {
         let monitorBridge = LiveMonitorBridgeBox()
         let combinedMeter = request.source == .microphoneAndSystemAudio ? CombinedMeterBox() : nil
         let shouldRunLiveTranscription: Bool
-        if isLiveTranscriptionEnabled {
+        if request.liveTranscriptionEnabled {
             shouldRunLiveTranscription = await supportsLiveTranscription(for: request.source)
         } else {
             shouldRunLiveTranscription = false
         }
+        isLiveTranscriptionEnabled = shouldRunLiveTranscription
         if shouldRunLiveTranscription {
             monitorBridge.prepareRecognitionBuffering()
         }

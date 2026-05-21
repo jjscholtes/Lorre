@@ -189,11 +189,19 @@ actor KnownSpeakerStore {
 
         let base = samplesDirectoryURL.standardizedFileURL
         let candidate = base.appendingPathComponent(trimmed, isDirectory: false).standardizedFileURL
-        let basePath = base.path(percentEncoded: false)
+        let basePath = Self.normalizedDirectoryPath(base.path(percentEncoded: false))
         let candidatePath = candidate.path(percentEncoded: false)
         guard candidatePath == basePath || candidatePath.hasPrefix(basePath + "/") else {
             throw LorreError.persistenceFailed("Known speaker reference clip is outside the samples directory.")
         }
         return candidate
+    }
+
+    private static func normalizedDirectoryPath(_ path: String) -> String {
+        var normalized = path
+        while normalized.count > 1 && normalized.hasSuffix("/") {
+            normalized.removeLast()
+        }
+        return normalized
     }
 }

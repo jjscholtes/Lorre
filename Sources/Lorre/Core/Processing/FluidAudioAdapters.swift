@@ -28,11 +28,13 @@ private final class SerialProgressDispatcher: @unchecked Sendable {
     }
 
     func drain() async {
-        let task: Task<Void, Never>?
+        await currentTail()?.value
+    }
+
+    private func currentTail() -> Task<Void, Never>? {
         lock.lock()
-        task = tail
-        lock.unlock()
-        await task?.value
+        defer { lock.unlock() }
+        return tail
     }
 }
 #endif
@@ -837,11 +839,13 @@ actor FluidAudioDiarizationService: SpeakerDiarizationService {
         }
 
         func drain() async {
-            let task: Task<Void, Never>?
+            await currentTail()?.value
+        }
+
+        private func currentTail() -> Task<Void, Never>? {
             lock.lock()
-            task = tail
-            lock.unlock()
-            await task?.value
+            defer { lock.unlock() }
+            return tail
         }
     }
 

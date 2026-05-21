@@ -17,7 +17,7 @@ actor AppSettingsStore {
         }
 
         let data = try Data(contentsOf: fileURL)
-        return try Self.decoder.decode(AppSettings.self, from: data)
+        return try Self.decoder.decode(AppSettings.self, from: data).migratedToCurrentSchema
     }
 
     @discardableResult
@@ -229,7 +229,7 @@ actor AppSettingsStore {
     }
 
     func save(_ settings: AppSettings) throws {
-        let encoded = try Self.encoder.encode(settings)
+        let encoded = try Self.encoder.encode(settings.migratedToCurrentSchema)
         try AtomicFileWriter.write(encoded, to: fileURL)
     }
 

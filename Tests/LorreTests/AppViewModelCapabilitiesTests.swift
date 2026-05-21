@@ -1,7 +1,10 @@
-import XCTest
+import Testing
 @testable import Lorre
 
-final class AppViewModelCapabilitiesTests: XCTestCase {
+@Suite("AppViewModelCapabilitiesTests")
+struct AppViewModelCapabilitiesTests {
+
+    @Test
     func testPrepareModelsUsesRuntimeCapabilitiesInsteadOfStatusStringParsing() async throws {
         let root = makeTemporaryRoot(named: "AppViewModelCapabilities")
         let recorder = ControlledRecorderService()
@@ -42,6 +45,8 @@ final class AppViewModelCapabilitiesTests: XCTestCase {
         XCTAssertEqual(ensureModelsReadyCallCount, 1)
     }
 
+
+    @Test
     func testPrepareModelsSkipsSpeakerEnrollmentWhenCapabilityDisabled() async throws {
         let root = makeTemporaryRoot(named: "AppViewModelCapabilities")
         let recorder = ControlledRecorderService()
@@ -82,6 +87,8 @@ final class AppViewModelCapabilitiesTests: XCTestCase {
         XCTAssertEqual(ensureModelsReadyCallCount, 0)
     }
 
+
+    @Test
     func testSetVocabularyBoostingEnabledShowsUnavailableBannerWhenUnsupported() async throws {
         let root = makeTemporaryRoot(named: "AppViewModelCapabilities")
         let dependencies = makeTestDependencies(

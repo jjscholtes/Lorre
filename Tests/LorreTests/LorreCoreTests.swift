@@ -2,16 +2,21 @@ import Foundation
 #if canImport(AVFoundation)
 @preconcurrency import AVFoundation
 #endif
-import XCTest
+import Testing
 @testable import Lorre
 
-final class LorreCoreTests: XCTestCase {
+@Suite("LorreCoreTests")
+struct LorreCoreTests {
+
+    @Test
     func testFormattersUseHourFieldsForLongDurations() {
         XCTAssertEqual(Formatters.duration(14_400), "04:00:00")
         XCTAssertEqual(Formatters.timestamp(ms: 14_400_123), "04:00:00.123")
     }
 
     #if canImport(AVFoundation)
+
+    @Test
     func testMixToCanonicalFileKeepsDifferentSampleRatesOnTargetTimeline() throws {
         let root = makeTemporaryRoot(named: "LorreMixTimelineTests")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -78,6 +83,8 @@ final class LorreCoreTests: XCTestCase {
     }
     #endif
 
+
+    @Test
     func testFileSessionStoreRoundTripPersistsSessionAndTranscript() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("LorreTests-\(UUID().uuidString)", isDirectory: true)
@@ -132,6 +139,8 @@ final class LorreCoreTests: XCTestCase {
         XCTAssertEqual(loadedTranscript?.alternatives, [])
     }
 
+
+    @Test
     func testMarkdownExporterIncludesSpeakerAndTimestamps() async throws {
         let exporter = MarkdownExportService()
         let session = SessionManifest(
@@ -164,6 +173,8 @@ final class LorreCoreTests: XCTestCase {
         XCTAssertTrue(markdown.contains("Second line"))
     }
 
+
+    @Test
     func testMarkdownExporterEscapesUserControlledMarkdown() {
         let exporter = MarkdownExportService()
         let session = SessionManifest(
@@ -187,6 +198,8 @@ final class LorreCoreTests: XCTestCase {
         XCTAssertTrue(markdown.contains("\\# not a heading &lt;script&gt;"))
     }
 
+
+    @Test
     func testMarkdownExporterUsesSafeCodeSpanForSpeakerIDsWithBackticks() {
         let exporter = MarkdownExportService()
         let session = SessionManifest(
@@ -211,6 +224,8 @@ final class LorreCoreTests: XCTestCase {
         XCTAssertFalse(markdown.contains("`S\\`1`"))
     }
 
+
+    @Test
     func testDiarizationSpeakerLabelNormalizerAvoidsNumericCollisions() {
         XCTAssertEqual(DiarizationSpeakerLabelNormalizer.normalize("0"), "S1")
         XCTAssertEqual(DiarizationSpeakerLabelNormalizer.normalize("1"), "S2")
@@ -219,6 +234,8 @@ final class LorreCoreTests: XCTestCase {
         XCTAssertEqual(DiarizationSpeakerLabelNormalizer.normalize(""), "UNK")
     }
 
+
+    @Test
     func testTranscriptAssemblerAssignsSpeakerByLargestOverlap() {
         let sessionID = UUID()
         let transcription = TranscriptionResult(
@@ -246,6 +263,8 @@ final class LorreCoreTests: XCTestCase {
         XCTAssertTrue(transcript.speakers.contains(where: { $0.id == "UNK" }))
     }
 
+
+    @Test
     func testTranscriptAssemblerCarriesAlternativeDrafts() {
         let sessionID = UUID()
         let alternative = TranscriptAlternative(
@@ -275,6 +294,8 @@ final class LorreCoreTests: XCTestCase {
         XCTAssertEqual(transcript.alternatives, [alternative])
     }
 
+
+    @Test
     func testTranscriptAssemblerSplitsSentenceAtSpeakerTransition() {
         let sessionID = UUID()
         let transcription = TranscriptionResult(
@@ -308,6 +329,8 @@ final class LorreCoreTests: XCTestCase {
         }))
     }
 
+
+    @Test
     func testTranscriptAssemblerUsesTokenTimingsToSplitMidSentenceSpeakerChange() {
         let sessionID = UUID()
         let utterance = TranscriptionUtterance(
@@ -349,6 +372,8 @@ final class LorreCoreTests: XCTestCase {
         }))
     }
 
+
+    @Test
     func testTranscriptAssemblerDoesNotSplitSentenceOnWeakMidUtteranceSpeakerBlip() {
         let sessionID = UUID()
         let utterance = TranscriptionUtterance(
@@ -388,6 +413,8 @@ final class LorreCoreTests: XCTestCase {
     }
 
     @MainActor
+
+    @Test
     func testWorkStageRouteUsesSelectionInsteadOfRecordingMode() {
         let readySession = SessionManifest(
             id: UUID(uuidString: "AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA")!,
@@ -411,6 +438,8 @@ final class LorreCoreTests: XCTestCase {
     }
 
     @MainActor
+
+    @Test
     func testSessionActionModelMatchesSessionState() async throws {
         let root = makeTemporaryRoot(named: "LorreSessionActionModelTests")
         let store = FileSessionStore(baseURL: root)
@@ -500,6 +529,8 @@ final class LorreCoreTests: XCTestCase {
     }
 
     @MainActor
+
+    @Test
     func testRetryProcessingImmediatelyMovesFailedSessionToProcessingState() async throws {
         let root = makeTemporaryRoot(named: "LorreRetryLocalStateTests")
         let store = FileSessionStore(baseURL: root)
@@ -540,6 +571,8 @@ final class LorreCoreTests: XCTestCase {
     }
 
     @MainActor
+
+    @Test
     func testCuePlaybackPresentationMentionsActiveRecordingWhenArchiveAudioExists() {
         let presentation = AppViewModel.makeCuePlaybackPresentation(
             hasRetainedAudio: true,
@@ -553,6 +586,8 @@ final class LorreCoreTests: XCTestCase {
     }
 
     @MainActor
+
+    @Test
     func testCuePlaybackPresentationPrioritizesPrivacyModeOverRecordingState() {
         let presentation = AppViewModel.makeCuePlaybackPresentation(
             hasRetainedAudio: false,
@@ -566,6 +601,8 @@ final class LorreCoreTests: XCTestCase {
     }
 
     @MainActor
+
+    @Test
     func testImportFailureRemovesCreatedSession() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("LorreImportFailureCleanupTests-\(UUID().uuidString)", isDirectory: true)
@@ -592,6 +629,8 @@ final class LorreCoreTests: XCTestCase {
         XCTAssertTrue(sessions.isEmpty)
     }
 
+
+    @Test
     func testLocalMetricsLoggerWritesJSONLines() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("LorreMetricsTests-\(UUID().uuidString)", isDirectory: true)
@@ -610,6 +649,8 @@ final class LorreCoreTests: XCTestCase {
         XCTAssertTrue(lines[1].contains("\"name\":\"record_started\""))
     }
 
+
+    @Test
     func testAppSettingsStorePersistsModelPreparationSnapshot() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("LorreSettingsTests-\(UUID().uuidString)", isDirectory: true)
@@ -627,9 +668,11 @@ final class LorreCoreTests: XCTestCase {
 
         let loaded = try await store.load()
         XCTAssertEqual(loaded.modelPreparation, snapshot)
-        XCTAssertEqual(loaded.schemaVersion, 3)
+        XCTAssertEqual(loaded.schemaVersion, AppSettings.currentSchemaVersion)
     }
 
+
+    @Test
     func testAppSettingsStorePersistsModelRegistryConfiguration() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("LorreRegistrySettingsTests-\(UUID().uuidString)", isDirectory: true)
@@ -647,6 +690,8 @@ final class LorreCoreTests: XCTestCase {
         XCTAssertEqual(loaded.modelRegistryConfiguration.summaryLabel, "https://models.internal.example.com")
     }
 
+
+    @Test
     func testAppSettingsStorePersistsSelectedRecordingSource() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("LorreRecordingSourceSettingTests-\(UUID().uuidString)", isDirectory: true)
@@ -661,6 +706,8 @@ final class LorreCoreTests: XCTestCase {
         XCTAssertEqual(loaded.selectedRecordingSource, .microphoneAndSystemAudio)
     }
 
+
+    @Test
     func testFileSessionStoreDeleteRemovesSessionDirectory() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("LorreDeleteTests-\(UUID().uuidString)", isDirectory: true)
@@ -690,6 +737,8 @@ final class LorreCoreTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: sessionDir.path(percentEncoded: false)))
     }
 
+
+    @Test
     func testFileSessionStoreDoesNotRecreateDeletedSessionOnUpdateOrTranscriptSave() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("LorreDeletedSessionMutationTests-\(UUID().uuidString)", isDirectory: true)
@@ -736,6 +785,8 @@ final class LorreCoreTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: sessionDir.path(percentEncoded: false)))
     }
 
+
+    @Test
     func testFileSessionStoreSurfacesDamagedSessionManifests() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("LorreDamagedSessionTests-\(UUID().uuidString)", isDirectory: true)
@@ -757,6 +808,8 @@ final class LorreCoreTests: XCTestCase {
         XCTAssertTrue(sessions.first?.lastErrorMessage?.contains("Session metadata could not be read") == true)
     }
 
+
+    @Test
     func testAppSettingsStoreMigratesLegacySettingsWithoutFoldersField() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("LorreLegacySettingsTests-\(UUID().uuidString)", isDirectory: true)
@@ -769,6 +822,7 @@ final class LorreCoreTests: XCTestCase {
             "preparedAt" : "2026-02-23T10:20:01Z",
             "runtimeStatusSummary" : "FluidAudio available"
           },
+          "isLiveTranscriptionEnabled" : false,
           "schemaVersion" : 1,
           "updatedAt" : "2026-02-23T10:20:01Z"
         }
@@ -786,8 +840,10 @@ final class LorreCoreTests: XCTestCase {
         XCTAssertEqual(folders[0].name, "Interviews")
         let settings = try await store.load()
         XCTAssertEqual(settings.folders.count, 1)
+        XCTAssertEqual(settings.schemaVersion, AppSettings.currentSchemaVersion)
         XCTAssertTrue(settings.isSpeakerDiarizationEnabled)
         XCTAssertEqual(settings.diarizationEngine, .offlineVbx)
+        XCTAssertTrue(settings.isLiveTranscriptionEnabled)
         XCTAssertEqual(settings.diarizationExpectedSpeakerCountHint, .auto)
         XCTAssertFalse(settings.isDiarizationDebugExportEnabled)
         XCTAssertTrue(settings.modelRegistryConfiguration.isDefault)
@@ -799,6 +855,8 @@ final class LorreCoreTests: XCTestCase {
         XCTAssertEqual(settings.liveTranscriptionPreset, .balanced)
     }
 
+
+    @Test
     func testAppSettingsStoreRejectsDuplicateFolderNamesWithoutHanging() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("LorreDuplicateFolderTests-\(UUID().uuidString)", isDirectory: true)
@@ -819,6 +877,8 @@ final class LorreCoreTests: XCTestCase {
         XCTAssertEqual(folders.count, 1)
     }
 
+
+    @Test
     func testSessionStoreAtomicTransformPreservesConcurrentSessionFields() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("LorreAtomicSessionUpdateTests-\(UUID().uuidString)", isDirectory: true)
@@ -859,6 +919,8 @@ final class LorreCoreTests: XCTestCase {
         XCTAssertEqual(loaded?.dirtyFlags.titleEdited, true)
     }
 
+
+    @Test
     func testTranscriptDocumentDecodesLegacyJSONWithEmptyAlternatives() throws {
         let legacyJSON = """
         {
@@ -898,6 +960,8 @@ final class LorreCoreTests: XCTestCase {
         XCTAssertEqual(transcript.segments.first?.text, "Legacy transcript")
     }
 
+
+    @Test
     func testSessionManifestDecodesLegacyJSONWithoutRecordingSourceMetadata() throws {
         let legacyJSON = """
         {
@@ -930,6 +994,8 @@ final class LorreCoreTests: XCTestCase {
         XCTAssertTrue(session.hasRetainedAudio)
     }
 
+
+    @Test
     func testSessionManifestRequiresPersistedID() throws {
         let legacyJSONWithoutID = """
         {
@@ -954,6 +1020,8 @@ final class LorreCoreTests: XCTestCase {
         XCTAssertThrowsError(try decoder.decode(SessionManifest.self, from: Data(legacyJSONWithoutID.utf8)))
     }
 
+
+    @Test
     func testKnownSpeakerStoreRoundTripCopiesReferenceClipAndDeletesIt() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("LorreKnownSpeakerTests-\(UUID().uuidString)", isDirectory: true)
@@ -991,6 +1059,8 @@ final class LorreCoreTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: storedReferenceURL!.path(percentEncoded: false)))
     }
 
+
+    @Test
     func testKnownSpeakerStoreRejectsReferenceClipTraversalLoadedFromJSON() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("LorreKnownSpeakerTraversalTests-\(UUID().uuidString)", isDirectory: true)
@@ -1014,6 +1084,8 @@ final class LorreCoreTests: XCTestCase {
         XCTAssertNil(url)
     }
 
+
+    @Test
     func testKnownSpeakerStoreUpdateReplacesEmbeddingAndReferenceClip() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("LorreKnownSpeakerUpdateTests-\(UUID().uuidString)", isDirectory: true)
@@ -1061,6 +1133,8 @@ final class LorreCoreTests: XCTestCase {
         XCTAssertEqual(String(decoding: storedData, as: UTF8.self), "updated")
     }
 
+
+    @Test
     func testKnownSpeakerStoreKeepsExistingReferenceClipWhenReplacementCopyFails() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("LorreKnownSpeakerAtomicReplaceTests-\(UUID().uuidString)", isDirectory: true)
@@ -1102,6 +1176,8 @@ final class LorreCoreTests: XCTestCase {
         }
     }
 
+
+    @Test
     func testAppSettingsStoreRenameDeleteFolderAndPersistSidebarExpansion() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("LorreFolderSettingsTests-\(UUID().uuidString)", isDirectory: true)
@@ -1128,6 +1204,8 @@ final class LorreCoreTests: XCTestCase {
         XCTAssertEqual(loaded.sidebarExpandedFolderIDs, [interviews.id])
     }
 
+
+    @Test
     func testAppSettingsStoreRenameFolderRejectsDuplicateNamesCaseInsensitive() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("LorreFolderRenameDuplicateTests-\(UUID().uuidString)", isDirectory: true)
@@ -1148,6 +1226,8 @@ final class LorreCoreTests: XCTestCase {
         }
     }
 
+
+    @Test
     func testAppSettingsStorePersistsSpeakerDiarizationToggle() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("LorreDiarizationSettingTests-\(UUID().uuidString)", isDirectory: true)
@@ -1165,6 +1245,8 @@ final class LorreCoreTests: XCTestCase {
         XCTAssertTrue(enabled.isSpeakerDiarizationEnabled)
     }
 
+
+    @Test
     func testAppSettingsStorePersistsDiarizationTuningOptions() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("LorreDiarizationTuningSettingTests-\(UUID().uuidString)", isDirectory: true)
@@ -1182,6 +1264,8 @@ final class LorreCoreTests: XCTestCase {
         XCTAssertTrue(loaded.isDiarizationDebugExportEnabled)
     }
 
+
+    @Test
     func testAppSettingsStorePersistsDiarizationEngine() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("LorreDiarizationEngineSettingTests-\(UUID().uuidString)", isDirectory: true)
@@ -1199,23 +1283,27 @@ final class LorreCoreTests: XCTestCase {
         XCTAssertEqual(lsEend.diarizationEngine, .lsEend)
     }
 
+
+    @Test
     func testAppSettingsStorePersistsLiveTranscriptionToggle() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("LorreLiveTranscriptSettingTests-\(UUID().uuidString)", isDirectory: true)
         let store = AppSettingsStore(baseURL: root)
 
         let initial = try await store.load()
-        XCTAssertFalse(initial.isLiveTranscriptionEnabled)
-
-        _ = try await store.setLiveTranscriptionEnabled(true)
-        let enabled = try await store.load()
-        XCTAssertTrue(enabled.isLiveTranscriptionEnabled)
+        XCTAssertTrue(initial.isLiveTranscriptionEnabled)
 
         _ = try await store.setLiveTranscriptionEnabled(false)
         let disabled = try await store.load()
         XCTAssertFalse(disabled.isLiveTranscriptionEnabled)
+
+        _ = try await store.setLiveTranscriptionEnabled(true)
+        let enabled = try await store.load()
+        XCTAssertTrue(enabled.isLiveTranscriptionEnabled)
     }
 
+
+    @Test
     func testAppSettingsStorePersistsBatchTranscriptionConfiguration() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("LorreBatchTranscriptionSettingTests-\(UUID().uuidString)", isDirectory: true)
@@ -1238,6 +1326,8 @@ final class LorreCoreTests: XCTestCase {
         XCTAssertEqual(loaded.batchTranscription.parallelChunkConcurrency, 8)
     }
 
+
+    @Test
     func testAppSettingsStorePersistsLiveTranscriptionPreset() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("LorreLivePresetSettingTests-\(UUID().uuidString)", isDirectory: true)
@@ -1251,6 +1341,8 @@ final class LorreCoreTests: XCTestCase {
         XCTAssertEqual(loaded.liveTranscriptionPreset, .highAccuracy)
     }
 
+
+    @Test
     func testAppSettingsStorePersistsDeleteAudioAfterTranscriptionToggle() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("LorreDeleteAudioSettingTests-\(UUID().uuidString)", isDirectory: true)
@@ -1268,6 +1360,8 @@ final class LorreCoreTests: XCTestCase {
         XCTAssertFalse(disabled.isDeleteAudioAfterTranscriptionEnabled)
     }
 
+
+    @Test
     func testAppSettingsStorePersistsVocabularyBoostingConfiguration() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("LorreVocabularyBoostingSettingTests-\(UUID().uuidString)", isDirectory: true)
@@ -1294,6 +1388,8 @@ final class LorreCoreTests: XCTestCase {
         XCTAssertTrue(reloaded.vocabularyBoosting.simpleFormatTerms.contains("FluidAudio"))
     }
 
+
+    @Test
     func testVocabularyBoostingSimpleFormatParserNormalizesRuntimeTerms() {
         let configuration = VocabularyBoostingConfiguration(
             isEnabled: true,
@@ -1316,6 +1412,8 @@ final class LorreCoreTests: XCTestCase {
         XCTAssertEqual(configuration.runtimeSimpleFormatTerms, "Lorre: lore, lora\nFluidAudio")
     }
 
+
+    @Test
     func testMockCohereQualityPassPreservesPrimaryTranscriptAndAddsAlternative() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("LorreMockCohereQualityPassTests-\(UUID().uuidString)", isDirectory: true)
@@ -1341,7 +1439,28 @@ final class LorreCoreTests: XCTestCase {
         XCTAssertEqual(result.alternatives.first?.languageCode, "nl")
     }
 
+
+    @Test
+    func testUnavailableTranscriptionServiceFailsInsteadOfReturningMockTranscript() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("LorreUnavailableTranscriptionTests-\(UUID().uuidString)", isDirectory: true)
+        let audioURL = root.appendingPathComponent("audio.m4a")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try Data("audio".utf8).write(to: audioURL)
+
+        let service = UnavailableTranscriptionService()
+
+        do {
+            _ = try await service.transcribe(url: audioURL, sessionTitle: "Unavailable", source: .microphone)
+            XCTFail("Expected unavailable transcription to throw instead of returning mock text.")
+        } catch let error as LorreError {
+            XCTAssertTrue(error.localizedDescription.contains("FluidAudio is not linked"))
+        }
+    }
+
     #if canImport(AVFoundation) && canImport(FluidAudio)
+
+    @Test
     func testFluidAudioLivePresetMapsToSelectedStreamingModel() {
         XCTAssertEqual(
             FluidAudioLiveStreamingRecognizer.livePreviewModelFolderName(for: .lowLatency),
@@ -1358,6 +1477,8 @@ final class LorreCoreTests: XCTestCase {
         XCTAssertEqual(FluidAudioLiveStreamingRecognizer.livePreviewDebounceMilliseconds(for: .balanced), 1280)
     }
 
+
+    @Test
     func testLiveSpeakerHintConfidenceUsesClampedActivity() {
         XCTAssertEqual(FluidAudioLiveStreamingRecognizer.normalizedLiveSpeakerActivity(-0.4), 0)
         XCTAssertEqual(FluidAudioLiveStreamingRecognizer.normalizedLiveSpeakerActivity(0.72), 0.72)
@@ -1365,6 +1486,8 @@ final class LorreCoreTests: XCTestCase {
     }
     #endif
 
+
+    @Test
     func testTranscriptTextNormalizationSupportNormalizesSegmentTextPreservingMetadata() {
         let sessionID = UUID()
         let original = TranscriptDocument(
@@ -1410,6 +1533,8 @@ final class LorreCoreTests: XCTestCase {
         XCTAssertEqual(normalized.segments[1].text, "plain text")
     }
 
+
+    @Test
     func testTranscriptTextNormalizationSupportIgnoresEmptyNormalizerOutput() {
         let original = TranscriptDocument(
             sessionId: UUID(),
@@ -1427,6 +1552,8 @@ final class LorreCoreTests: XCTestCase {
         XCTAssertEqual(normalized, original)
     }
 
+
+    @Test
     func testProcessingCoordinatorWritesDiarizationDebugArtifactWhenEnabled() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("LorreDiarDebugArtifactTests-\(UUID().uuidString)", isDirectory: true)
@@ -1471,6 +1598,8 @@ final class LorreCoreTests: XCTestCase {
         XCTAssertTrue(text.contains("\"diarizationSpans\""))
     }
 
+
+    @Test
     func testProcessingCoordinatorPublishesDiarizationRunProgress() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("LorreDiarizationProgressTests-\(UUID().uuidString)", isDirectory: true)
@@ -1515,6 +1644,8 @@ final class LorreCoreTests: XCTestCase {
         )
     }
 
+
+    @Test
     func testProcessingCoordinatorCancellationDoesNotRecreateDeletedSession() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("LorreProcessingCancellationTests-\(UUID().uuidString)", isDirectory: true)
@@ -1565,6 +1696,8 @@ final class LorreCoreTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: sessionDir.path(percentEncoded: false)))
     }
 
+
+    @Test
     func testProcessingCoordinatorDeletesAudioArtifactsAfterSuccessfulTranscriptionWhenEnabled() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("LorreDeleteAudioAfterProcessingTests-\(UUID().uuidString)", isDirectory: true)
@@ -1614,6 +1747,8 @@ final class LorreCoreTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: sessionDir.appendingPathComponent("transcript.json").path(percentEncoded: false)))
     }
 
+
+    @Test
     func testTranscriptAssemblerPreservesRelabeledSpeakerAndSourceSpeakerID() {
         let sessionID = UUID()
         let transcription = TranscriptionResult(
@@ -1648,10 +1783,14 @@ final class LorreCoreTests: XCTestCase {
         XCTAssertEqual(transcript.speaker(for: "K1").safeDisplayName, "Alice")
     }
 
+
+    @Test
     func testDiarizationSpeakerCountHintPresetsIncludeExactOne() {
         XCTAssertTrue(DiarizationSpeakerCountHint.tuningPresets.contains(.exact(1)))
     }
 
+
+    @Test
     func testFluidAudioDiarizationServiceQualityTunedConfigEnablesEmbeddingSkipStrategy() {
         let config = FluidAudioDiarizationService.makeQualityTunedConfig(expectedSpeakers: .auto)
 
@@ -1668,6 +1807,8 @@ final class LorreCoreTests: XCTestCase {
         }
     }
 
+
+    @Test
     func testDiarizationResultCollapsesToDominantSpeakerWhenExactOneIsRequested() {
         let diarization = DiarizationResult(
             spans: [
@@ -1695,6 +1836,8 @@ final class LorreCoreTests: XCTestCase {
         XCTAssertEqual(collapsed.speakerProfiles.map(\.id), ["S5"])
     }
 
+
+    @Test
     func testAppViewModelStopRecordingDeletesDraftSessionWhenRecorderStopFails() async throws {
         let root = makeTemporaryRoot(named: "LorreStopFailureCleanupTests")
         let store = FileSessionStore(baseURL: root)
@@ -1729,6 +1872,8 @@ final class LorreCoreTests: XCTestCase {
         }
     }
 
+
+    @Test
     func testAppViewModelIgnoresRepeatedStartWhileStartupIsInFlight() async throws {
         let root = makeTemporaryRoot(named: "LorreStartReentrancyTests")
         let recorder = ControlledRecorderService(startDelay: .milliseconds(200))
@@ -1758,6 +1903,39 @@ final class LorreCoreTests: XCTestCase {
         XCTAssertEqual(startCallCount, 1)
     }
 
+
+    @Test
+    func testAppViewModelPassesLivePreviewRequestWhenSupportedAndEnabledByDefault() async throws {
+        let root = makeTemporaryRoot(named: "LorreLivePreviewStartRequestTests")
+        let recorder = ControlledRecorderService(
+            supportBySource: [
+                .microphone: true
+            ]
+        )
+        let viewModel = await MainActor.run {
+            AppViewModel(dependencies: makeTestDependencies(root: root, recorder: recorder))
+        }
+
+        await viewModel.start()
+        try await waitUntil {
+            await MainActor.run { viewModel.isLiveTranscriptionSupported && viewModel.isLiveTranscriptionEnabled }
+        }
+
+        await MainActor.run {
+            viewModel.startRecordingTapped()
+        }
+
+        try await waitUntil {
+            await recorder.lastStartRequest != nil
+        }
+
+        let request = await recorder.lastStartRequest
+        XCTAssertEqual(request?.source, .microphone)
+        XCTAssertEqual(request?.liveTranscriptionEnabled, true)
+    }
+
+
+    @Test
     func testAppViewModelRecordingSourceChangeIgnoresStaleAsyncSupportResults() async throws {
         let root = makeTemporaryRoot(named: "LorreRecordingSourceRaceTests")
         let recorder = ControlledRecorderService(
