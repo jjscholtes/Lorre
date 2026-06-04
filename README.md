@@ -35,77 +35,28 @@ That is what lets Lorre offer private, on-device transcription with speaker labe
 
 ## Architecture
 
-Lorre is split into a SwiftUI presentation layer, a `MainActor` app workflow model, protocol-backed core services, FluidAudio processing adapters, and local file-based persistence.
+At a high level, Lorre routes recording, import, review, and export workflows through a SwiftUI app model, then keeps processing and storage local to the Mac.
 
 ```mermaid
-flowchart TB
-  user["User"]
+flowchart LR
+  input["Audio input<br/>microphone, system audio, imports"]
+  ui["SwiftUI app<br/>recorder, shelf, transcript editor"]
+  workflow["AppViewModel<br/>session and workflow state"]
+  services["Core services<br/>record, play, process, export"]
+  engines["On-device engines<br/>FluidAudio + macOS media frameworks"]
+  storage["Local storage<br/>sessions, audio, transcripts, speakers, settings"]
+  exports["Exports<br/>Markdown, text, JSON"]
 
-  subgraph app["Lorre macOS app"]
-    entry["LorreApp<br/>SwiftUI app entry"]
-    views["SwiftUI feature views<br/>shelf, recorder, transcript review"]
-    viewModel["AppViewModel<br/>MainActor workflow state"]
-    dependencies["AppDependencies.live()<br/>production service wiring"]
-  end
-
-  subgraph core["Core services"]
-    recorder["AVFoundationRecorderService<br/>capture and live preview"]
-    playback["AVFoundationAudioPlaybackService<br/>cue playback"]
-    coordinator["ProcessingCoordinator<br/>prepare, transcribe, diarize, assemble, save"]
-    exporter["MarkdownExportService<br/>Markdown, text, JSON"]
-  end
-
-  subgraph processing["FluidAudio processing"]
-    transcription["FluidAudioTranscriptionService<br/>Parakeet batch ASR"]
-    diarization["FluidAudioDiarizationService<br/>VAD and speaker diarization"]
-    enrollment["FluidAudioSpeakerEnrollmentService<br/>known speaker embeddings"]
-    assembler["TranscriptAssembler<br/>normalized speaker segments"]
-  end
-
-  subgraph localData["Local data"]
-    sessions["FileSessionStore<br/>sessions, audio, transcripts, exports"]
-    speakers["KnownSpeakerStore<br/>speaker library"]
-    settings["AppSettingsStore<br/>preferences and model registry"]
-    metrics["LocalMetricsLogger<br/>local events"]
-    appSupport["~/Library/Application Support/Lorre/"]
-  end
-
-  fluidAudio["FluidAudio models<br/>on-device ASR, VAD, diarization"]
-  macOSMedia["macOS media frameworks<br/>AVFoundation and ScreenCaptureKit"]
-
-  user --> views
-  entry --> dependencies
-  entry --> views
-  dependencies --> viewModel
-  views --> viewModel
-  viewModel --> recorder
-  viewModel --> playback
-  viewModel --> coordinator
-  viewModel --> exporter
-  viewModel --> sessions
-  viewModel --> speakers
-  viewModel --> enrollment
-  viewModel --> settings
-  viewModel --> metrics
-  recorder --> macOSMedia
-  playback --> macOSMedia
-  recorder --> fluidAudio
-  coordinator --> transcription
-  coordinator --> diarization
-  coordinator --> assembler
-  transcription --> fluidAudio
-  diarization --> fluidAudio
-  enrollment --> fluidAudio
-  enrollment --> speakers
-  assembler --> sessions
-  exporter --> sessions
-  sessions --> appSupport
-  speakers --> appSupport
-  settings --> appSupport
-  metrics --> appSupport
+  input --> ui
+  ui --> workflow
+  workflow --> services
+  services --> engines
+  services <--> storage
+  storage --> ui
+  services --> exports
 ```
 
-For a recording or import, `AppViewModel` creates a local session, `ProcessingCoordinator` runs model preparation, transcription, optional diarization, and transcript assembly, and `FileSessionStore` persists the finished `transcript.json` beside the session audio and exports.
+All session data lives under `~/Library/Application Support/Lorre/` unless you export it.
 
 ## Requirements
 
