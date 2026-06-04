@@ -1328,6 +1328,42 @@ struct LorreCoreTests {
 
 
     @Test
+    func testParakeetV2BatchModeIsEnglishOnly() async throws {
+        XCTAssertTrue(
+            BatchTranscriptionConfiguration.availableModes(forLanguageCode: "EN")
+                .contains(.parakeetV2English)
+        )
+        XCTAssertFalse(
+            BatchTranscriptionConfiguration.availableModes(forLanguageCode: "NL")
+                .contains(.parakeetV2English)
+        )
+
+        let normalized = BatchTranscriptionConfiguration(
+            mode: .parakeetV2English,
+            languageCode: "nl",
+            parallelChunkConcurrency: 4
+        )
+        XCTAssertEqual(normalized.mode, .parakeetV3)
+        XCTAssertEqual(normalized.languageCode, "nl")
+
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("LorreParakeetV2EnglishOnlyTests-\(UUID().uuidString)", isDirectory: true)
+        let store = AppSettingsStore(baseURL: root)
+        _ = try await store.setBatchTranscriptionConfiguration(
+            BatchTranscriptionConfiguration(
+                mode: .parakeetV2English,
+                languageCode: "en",
+                parallelChunkConcurrency: 2
+            )
+        )
+
+        let loaded = try await store.load()
+        XCTAssertEqual(loaded.batchTranscription.mode, .parakeetV2English)
+        XCTAssertEqual(loaded.batchTranscription.languageCode, "en")
+    }
+
+
+    @Test
     func testAppSettingsStorePersistsLiveTranscriptionPreset() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("LorreLivePresetSettingTests-\(UUID().uuidString)", isDirectory: true)
@@ -1336,9 +1372,9 @@ struct LorreCoreTests {
         let initial = try await store.load()
         XCTAssertEqual(initial.liveTranscriptionPreset, .balanced)
 
-        _ = try await store.setLiveTranscriptionPreset(.highAccuracy)
+        _ = try await store.setLiveTranscriptionPreset(.nemotronBalanced)
         let loaded = try await store.load()
-        XCTAssertEqual(loaded.liveTranscriptionPreset, .highAccuracy)
+        XCTAssertEqual(loaded.liveTranscriptionPreset, .nemotronBalanced)
     }
 
 
@@ -1474,7 +1510,16 @@ struct LorreCoreTests {
             FluidAudioLiveStreamingRecognizer.livePreviewModelFolderName(for: .highAccuracy),
             "parakeet-eou-streaming/1280ms"
         )
+        XCTAssertEqual(
+            FluidAudioLiveStreamingRecognizer.livePreviewModelFolderName(for: .nemotronBalanced),
+            "nemotron-streaming/560ms"
+        )
+        XCTAssertEqual(
+            FluidAudioLiveStreamingRecognizer.livePreviewModelFolderName(for: .nemotronHighAccuracy),
+            "nemotron-streaming/1120ms"
+        )
         XCTAssertEqual(FluidAudioLiveStreamingRecognizer.livePreviewDebounceMilliseconds(for: .balanced), 1280)
+        XCTAssertEqual(FluidAudioLiveStreamingRecognizer.livePreviewDebounceMilliseconds(for: .nemotronBalanced), 0)
     }
 
 

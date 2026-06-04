@@ -158,6 +158,10 @@ final class AppViewModel: ObservableObject {
         isRecording || isStoppingRecording
     }
 
+    var isLiveEngineSelectionLocked: Bool {
+        isStartingRecording || isRecording || isStoppingRecording
+    }
+
     var isBrowsingArchivedSessionWhileRecording: Bool {
         hasActiveRecording && selectedSession != nil
     }
@@ -1235,7 +1239,7 @@ final class AppViewModel: ObservableObject {
                     await MainActor.run {
                         self.modelPreparationState = .preparing
                         self.modelPreparationStatusLine = "Warming live transcription"
-                        self.modelPreparationDetailLine = "Preparing Parakeet EOU streaming models for fast recorder startup…"
+                        self.modelPreparationDetailLine = "Preparing \(self.liveTranscriptionPreset.label) streaming models for fast recorder startup…"
                         self.modelPreparationProgress = max(self.modelPreparationProgress ?? 0.0, 0.90)
                     }
                     try await self.dependencies.recorder.prepareLiveTranscriptionEngine { [weak self] update in
@@ -1553,7 +1557,7 @@ final class AppViewModel: ObservableObject {
                 await self.dependencies.transcription.setBatchTranscriptionConfiguration(updated)
                 await self.dependencies.metrics.log(
                     name: "batch_transcription_mode_changed",
-                    attributes: ["mode": mode.rawValue]
+                    attributes: ["mode": updated.mode.rawValue]
                 )
                 await MainActor.run {
                     self.banner = AppBanner(
@@ -1579,6 +1583,7 @@ final class AppViewModel: ObservableObject {
         )
         guard updated != batchTranscriptionConfiguration else { return }
         let previous = batchTranscriptionConfiguration
+        let fellBackFromEnglishOnlyMode = previous.mode.isEnglishOnly && updated.mode != previous.mode
         batchTranscriptionConfiguration = updated
 
         Task { [weak self] in
@@ -1586,6 +1591,15 @@ final class AppViewModel: ObservableObject {
             do {
                 _ = try await self.dependencies.settings.setBatchTranscriptionConfiguration(updated)
                 await self.dependencies.transcription.setBatchTranscriptionConfiguration(updated)
+                if fellBackFromEnglishOnlyMode {
+                    await MainActor.run {
+                        self.banner = AppBanner(
+                            kind: .info,
+                            title: "Switched to Parakeet v3",
+                            message: "Parakeet v2 is English-only, so \(updated.languageCode.uppercased()) uses the multilingual v3 model."
+                        )
+                    }
+                }
             } catch {
                 await MainActor.run {
                     self.batchTranscriptionConfiguration = previous
@@ -1596,6 +1610,14 @@ final class AppViewModel: ObservableObject {
     }
 
     func setLiveTranscriptionPreset(_ preset: LiveTranscriptionPreset) {
+        guard !isLiveEngineSelectionLocked else {
+            banner = AppBanner(
+                kind: .info,
+                title: "Live engine locked",
+                message: "Finish or cancel the active recording before changing the live engine."
+            )
+            return
+        }
         guard liveTranscriptionPreset != preset else { return }
         let previous = liveTranscriptionPreset
         liveTranscriptionPreset = preset
@@ -1657,7 +1679,7 @@ final class AppViewModel: ObservableObject {
                         kind: .info,
                         title: "Live transcript \(isEnabled ? "enabled" : "disabled")",
                         message: isEnabled
-                            ? "New recordings can show an English-optimized live preview while recording. A multilingual v3 post-pass still runs after stop."
+                            ? "New recordings can show a live preview while recording. After stop, Lorre runs the selected final transcript pass."
                             : "Recordings will skip live transcript preview and process after stop as before."
                     )
                 }

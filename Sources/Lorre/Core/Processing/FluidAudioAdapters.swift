@@ -179,8 +179,9 @@ actor FluidAudioTranscriptionService: TranscriptionService {
         }
 
         let progressDispatcher = SerialProgressDispatcher()
+        let modelVersion = Self.asrModelVersion(for: batchTranscriptionConfiguration.mode)
         let models = try await AsrModels.downloadAndLoad(
-            version: .v3,
+            version: modelVersion,
             progressHandler: { progress in
                 guard let onProgress else { return }
                 let update = FluidAudioProgressSupport.makeUpdate(
@@ -238,8 +239,9 @@ actor FluidAudioTranscriptionService: TranscriptionService {
     func setBatchTranscriptionConfiguration(_ configuration: BatchTranscriptionConfiguration) async {
         let normalized = configuration.normalized
         let concurrencyChanged = normalized.parallelChunkConcurrency != batchTranscriptionConfiguration.parallelChunkConcurrency
+        let modelVersionChanged = Self.usesParakeetV2(normalized.mode) != Self.usesParakeetV2(batchTranscriptionConfiguration.mode)
         batchTranscriptionConfiguration = normalized
-        if concurrencyChanged {
+        if concurrencyChanged || modelVersionChanged {
             managerBox = nil
             initialized = false
         }
@@ -254,7 +256,7 @@ actor FluidAudioTranscriptionService: TranscriptionService {
         logger.debug("transcribing session=\"\(sessionTitle, privacy: .public)\" source=\(source.rawValue, privacy: .public)")
         var result = try await managerBox.transcribe(
             url,
-            language: parakeetLanguage(for: batchTranscriptionConfiguration.languageCode)
+            language: parakeetLanguageHint(for: batchTranscriptionConfiguration)
         )
         result = await applyVocabularyBoostingIfNeeded(to: result, audioURL: url)
         let speechWindows = await loadSpeechWindowsIfAvailable(from: url)
@@ -262,9 +264,10 @@ actor FluidAudioTranscriptionService: TranscriptionService {
         let utterances = buildUtterances(from: result, speechWindows: speechWindows, fallbackEndMs: fallbackEndMs)
         let alternatives = await makeAlternativesIfNeeded(for: url)
         let languageCode = batchTranscriptionConfiguration.languageCode
-        let engineName = result.ctcAppliedTerms?.isEmpty == false
-            ? "FluidAudio-AsrManager-v3+Vocabulary"
-            : "FluidAudio-AsrManager-v3"
+        let engineName = Self.engineName(
+            for: batchTranscriptionConfiguration.mode,
+            hasVocabularyBoost: result.ctcAppliedTerms?.isEmpty == false
+        )
 
         if !utterances.isEmpty {
             return TranscriptionResult(
@@ -390,6 +393,34 @@ actor FluidAudioTranscriptionService: TranscriptionService {
         let modelsBaseDirectory = AsrModels.defaultCacheDirectory().deletingLastPathComponent()
         try await DownloadUtils.downloadRepo(.cohereTranscribeCoreml, to: modelsBaseDirectory)
         return modelsBaseDirectory.appendingPathComponent(Repo.cohereTranscribeCoreml.folderName, isDirectory: true)
+    }
+
+    private static func asrModelVersion(for mode: BatchTranscriptionMode) -> AsrModelVersion {
+        usesParakeetV2(mode) ? .v2 : .v3
+    }
+
+    private static func usesParakeetV2(_ mode: BatchTranscriptionMode) -> Bool {
+        switch mode {
+        case .parakeetV2English:
+            return true
+        case .parakeetV3, .parakeetV3WithCohereQualityPass:
+            return false
+        }
+    }
+
+    private static func engineName(
+        for mode: BatchTranscriptionMode,
+        hasVocabularyBoost: Bool
+    ) -> String {
+        let baseName = usesParakeetV2(mode)
+            ? "FluidAudio-AsrManager-v2"
+            : "FluidAudio-AsrManager-v3"
+        return hasVocabularyBoost ? "\(baseName)+Vocabulary" : baseName
+    }
+
+    private func parakeetLanguageHint(for configuration: BatchTranscriptionConfiguration) -> Language? {
+        guard !Self.usesParakeetV2(configuration.mode) else { return nil }
+        return parakeetLanguage(for: configuration.languageCode)
     }
 
     private func parakeetLanguage(for languageCode: String) -> Language? {

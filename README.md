@@ -5,8 +5,8 @@ Lorre is a macOS transcription workspace for capturing or importing audio, proce
 ## Key features
 
 - Capture any conversation your way with `Microphone`, `System audio`, or `Microphone + system audio`.
-- See live transcription as you record, including mixed mic + system audio sessions.
-- Powered by `Parakeet TDT 0.6B v3`, a fast multilingual ASR model that runs on Apple's `Neural Engine` and automatically transcribes `25 European languages` right on your Mac.
+- See live transcription as you record, with selectable `Parakeet EOU` or `Nemotron` streaming previews for supported live workflows.
+- Powered by selectable `Parakeet TDT 0.6B v3` multilingual batch ASR and `Parakeet TDT 0.6B v2` for English-only batch transcripts, running on Apple's `Neural Engine` right on your Mac.
 - Supports automatic language detection across `25 European languages`, including Dutch, English, German, French, Spanish, and more.
 - Built on `FluidAudio` for local speech recognition, voice activity detection, and speaker diarization.
 - Keep your recordings and transcripts on your Mac for a private local workflow.
@@ -19,7 +19,7 @@ Lorre is a macOS transcription workspace for capturing or importing audio, proce
 
 [`FluidAudio`](https://github.com/FluidInference/FluidAudio) is the on-device speech engine behind Lorre. It is a Swift library for Apple devices that combines speech-to-text, voice activity detection, and speaker diarization in one local pipeline.
 
-Lorre uses FluidAudio's `Parakeet TDT 0.6B v3` model for final transcription. In simple terms, Parakeet is the ASR model that listens to your recording and turns spoken words into text. It supports automatic language detection across 25 European languages, while Lorre can use FluidAudio's faster streaming models to show a live preview while you are still recording.
+Lorre defaults to FluidAudio's `Parakeet TDT 0.6B v3` model for final transcription, and English-only workflows can choose `Parakeet TDT 0.6B v2` as a batch option. In simple terms, Parakeet is the ASR model that listens to your recording and turns spoken words into text. The v3 path supports automatic language detection across 25 European languages, while Lorre can use FluidAudio's faster `Parakeet EOU` or `Nemotron` streaming models to show a live preview while you are still recording.
 
 `ANE-optimized` means FluidAudio is tuned to run efficiently on Apple's Neural Engine, the part of Apple silicon designed for AI workloads. For a user, that usually means faster transcription, lower power use, and less pressure on the CPU and GPU.
 

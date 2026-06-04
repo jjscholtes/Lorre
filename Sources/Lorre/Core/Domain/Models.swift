@@ -963,13 +963,16 @@ struct VocabularyBoostingEntry: Equatable, Sendable {
 }
 
 enum BatchTranscriptionMode: String, Codable, CaseIterable, Equatable, Sendable {
+    case parakeetV2English
     case parakeetV3
     case parakeetV3WithCohereQualityPass
 
     var label: String {
         switch self {
+        case .parakeetV2English:
+            return "Parakeet v2 English"
         case .parakeetV3:
-            return "Parakeet v3"
+            return "Parakeet v3 multilingual"
         case .parakeetV3WithCohereQualityPass:
             return "Parakeet + Cohere"
         }
@@ -977,10 +980,21 @@ enum BatchTranscriptionMode: String, Codable, CaseIterable, Equatable, Sendable 
 
     var settingsSummary: String {
         switch self {
+        case .parakeetV2English:
+            return "English-only Parakeet path with tighter vocabulary recall."
         case .parakeetV3:
             return "Default timed transcript path with token timings and speaker alignment."
         case .parakeetV3WithCohereQualityPass:
             return "Adds a lazy Cohere alternate draft; timed rows still use Parakeet."
+        }
+    }
+
+    var isEnglishOnly: Bool {
+        switch self {
+        case .parakeetV2English:
+            return true
+        case .parakeetV3, .parakeetV3WithCohereQualityPass:
+            return false
         }
     }
 }
@@ -997,8 +1011,9 @@ struct BatchTranscriptionConfiguration: Codable, Equatable, Sendable {
         languageCode: String = "en",
         parallelChunkConcurrency: Int = 4
     ) {
-        self.mode = mode
-        self.languageCode = Self.normalizedLanguageCode(languageCode)
+        let normalizedLanguageCode = Self.normalizedLanguageCode(languageCode)
+        self.mode = Self.normalizedMode(mode, languageCode: normalizedLanguageCode)
+        self.languageCode = normalizedLanguageCode
         self.parallelChunkConcurrency = Self.normalizedConcurrency(parallelChunkConcurrency)
     }
 
@@ -1015,6 +1030,21 @@ struct BatchTranscriptionConfiguration: Codable, Equatable, Sendable {
         return trimmed.isEmpty ? "en" : trimmed
     }
 
+    static func availableModes(forLanguageCode languageCode: String) -> [BatchTranscriptionMode] {
+        let normalizedLanguageCode = normalizedLanguageCode(languageCode)
+        return BatchTranscriptionMode.allCases.filter { mode in
+            !mode.isEnglishOnly || normalizedLanguageCode == "en"
+        }
+    }
+
+    private static func normalizedMode(
+        _ mode: BatchTranscriptionMode,
+        languageCode: String
+    ) -> BatchTranscriptionMode {
+        guard mode.isEnglishOnly, languageCode != "en" else { return mode }
+        return .parakeetV3
+    }
+
     static func normalizedConcurrency(_ value: Int) -> Int {
         min(8, max(1, value))
     }
@@ -1024,26 +1054,36 @@ enum LiveTranscriptionPreset: String, Codable, CaseIterable, Equatable, Sendable
     case lowLatency
     case balanced
     case highAccuracy
+    case nemotronBalanced
+    case nemotronHighAccuracy
 
     var label: String {
         switch self {
         case .lowLatency:
-            return "Low latency"
+            return "Parakeet low latency"
         case .balanced:
-            return "Balanced"
+            return "Parakeet balanced"
         case .highAccuracy:
-            return "High accuracy"
+            return "Parakeet high accuracy"
+        case .nemotronBalanced:
+            return "Nemotron balanced"
+        case .nemotronHighAccuracy:
+            return "Nemotron high accuracy"
         }
     }
 
     var settingsSummary: String {
         switch self {
         case .lowLatency:
-            return "160 ms chunks for faster partials."
+            return "Parakeet EOU with 160 ms chunks for faster partials."
         case .balanced:
-            return "320 ms chunks for the default latency and quality balance."
+            return "Parakeet EOU with 320 ms chunks for the default latency and quality balance."
         case .highAccuracy:
-            return "1280 ms chunks for steadier live text with more delay."
+            return "Parakeet EOU with 1280 ms chunks for steadier live text with more delay."
+        case .nemotronBalanced:
+            return "Nemotron English streaming with 560 ms chunks; higher live quality with more compute."
+        case .nemotronHighAccuracy:
+            return "Nemotron English streaming with 1120 ms chunks; steadiest live text with more delay."
         }
     }
 }

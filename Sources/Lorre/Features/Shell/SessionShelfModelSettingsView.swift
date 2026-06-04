@@ -229,7 +229,12 @@ struct ModelStatusPanelView: View {
                     )
 
                     Menu {
-                        ForEach(BatchTranscriptionMode.allCases, id: \.self) { mode in
+                        ForEach(
+                            BatchTranscriptionConfiguration.availableModes(
+                                forLanguageCode: viewModel.batchTranscriptionConfiguration.languageCode
+                            ),
+                            id: \.self
+                        ) { mode in
                             Button {
                                 viewModel.setBatchTranscriptionMode(mode)
                             } label: {
@@ -282,10 +287,12 @@ struct ModelStatusPanelView: View {
                 .zIndex(activeTooltipRowID == "asr-engine" ? 100 : 0)
 
                 HStack(alignment: .top, spacing: DS.Space.x2) {
+                    let isLiveEngineLocked = viewModel.isLiveEngineSelectionLocked
+
                     settingsLabelCell(
                         id: "live-preset",
-                        label: "Live Preset",
-                        tooltip: "Choose the live transcription latency and quality balance for the recorder preview."
+                        label: "Live Engine",
+                        tooltip: "Choose the streaming ASR model and latency/quality balance for the recorder preview."
                     )
 
                     Menu {
@@ -310,12 +317,23 @@ struct ModelStatusPanelView: View {
                         }
                     }
                     .buttonStyle(SecondaryControlButtonStyle())
+                    .disabled(isLiveEngineLocked)
+                    .help(isLiveEngineLocked ? "Finish or cancel the active recording to change the live engine." : "")
                     .frame(width: settingsToggleColumnWidth, alignment: .leading)
 
-                    Text(viewModel.liveTranscriptionPreset.settingsSummary)
-                        .font(DS.FontStyle.helper)
-                        .foregroundStyle(DS.ColorToken.fgSecondary)
-                        .lineLimit(2)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(viewModel.liveTranscriptionPreset.settingsSummary)
+                            .font(DS.FontStyle.helper)
+                            .foregroundStyle(DS.ColorToken.fgSecondary)
+                            .lineLimit(2)
+
+                        if isLiveEngineLocked {
+                            Text("Finish or cancel the active recording to change the live engine.")
+                                .font(DS.FontStyle.helper)
+                                .foregroundStyle(DS.ColorToken.fgTertiary)
+                                .lineLimit(2)
+                        }
+                    }
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .padding(.vertical, DS.Space.x1)

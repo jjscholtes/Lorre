@@ -475,7 +475,7 @@ struct LiveTranscriptPreviewCard: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
 
-            Text("Live preview is English-only. Final post-pass (Parakeet v3) usually performs better for Dutch + English.")
+            Text("Live preview is best for quick feedback. The final post-pass uses the selected batch ASR mode for the saved transcript.")
                 .font(DS.FontStyle.helper)
                 .foregroundStyle(DS.ColorToken.fgTertiary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -531,14 +531,14 @@ private struct RecorderLivePreviewQuickAccessView: View {
 
     private var toggleControl: some View {
         Toggle(
-            "Enable English-only live transcript preview while recording",
+            "Enable live transcript preview while recording",
             isOn: Binding(
                 get: { viewModel.isLiveTranscriptionEnabled },
                 set: { viewModel.setLiveTranscriptionEnabled($0) }
             )
         )
         .labelsHidden()
-        .accessibilityLabel("Enable English-only live transcript preview while recording")
+        .accessibilityLabel("Enable live transcript preview while recording")
         .toggleStyle(.switch)
         .tint(DS.ColorToken.fgPrimary)
         .disabled(isToggleDisabled)
@@ -560,17 +560,17 @@ private struct RecorderLivePreviewQuickAccessView: View {
         if isLockedDuringCapture {
             return "Finish or cancel the current recording to change live preview"
         }
-        return "Show an English-only live transcript preview while recording"
+        return "Show a live transcript preview while recording"
     }
 
     private var statusDescription: String {
         if !viewModel.isLiveTranscriptionSupported {
-            return "English-only Live Preview is not available in this build. Your recording will still be transcribed after you stop."
+            return "Live Preview is not available in this build. Your recording will still be transcribed after you stop."
         }
         if viewModel.isLiveTranscriptionEnabled {
-            return "Shows a live transcript while recording (English only). After you stop, Lorre runs the full final transcript."
+            return "Shows a live transcript while recording. After you stop, Lorre runs the selected final transcript pass."
         }
-        return "English-only Live Preview is off. Lorre will transcribe the audio after you stop."
+        return "Live Preview is off. Lorre will transcribe the audio after you stop."
     }
 }
 
@@ -886,7 +886,7 @@ private struct RecorderProcessingProfileView: View {
         if !viewModel.isLiveTranscriptionSupported {
             live = "Live preview is unavailable in this build."
         } else if viewModel.isLiveTranscriptionEnabled {
-            live = "An English-only preview appears while recording."
+            live = "A live preview appears while recording."
         } else {
             live = "No live preview during capture."
         }
