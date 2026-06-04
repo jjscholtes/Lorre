@@ -21,6 +21,11 @@ struct SessionShelfView: View {
     var body: some View {
         ScrollView(.vertical) {
             LazyVStack(alignment: .leading, spacing: DS.Space.x4) {
+                ModelStatusCompactPanelView(
+                    viewModel: viewModel,
+                    isShowingSettings: $isShowingModelSettings
+                )
+
                 VStack(alignment: .leading, spacing: DS.Space.x2) {
                     Text("Lorre")
                         .font(DS.FontStyle.appTitle)
@@ -235,10 +240,6 @@ struct SessionShelfView: View {
                     }
                 }
 
-                ModelStatusCompactPanelView(
-                    viewModel: viewModel,
-                    isShowingSettings: $isShowingModelSettings
-                )
             }
             .padding(DS.Space.x4)
             .frame(maxWidth: .infinity, alignment: .leading)
