@@ -113,6 +113,70 @@ actor AppSettingsStore {
     }
 
     @discardableResult
+    func saveAutomaticMarkdownExportConfiguration(
+        _ configuration: AutomaticMarkdownExportConfiguration
+    ) async throws -> AppSettings {
+        var settings = try loadFromDisk()
+        settings.automaticMarkdownExport = configuration
+        settings.updatedAt = Date()
+        try save(settings)
+        return settings
+    }
+
+    @discardableResult
+    func setAutomaticMarkdownExportEnabled(_ isEnabled: Bool) async throws -> AppSettings {
+        var settings = try loadFromDisk()
+        settings.automaticMarkdownExport = AutomaticMarkdownExportConfiguration(
+            isEnabled: isEnabled,
+            folderPath: settings.automaticMarkdownExport.folderPath
+        )
+        settings.updatedAt = Date()
+        try save(settings)
+        return settings
+    }
+
+    @discardableResult
+    func setAutomaticMarkdownExportFolderURL(_ folderURL: URL?) async throws -> AppSettings {
+        var settings = try loadFromDisk()
+        settings.automaticMarkdownExport = AutomaticMarkdownExportConfiguration(
+            isEnabled: folderURL != nil,
+            folderPath: folderURL?.path(percentEncoded: false)
+        )
+        settings.updatedAt = Date()
+        try save(settings)
+        return settings
+    }
+
+    @discardableResult
+    func saveGlobalDictationConfiguration(
+        _ configuration: GlobalDictationConfiguration
+    ) async throws -> AppSettings {
+        var settings = try loadFromDisk()
+        settings.globalDictation = configuration
+        settings.updatedAt = Date()
+        try save(settings)
+        return settings
+    }
+
+    @discardableResult
+    func setGlobalDictationEnabled(_ isEnabled: Bool) async throws -> AppSettings {
+        var settings = try loadFromDisk()
+        settings.globalDictation.isEnabled = isEnabled
+        settings.updatedAt = Date()
+        try save(settings)
+        return settings
+    }
+
+    @discardableResult
+    func setGlobalDictationShortcut(_ shortcut: GlobalDictationShortcutChoice) async throws -> AppSettings {
+        var settings = try loadFromDisk()
+        settings.globalDictation.shortcut = shortcut
+        settings.updatedAt = Date()
+        try save(settings)
+        return settings
+    }
+
+    @discardableResult
     func saveVocabularyBoosting(_ configuration: VocabularyBoostingConfiguration) async throws -> AppSettings {
         var settings = try loadFromDisk()
         settings.vocabularyBoosting = VocabularyBoostingConfiguration(

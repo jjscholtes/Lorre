@@ -56,6 +56,12 @@ struct ModelStatusCompactPanelView: View {
                     if viewModel.isVocabularyBoostingEffectivelyEnabled {
                         Text("Vocab On")
                     }
+                    if viewModel.isAutomaticMarkdownExportEnabled {
+                        Text("Auto MD")
+                    }
+                    if viewModel.isGlobalDictationEnabled {
+                        Text("Dictation")
+                    }
                     if viewModel.isCustomModelRegistryConfigured {
                         Text("Mirror")
                     }
@@ -106,6 +112,8 @@ struct ModelStatusCompactPanelView: View {
         viewModel.isDiarizationDebugExportEnabled
             || viewModel.isTranscriptConfidenceVisible
             || viewModel.isVocabularyBoostingEffectivelyEnabled
+            || viewModel.isAutomaticMarkdownExportEnabled
+            || viewModel.isGlobalDictationEnabled
             || viewModel.isCustomModelRegistryConfigured
     }
 
@@ -371,6 +379,91 @@ struct ModelStatusPanelView: View {
                     .font(DS.FontStyle.helper)
                     .foregroundStyle(DS.ColorToken.fgSecondary)
                     .lineLimit(3)
+                }
+
+                toggleSettingsRow(
+                    id: "auto-md-export",
+                    label: "Auto MD Export",
+                    tooltip: "Writes a Markdown copy to your selected folder after each transcript finishes.",
+                    isOn: viewModel.isAutomaticMarkdownExportEnabled,
+                    isDisabled: !viewModel.hasAutomaticMarkdownExportFolder,
+                    setValue: viewModel.setAutomaticMarkdownExportEnabled
+                ) {
+                    VStack(alignment: .leading, spacing: DS.Space.x1_5) {
+                        Text(viewModel.automaticMarkdownExportSummary)
+                            .font(DS.FontStyle.helper)
+                            .foregroundStyle(DS.ColorToken.fgSecondary)
+                            .lineLimit(2)
+
+                        HStack(spacing: DS.Space.x2) {
+                            Button("Choose Folder") {
+                                viewModel.chooseAutomaticMarkdownExportFolder()
+                            }
+                            .buttonStyle(SecondaryControlButtonStyle())
+
+                            Button("Clear") {
+                                viewModel.clearAutomaticMarkdownExportFolder()
+                            }
+                            .buttonStyle(SecondaryControlButtonStyle())
+                            .disabled(!viewModel.hasAutomaticMarkdownExportFolder)
+                        }
+
+                        Text(viewModel.automaticMarkdownExportFolderPath ?? "No folder selected")
+                            .font(DS.FontStyle.mono)
+                            .foregroundStyle(DS.ColorToken.fgTertiary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+                }
+
+                toggleSettingsRow(
+                    id: "global-dictation",
+                    label: "Global Dictation",
+                    tooltip: "Lets Lorre record a short microphone snippet from another app and insert the transcribed text into the focused text field.",
+                    isOn: viewModel.isGlobalDictationEnabled,
+                    setValue: viewModel.setGlobalDictationEnabled
+                ) {
+                    VStack(alignment: .leading, spacing: DS.Space.x1_5) {
+                        Text(viewModel.globalDictationSummary)
+                            .font(DS.FontStyle.helper)
+                            .foregroundStyle(DS.ColorToken.fgSecondary)
+                            .lineLimit(3)
+
+                        HStack(spacing: DS.Space.x2) {
+                            Menu {
+                                ForEach(viewModel.globalDictationShortcutChoices) { shortcut in
+                                    Button(shortcut.label) {
+                                        viewModel.setGlobalDictationShortcut(shortcut)
+                                    }
+                                }
+                            } label: {
+                                HStack(spacing: DS.Space.x1) {
+                                    Text(viewModel.globalDictationShortcutLabel)
+                                    Image(systemName: "chevron.down")
+                                        .font(.system(size: 10, weight: .semibold))
+                                }
+                            }
+                            .buttonStyle(SecondaryControlButtonStyle())
+
+                            Button(viewModel.globalDictationPhase == .listening ? "Stop Dictation" : "Start Now") {
+                                if viewModel.globalDictationPhase == .listening {
+                                    viewModel.stopGlobalDictationTapped()
+                                } else {
+                                    viewModel.startGlobalDictationTapped()
+                                }
+                            }
+                            .buttonStyle(SecondaryControlButtonStyle())
+                            .disabled(
+                                !viewModel.isGlobalDictationEnabled ||
+                                    (viewModel.globalDictationPhase.isBusy && viewModel.globalDictationPhase != .listening)
+                            )
+                        }
+
+                        Text("Requires Microphone and Accessibility permission. Secure fields are blocked.")
+                            .font(DS.FontStyle.helper)
+                            .foregroundStyle(DS.ColorToken.fgTertiary)
+                            .lineLimit(2)
+                    }
                 }
 
                 toggleSettingsRow(

@@ -1109,8 +1109,45 @@ struct SessionFolder: Identifiable, Codable, Equatable, Sendable {
     }
 }
 
+struct AutomaticMarkdownExportConfiguration: Codable, Equatable, Sendable {
+    var isEnabled: Bool
+    var folderPath: String?
+
+    init(isEnabled: Bool = false, folderPath: String? = nil) {
+        let normalizedPath = Self.normalizedFolderPath(folderPath)
+        self.folderPath = normalizedPath
+        self.isEnabled = isEnabled && normalizedPath != nil
+    }
+
+    var folderURL: URL? {
+        guard let folderPath else { return nil }
+        return URL(fileURLWithPath: folderPath, isDirectory: true)
+    }
+
+    var hasFolder: Bool {
+        folderPath != nil
+    }
+
+    var folderDisplayName: String {
+        guard let folderPath else { return "No folder selected" }
+        let url = URL(fileURLWithPath: folderPath, isDirectory: true)
+        let name = url.lastPathComponent.trimmingCharacters(in: .whitespacesAndNewlines)
+        return name.isEmpty ? folderPath : name
+    }
+
+    static func normalizedFolderPath(_ rawValue: String?) -> String? {
+        guard let rawValue else { return nil }
+        let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        let expanded = (trimmed as NSString).expandingTildeInPath
+        return URL(fileURLWithPath: expanded, isDirectory: true)
+            .standardizedFileURL
+            .path(percentEncoded: false)
+    }
+}
+
 struct AppSettings: Codable, Equatable, Sendable {
-    static let currentSchemaVersion = 4
+    static let currentSchemaVersion = 6
 
     var schemaVersion: Int
     var updatedAt: Date
@@ -1127,6 +1164,8 @@ struct AppSettings: Codable, Equatable, Sendable {
     var vocabularyBoosting: VocabularyBoostingConfiguration
     var batchTranscription: BatchTranscriptionConfiguration
     var liveTranscriptionPreset: LiveTranscriptionPreset
+    var automaticMarkdownExport: AutomaticMarkdownExportConfiguration
+    var globalDictation: GlobalDictationConfiguration
     var folders: [SessionFolder]
     var sidebarExpandedViewFilterIDs: [String]
     var sidebarExpandedFolderIDs: [String]
@@ -1147,6 +1186,8 @@ struct AppSettings: Codable, Equatable, Sendable {
         vocabularyBoosting: VocabularyBoostingConfiguration = .init(),
         batchTranscription: BatchTranscriptionConfiguration = .init(),
         liveTranscriptionPreset: LiveTranscriptionPreset = .balanced,
+        automaticMarkdownExport: AutomaticMarkdownExportConfiguration = .init(),
+        globalDictation: GlobalDictationConfiguration = .init(),
         folders: [SessionFolder] = [],
         sidebarExpandedViewFilterIDs: [String] = [],
         sidebarExpandedFolderIDs: [String] = []
@@ -1166,6 +1207,8 @@ struct AppSettings: Codable, Equatable, Sendable {
         self.vocabularyBoosting = vocabularyBoosting
         self.batchTranscription = batchTranscription.normalized
         self.liveTranscriptionPreset = liveTranscriptionPreset
+        self.automaticMarkdownExport = automaticMarkdownExport
+        self.globalDictation = globalDictation
         self.folders = folders
         self.sidebarExpandedViewFilterIDs = sidebarExpandedViewFilterIDs
         self.sidebarExpandedFolderIDs = sidebarExpandedFolderIDs
@@ -1187,6 +1230,8 @@ struct AppSettings: Codable, Equatable, Sendable {
         case vocabularyBoosting
         case batchTranscription
         case liveTranscriptionPreset
+        case automaticMarkdownExport
+        case globalDictation
         case folders
         case sidebarExpandedViewFilterIDs
         case sidebarExpandedFolderIDs
@@ -1216,6 +1261,14 @@ struct AppSettings: Codable, Equatable, Sendable {
             try container.decodeIfPresent(BatchTranscriptionConfiguration.self, forKey: .batchTranscription)
         )?.normalized ?? .init()
         self.liveTranscriptionPreset = try container.decodeIfPresent(LiveTranscriptionPreset.self, forKey: .liveTranscriptionPreset) ?? .balanced
+        self.automaticMarkdownExport = try container.decodeIfPresent(
+            AutomaticMarkdownExportConfiguration.self,
+            forKey: .automaticMarkdownExport
+        ) ?? .init()
+        self.globalDictation = try container.decodeIfPresent(
+            GlobalDictationConfiguration.self,
+            forKey: .globalDictation
+        ) ?? .init()
         self.folders = try container.decodeIfPresent([SessionFolder].self, forKey: .folders) ?? []
         self.sidebarExpandedViewFilterIDs = try container.decodeIfPresent([String].self, forKey: .sidebarExpandedViewFilterIDs) ?? []
         self.sidebarExpandedFolderIDs = try container.decodeIfPresent([String].self, forKey: .sidebarExpandedFolderIDs) ?? []
@@ -1244,6 +1297,8 @@ struct AppSettings: Codable, Equatable, Sendable {
         try container.encode(vocabularyBoosting, forKey: .vocabularyBoosting)
         try container.encode(batchTranscription.normalized, forKey: .batchTranscription)
         try container.encode(liveTranscriptionPreset, forKey: .liveTranscriptionPreset)
+        try container.encode(automaticMarkdownExport, forKey: .automaticMarkdownExport)
+        try container.encode(globalDictation, forKey: .globalDictation)
         try container.encode(folders, forKey: .folders)
         try container.encode(sidebarExpandedViewFilterIDs, forKey: .sidebarExpandedViewFilterIDs)
         try container.encode(sidebarExpandedFolderIDs, forKey: .sidebarExpandedFolderIDs)

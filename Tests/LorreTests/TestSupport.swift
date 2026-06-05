@@ -370,6 +370,64 @@ final class TestPlaybackService: AudioPlaybackService {
     }
 }
 
+final class TestGlobalDictationHotKeyService: GlobalDictationHotKeyService, @unchecked Sendable {
+    private(set) var registeredShortcut: GlobalDictationShortcutChoice?
+    private var handler: (@MainActor @Sendable () -> Void)?
+    var shouldFailRegistration = false
+
+    func register(
+        shortcut: GlobalDictationShortcutChoice,
+        handler: @escaping @MainActor @Sendable () -> Void
+    ) throws {
+        if shouldFailRegistration {
+            throw LorreError.persistenceFailed("Shortcut unavailable.")
+        }
+        registeredShortcut = shortcut
+        self.handler = handler
+    }
+
+    func unregister() {
+        registeredShortcut = nil
+        handler = nil
+    }
+
+    func fire() {
+        Task { @MainActor in
+            self.handler?()
+        }
+    }
+}
+
+@MainActor
+final class TestGlobalTextInsertionService: GlobalTextInsertionService {
+    var preparation: GlobalTextInsertionPreparation = .ready(
+        GlobalTextInsertionTarget(
+            appName: "Notes",
+            bundleIdentifier: "com.apple.Notes",
+            processIdentifier: 42,
+            capturedAt: Date(timeIntervalSince1970: 1_000)
+        )
+    )
+    var insertionResult: GlobalTextInsertionResult = .inserted
+    private(set) var insertedText: String?
+    private(set) var copiedText: String?
+
+    func prepareTarget(promptForPermission: Bool) -> GlobalTextInsertionPreparation {
+        _ = promptForPermission
+        return preparation
+    }
+
+    func insert(_ text: String, into target: GlobalTextInsertionTarget) async -> GlobalTextInsertionResult {
+        _ = target
+        insertedText = text
+        return insertionResult
+    }
+
+    func copyToClipboard(_ text: String) {
+        copiedText = text
+    }
+}
+
 actor ProcessingUpdateCollector {
     private var updates: [ProcessingUpdate] = []
 
@@ -394,6 +452,8 @@ func makeTestDependencies(
     transcription: any TranscriptionService = MockTranscriptionService(),
     diarization: any SpeakerDiarizationService = MockSpeakerDiarizationService(),
     speakerEnrollment: any SpeakerEnrollmentService = TestSpeakerEnrollmentService(),
+    globalDictationHotKey: any GlobalDictationHotKeyService = TestGlobalDictationHotKeyService(),
+    globalTextInsertion: any GlobalTextInsertionService = TestGlobalTextInsertionService(),
     runtimeCapabilities: RuntimeCapabilities = .mock,
     fluidAudioStatus: String = "Test runtime",
     modelPreparationComponentsSummary: String = "Test components"
@@ -416,6 +476,8 @@ func makeTestDependencies(
         speakerEnrollment: speakerEnrollment,
         playback: TestPlaybackService(),
         exporter: MarkdownExportService(),
+        globalDictationHotKey: globalDictationHotKey,
+        globalTextInsertion: globalTextInsertion,
         processingCoordinator: coordinator,
         metrics: LocalMetricsLogger(baseURL: root),
         fluidAudioStatus: fluidAudioStatus,

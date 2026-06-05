@@ -89,3 +89,23 @@ protocol AudioPlaybackService: AnyObject {
     func seek(to seconds: Double)
     func setPlaybackRate(_ rate: Double)
 }
+
+protocol GlobalDictationHotKeyService: AnyObject, Sendable {
+    func register(
+        shortcut: GlobalDictationShortcutChoice,
+        handler: @escaping @MainActor @Sendable () -> Void
+    ) throws
+
+    func unregister()
+}
+
+protocol GlobalTextInsertionService: Sendable {
+    @MainActor
+    func prepareTarget(promptForPermission: Bool) -> GlobalTextInsertionPreparation
+
+    @MainActor
+    func insert(_ text: String, into target: GlobalTextInsertionTarget) async -> GlobalTextInsertionResult
+
+    @MainActor
+    func copyToClipboard(_ text: String)
+}

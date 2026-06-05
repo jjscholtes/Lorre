@@ -10,6 +10,8 @@ struct AppDependencies {
     let speakerEnrollment: any SpeakerEnrollmentService
     let playback: any AudioPlaybackService
     let exporter: any ExportService
+    let globalDictationHotKey: any GlobalDictationHotKeyService
+    let globalTextInsertion: any GlobalTextInsertionService
     let processingCoordinator: ProcessingCoordinator
     let metrics: LocalMetricsLogger
     let fluidAudioStatus: String
@@ -59,6 +61,18 @@ struct AppDependencies {
         let playback: any AudioPlaybackService = UnsupportedAudioPlaybackService()
         #endif
 
+        #if canImport(AppKit) && canImport(Carbon)
+        let globalDictationHotKey: any GlobalDictationHotKeyService = CarbonGlobalDictationHotKeyService()
+        #else
+        let globalDictationHotKey: any GlobalDictationHotKeyService = DisabledGlobalDictationHotKeyService()
+        #endif
+
+        #if canImport(AppKit)
+        let globalTextInsertion: any GlobalTextInsertionService = MacGlobalTextInsertionService()
+        #else
+        let globalTextInsertion: any GlobalTextInsertionService = DisabledGlobalTextInsertionService()
+        #endif
+
         let coordinator = ProcessingCoordinator(
             store: store,
             transcriptionService: transcriptionService,
@@ -74,6 +88,8 @@ struct AppDependencies {
             speakerEnrollment: speakerEnrollmentService,
             playback: playback,
             exporter: MarkdownExportService(),
+            globalDictationHotKey: globalDictationHotKey,
+            globalTextInsertion: globalTextInsertion,
             processingCoordinator: coordinator,
             metrics: LocalMetricsLogger(),
             fluidAudioStatus: fluidAudioStatus,

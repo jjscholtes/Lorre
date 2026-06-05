@@ -65,6 +65,14 @@ final class AppViewModel: ObservableObject {
     @Published private(set) var isLiveTranscriptionEnabled: Bool = false
     @Published private(set) var isDeleteAudioAfterTranscriptionEnabled: Bool = false
     @Published private(set) var isTranscriptConfidenceVisible: Bool = false
+    @Published private(set) var automaticMarkdownExportConfiguration = AutomaticMarkdownExportConfiguration()
+    @Published private(set) var globalDictationConfiguration = GlobalDictationConfiguration()
+    @Published private(set) var globalDictationPhase: GlobalDictationPhase = .idle
+    @Published private(set) var globalDictationElapsedSeconds: Double = 0
+    @Published private(set) var globalDictationMeterSamples: [Double] = Array(repeating: 0.08, count: 28)
+    @Published private(set) var globalDictationTranscriptText: String = ""
+    @Published private(set) var globalDictationTargetLabel: String?
+    @Published private(set) var globalDictationStatusLine: String = "Ready"
     @Published private(set) var liveTranscriptPreview: LiveTranscriptPreview?
     @Published private(set) var knownSpeakers: [KnownSpeaker] = []
     @Published var knownSpeakerDraftName: String = ""
@@ -77,10 +85,14 @@ final class AppViewModel: ObservableObject {
     private var started = false
     private var recordingClockTask: Task<Void, Never>?
     private var liveMeterTask: Task<Void, Never>?
+    private var globalDictationClockTask: Task<Void, Never>?
+    private var globalDictationMeterTask: Task<Void, Never>?
     private var playbackMonitorTask: Task<Void, Never>?
     private var waveformLoadTask: Task<Void, Never>?
     private var recordingSourceChangeTask: Task<Void, Never>?
     private var currentRecordingStartedAt: Date?
+    private var currentGlobalDictationStartedAt: Date?
+    private var currentGlobalDictationTarget: GlobalTextInsertionTarget?
     private var currentProcessingTasks: [UUID: Task<Void, Never>] = [:]
     private var currentProcessingTaskTokens: [UUID: UUID] = [:]
     private let transcriptPersistenceQueue = TranscriptPersistenceQueue()
@@ -109,6 +121,8 @@ final class AppViewModel: ObservableObject {
     deinit {
         recordingClockTask?.cancel()
         liveMeterTask?.cancel()
+        globalDictationClockTask?.cancel()
+        globalDictationMeterTask?.cancel()
         playbackMonitorTask?.cancel()
         waveformLoadTask?.cancel()
         recordingSourceChangeTask?.cancel()
@@ -126,6 +140,7 @@ final class AppViewModel: ObservableObject {
         }
         await refreshLiveTranscriptionSupport(for: selectedRecordingSource)
         await restoreModelPreparationStateFromSettings()
+        registerGlobalDictationHotKeyIfNeeded()
         await reloadKnownSpeakers()
         await reloadFolders()
         await reloadSessions(selectMostRecentIfNeeded: true)
@@ -141,6 +156,96 @@ final class AppViewModel: ObservableObject {
 
     var isCustomModelRegistryConfigured: Bool {
         !currentModelRegistryConfiguration().isDefault
+    }
+
+    var isAutomaticMarkdownExportEnabled: Bool {
+        automaticMarkdownExportConfiguration.isEnabled
+    }
+
+    var hasAutomaticMarkdownExportFolder: Bool {
+        automaticMarkdownExportConfiguration.hasFolder
+    }
+
+    var automaticMarkdownExportFolderLabel: String {
+        automaticMarkdownExportConfiguration.folderDisplayName
+    }
+
+    var automaticMarkdownExportFolderPath: String? {
+        automaticMarkdownExportConfiguration.folderPath
+    }
+
+    var automaticMarkdownExportSummary: String {
+        if automaticMarkdownExportConfiguration.isEnabled {
+            return "Writes a Markdown copy after each transcript finishes."
+        }
+        if automaticMarkdownExportConfiguration.hasFolder {
+            return "Folder selected. Turn on automatic Markdown export to use it."
+        }
+        return "Choose a folder to enable automatic Markdown export."
+    }
+
+    var isGlobalDictationEnabled: Bool {
+        globalDictationConfiguration.isEnabled
+    }
+
+    var globalDictationShortcutChoices: [GlobalDictationShortcutChoice] {
+        GlobalDictationShortcutChoice.allCases
+    }
+
+    var globalDictationShortcutLabel: String {
+        globalDictationConfiguration.shortcut.label
+    }
+
+    var globalDictationSummary: String {
+        if globalDictationConfiguration.isEnabled {
+            return "Press \(globalDictationShortcutLabel) in another app to dictate into the focused text field."
+        }
+        return "Off. Enable it to dictate short snippets into other macOS apps."
+    }
+
+    var isGlobalDictationBusy: Bool {
+        globalDictationPhase.isBusy
+    }
+
+    var isGlobalDictationOverlayVisible: Bool {
+        globalDictationPhase != .idle
+    }
+
+    var globalDictationTitle: String {
+        switch globalDictationPhase {
+        case .idle:
+            return "Global Dictation"
+        case .listening:
+            return "Listening"
+        case .transcribing:
+            return "Transcribing"
+        case .inserting:
+            return "Inserting text"
+        case .inserted:
+            return "Text inserted"
+        case .failed:
+            return "Dictation needs attention"
+        }
+    }
+
+    var globalDictationDetail: String {
+        switch globalDictationPhase {
+        case .idle:
+            return globalDictationSummary
+        case .listening:
+            return "Dictating for \(globalDictationTargetLabel ?? "focused app"). Press \(globalDictationShortcutLabel) again or choose Stop to insert."
+        case .transcribing:
+            return globalDictationStatusLine
+        case .inserting:
+            return "Sending text to \(globalDictationTargetLabel ?? "focused app")."
+        case .inserted:
+            return "Inserted into \(globalDictationTargetLabel ?? "the focused text field")."
+        case .failed:
+            if globalDictationTranscriptText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                return globalDictationStatusLine
+            }
+            return "\(globalDictationStatusLine) The dictated text is still available to copy."
+        }
     }
 
     var customVocabularyTermLineCount: Int {
@@ -159,7 +264,7 @@ final class AppViewModel: ObservableObject {
     }
 
     var isLiveEngineSelectionLocked: Bool {
-        isStartingRecording || isRecording || isStoppingRecording
+        isStartingRecording || isRecording || isStoppingRecording || isGlobalDictationBusy
     }
 
     var isBrowsingArchivedSessionWhileRecording: Bool {
@@ -550,7 +655,7 @@ final class AppViewModel: ObservableObject {
     }
 
     func startRecordingTapped() {
-        guard !isStartingRecording, !isRecording, !isStoppingRecording else { return }
+        guard !isStartingRecording, !isRecording, !isStoppingRecording, !isGlobalDictationBusy else { return }
         let source = selectedRecordingSource
         let enableLiveTranscript = isLiveTranscriptionSupported && isLiveTranscriptionEnabled
         stopPlaybackAndResetState()
@@ -1726,7 +1831,7 @@ final class AppViewModel: ObservableObject {
     }
 
     func setRecordingSource(_ source: RecordingSource) {
-        guard !isStartingRecording, !isRecording, !isStoppingRecording else { return }
+        guard !isStartingRecording, !isRecording, !isStoppingRecording, !isGlobalDictationBusy else { return }
         guard selectedRecordingSource != source else { return }
 
         let previousSource = selectedRecordingSource
@@ -1785,6 +1890,239 @@ final class AppViewModel: ObservableObject {
                     self.presentError(error, defaultTitle: "Could not save transcript option")
                 }
             }
+        }
+    }
+
+    func setAutomaticMarkdownExportEnabled(_ isEnabled: Bool) {
+        guard automaticMarkdownExportConfiguration.isEnabled != isEnabled else { return }
+        guard !isEnabled || automaticMarkdownExportConfiguration.hasFolder else {
+            banner = AppBanner(
+                kind: .info,
+                title: "Choose export folder",
+                message: "Select a folder before turning on automatic Markdown export."
+            )
+            return
+        }
+
+        let previous = automaticMarkdownExportConfiguration
+        automaticMarkdownExportConfiguration = AutomaticMarkdownExportConfiguration(
+            isEnabled: isEnabled,
+            folderPath: previous.folderPath
+        )
+
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                _ = try await self.dependencies.settings.setAutomaticMarkdownExportEnabled(isEnabled)
+                await self.dependencies.metrics.log(
+                    name: "automatic_markdown_export_changed",
+                    attributes: ["enabled": isEnabled ? "true" : "false"]
+                )
+                await MainActor.run {
+                    self.banner = AppBanner(
+                        kind: .info,
+                        title: "Automatic Markdown export \(isEnabled ? "enabled" : "disabled")",
+                        message: isEnabled
+                            ? "New transcripts will export to \(self.automaticMarkdownExportFolderLabel)."
+                            : "New transcripts will stay in Lorre until you export them manually."
+                    )
+                }
+            } catch {
+                await MainActor.run {
+                    self.automaticMarkdownExportConfiguration = previous
+                    self.presentError(error, defaultTitle: "Could not save export setting")
+                }
+            }
+        }
+    }
+
+    func chooseAutomaticMarkdownExportFolder() {
+        guard let folderURL = chooseAutomaticMarkdownExportFolderURL() else { return }
+        setAutomaticMarkdownExportFolder(folderURL)
+    }
+
+    func clearAutomaticMarkdownExportFolder() {
+        setAutomaticMarkdownExportFolder(nil)
+    }
+
+    func setAutomaticMarkdownExportFolder(_ folderURL: URL?) {
+        let previous = automaticMarkdownExportConfiguration
+        let updated = AutomaticMarkdownExportConfiguration(
+            isEnabled: folderURL != nil,
+            folderPath: folderURL?.path(percentEncoded: false)
+        )
+        guard updated != previous else { return }
+        automaticMarkdownExportConfiguration = updated
+
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                _ = try await self.dependencies.settings.setAutomaticMarkdownExportFolderURL(folderURL)
+                await self.dependencies.metrics.log(
+                    name: "automatic_markdown_export_folder_changed",
+                    attributes: [
+                        "configured": folderURL == nil ? "false" : "true"
+                    ]
+                )
+                await MainActor.run {
+                    self.banner = AppBanner(
+                        kind: .info,
+                        title: folderURL == nil ? "Automatic export folder cleared" : "Automatic export folder set",
+                        message: folderURL == nil
+                            ? "Automatic Markdown export is off until you choose another folder."
+                            : "New transcripts will export Markdown to \(self.automaticMarkdownExportFolderLabel)."
+                    )
+                }
+            } catch {
+                await MainActor.run {
+                    self.automaticMarkdownExportConfiguration = previous
+                    self.presentError(error, defaultTitle: "Could not save export folder")
+                }
+            }
+        }
+    }
+
+    func setGlobalDictationEnabled(_ isEnabled: Bool) {
+        guard globalDictationConfiguration.isEnabled != isEnabled else { return }
+        let previous = globalDictationConfiguration
+        var updated = previous
+        updated.isEnabled = isEnabled
+
+        globalDictationConfiguration = updated
+        do {
+            try applyGlobalDictationHotKeyRegistration(for: updated)
+        } catch {
+            globalDictationConfiguration = previous
+            registerGlobalDictationHotKeyIfNeeded()
+            presentError(error, defaultTitle: "Could not enable global dictation")
+            return
+        }
+
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                _ = try await self.dependencies.settings.setGlobalDictationEnabled(isEnabled)
+                await self.dependencies.metrics.log(
+                    name: "global_dictation_setting_changed",
+                    attributes: ["enabled": isEnabled ? "true" : "false"]
+                )
+                await MainActor.run {
+                    self.banner = AppBanner(
+                        kind: .info,
+                        title: "Global dictation \(isEnabled ? "enabled" : "disabled")",
+                        message: isEnabled
+                            ? "Press \(self.globalDictationShortcutLabel) from another app to dictate into the focused text field."
+                            : "The global shortcut is no longer active."
+                    )
+                }
+            } catch {
+                await MainActor.run {
+                    self.globalDictationConfiguration = previous
+                    self.registerGlobalDictationHotKeyIfNeeded()
+                    self.presentError(error, defaultTitle: "Could not save global dictation setting")
+                }
+            }
+        }
+    }
+
+    func setGlobalDictationShortcut(_ shortcut: GlobalDictationShortcutChoice) {
+        guard globalDictationConfiguration.shortcut != shortcut else { return }
+        let previous = globalDictationConfiguration
+        var updated = previous
+        updated.shortcut = shortcut
+
+        globalDictationConfiguration = updated
+        do {
+            try applyGlobalDictationHotKeyRegistration(for: updated)
+        } catch {
+            globalDictationConfiguration = previous
+            registerGlobalDictationHotKeyIfNeeded()
+            presentError(error, defaultTitle: "Could not set global dictation shortcut")
+            return
+        }
+
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                _ = try await self.dependencies.settings.setGlobalDictationShortcut(shortcut)
+                await self.dependencies.metrics.log(
+                    name: "global_dictation_shortcut_changed",
+                    attributes: ["shortcut": shortcut.rawValue]
+                )
+                await MainActor.run {
+                    self.banner = AppBanner(
+                        kind: .info,
+                        title: "Global dictation shortcut updated",
+                        message: "Use \(shortcut.label) to start or stop dictation."
+                    )
+                }
+            } catch {
+                await MainActor.run {
+                    self.globalDictationConfiguration = previous
+                    self.registerGlobalDictationHotKeyIfNeeded()
+                    self.presentError(error, defaultTitle: "Could not save global dictation shortcut")
+                }
+            }
+        }
+    }
+
+    func startGlobalDictationTapped() {
+        startGlobalDictation()
+    }
+
+    func stopGlobalDictationTapped() {
+        stopGlobalDictationAndInsert()
+    }
+
+    func cancelGlobalDictationTapped() {
+        guard globalDictationPhase == .listening else { return }
+        globalDictationPhase = .failed
+        globalDictationStatusLine = "Cancelling dictation…"
+        stopGlobalDictationTimers()
+
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await self.dependencies.recorder.cancelRecording()
+                await self.dependencies.metrics.log(name: "global_dictation_cancelled")
+                await MainActor.run {
+                    self.resetGlobalDictationState()
+                    self.banner = AppBanner(
+                        kind: .info,
+                        title: "Dictation cancelled",
+                        message: "No text was inserted."
+                    )
+                }
+            } catch {
+                await MainActor.run {
+                    self.globalDictationPhase = .failed
+                    self.globalDictationStatusLine = error.localizedDescription
+                    self.presentError(error, defaultTitle: "Could not cancel dictation")
+                }
+                await self.dependencies.metrics.log(
+                    name: "global_dictation_cancel_failed",
+                    attributes: ["error": error.localizedDescription]
+                )
+            }
+        }
+    }
+
+    func dismissGlobalDictationOverlay() {
+        guard !globalDictationPhase.isBusy else { return }
+        resetGlobalDictationState()
+    }
+
+    func copyGlobalDictationTranscriptToClipboard() {
+        let text = globalDictationTranscriptText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return }
+        dependencies.globalTextInsertion.copyToClipboard(text)
+        banner = AppBanner(
+            kind: .success,
+            title: "Dictation copied",
+            message: "The dictated text is on the clipboard."
+        )
+        Task { [dependencies] in
+            await dependencies.metrics.log(name: "global_dictation_fallback_copied")
         }
     }
 
@@ -1909,6 +2247,237 @@ final class AppViewModel: ObservableObject {
         processingProgressSnapshots[session.id] ?? session.processing
     }
 
+    private func startGlobalDictation() {
+        guard globalDictationConfiguration.isEnabled else {
+            banner = AppBanner(
+                kind: .info,
+                title: "Global dictation is off",
+                message: "Enable Global Dictation in settings before using the shortcut."
+            )
+            return
+        }
+        guard !isStartingRecording, !isRecording, !isStoppingRecording, !isGlobalDictationBusy else {
+            banner = AppBanner(
+                kind: .info,
+                title: "Dictation unavailable",
+                message: "Finish the active recording or dictation before starting another capture."
+            )
+            return
+        }
+
+        let preparation = dependencies.globalTextInsertion.prepareTarget(promptForPermission: true)
+        guard case let .ready(target) = preparation else {
+            let code = preparation.failureCode ?? "unknown"
+            banner = AppBanner(
+                kind: .error,
+                title: "Cannot start global dictation",
+                message: preparation.userFacingMessage
+            )
+            Task { [dependencies] in
+                await dependencies.metrics.log(
+                    name: "global_dictation_permission_or_target_blocked",
+                    attributes: ["reason": code]
+                )
+            }
+            return
+        }
+
+        stopPlaybackAndResetState()
+        banner = nil
+        exportMessage = nil
+        currentGlobalDictationTarget = target
+        currentGlobalDictationStartedAt = Date()
+        globalDictationElapsedSeconds = 0
+        globalDictationTranscriptText = ""
+        globalDictationTargetLabel = target.displayName
+        globalDictationStatusLine = "Listening for speech"
+        globalDictationMeterSamples = Array(repeating: 0.08, count: 28)
+        globalDictationPhase = .listening
+
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                await MainActor.run {
+                    self.applyCurrentRuntimeConfiguration()
+                }
+                await self.dependencies.recorder.setLiveTranscriptionEnabled(false)
+                try await self.dependencies.recorder.startRecording(
+                    RecordingRequest(source: .microphone, liveTranscriptionEnabled: false)
+                )
+                await self.dependencies.metrics.log(
+                    name: "global_dictation_started",
+                    attributes: [
+                        "target_app": target.appName,
+                        "target_bundle": target.bundleIdentifier ?? "unknown"
+                    ]
+                )
+                await MainActor.run {
+                    self.startGlobalDictationTimers()
+                }
+            } catch {
+                await MainActor.run {
+                    self.stopGlobalDictationTimers()
+                    self.globalDictationPhase = .failed
+                    self.globalDictationStatusLine = error.localizedDescription
+                    self.currentGlobalDictationStartedAt = nil
+                    self.currentGlobalDictationTarget = nil
+                    self.presentError(error, defaultTitle: "Could not start global dictation")
+                }
+                await self.dependencies.metrics.log(
+                    name: "global_dictation_start_failed",
+                    attributes: ["error": error.localizedDescription]
+                )
+            }
+        }
+    }
+
+    private func stopGlobalDictationAndInsert() {
+        guard globalDictationPhase == .listening,
+              let target = currentGlobalDictationTarget else {
+            return
+        }
+
+        globalDictationPhase = .transcribing
+        globalDictationStatusLine = "Stopping capture…"
+        stopGlobalDictationTimers()
+
+        Task { [weak self] in
+            guard let self else { return }
+            let temporaryDirectory = FileManager.default.temporaryDirectory
+                .appendingPathComponent("LorreGlobalDictation-\(UUID().uuidString)", isDirectory: true)
+            defer {
+                try? FileManager.default.removeItem(at: temporaryDirectory)
+            }
+
+            do {
+                let fileLayout = await self.dependencies.recorder.recordingFileLayout(for: .microphone)
+                let capture = try await self.dependencies.recorder.stopRecording(
+                    in: temporaryDirectory,
+                    fileLayout: fileLayout
+                )
+                let audioURL = temporaryDirectory.appendingPathComponent(fileLayout.audioFileName)
+
+                await MainActor.run {
+                    self.globalDictationStatusLine = "Preparing local speech model…"
+                }
+                try await self.dependencies.transcription.ensureModelsReady { [weak self] update in
+                    guard let self else { return }
+                    await MainActor.run {
+                        self.globalDictationStatusLine = update.label
+                    }
+                }
+
+                await MainActor.run {
+                    self.globalDictationStatusLine = "Transcribing dictated text…"
+                }
+                let result = try await self.dependencies.transcription.transcribe(
+                    url: audioURL,
+                    sessionTitle: "Global Dictation",
+                    source: .microphone
+                )
+                let text = GlobalDictationTextFormatter.insertionText(from: result)
+                guard !text.isEmpty else {
+                    throw LorreError.processingFailed("No speech was transcribed. Try again closer to the microphone.")
+                }
+
+                await MainActor.run {
+                    self.globalDictationTranscriptText = text
+                    self.globalDictationPhase = .inserting
+                    self.globalDictationStatusLine = "Inserting text…"
+                }
+
+                let insertion = await self.dependencies.globalTextInsertion.insert(text, into: target)
+                await MainActor.run {
+                    switch insertion {
+                    case .inserted:
+                        self.globalDictationPhase = .inserted
+                        self.globalDictationStatusLine = "Inserted \(text.count) characters."
+                        self.banner = AppBanner(
+                            kind: .success,
+                            title: "Dictation inserted",
+                            message: "Text was inserted into \(target.displayName)."
+                        )
+                    case let .failed(code, message):
+                        self.globalDictationPhase = .failed
+                        self.globalDictationStatusLine = message
+                        self.banner = AppBanner(
+                            kind: .error,
+                            title: "Dictation insertion failed",
+                            message: "\(message) Use Copy in the dictation overlay to keep the text."
+                        )
+                        Task { [dependencies] in
+                            await dependencies.metrics.log(
+                                name: "global_dictation_insertion_failed",
+                                attributes: ["reason": code]
+                            )
+                        }
+                    }
+                }
+
+                if case .inserted = insertion {
+                    await self.dependencies.metrics.log(
+                        name: "global_dictation_inserted",
+                        attributes: [
+                            "target_app": target.appName,
+                            "duration_seconds": String(format: "%.2f", capture.durationSeconds),
+                            "characters": "\(text.count)"
+                        ]
+                    )
+                }
+            } catch {
+                await MainActor.run {
+                    self.globalDictationPhase = .failed
+                    self.globalDictationStatusLine = error.localizedDescription
+                    self.presentError(error, defaultTitle: "Global dictation failed")
+                }
+                await self.dependencies.metrics.log(
+                    name: "global_dictation_failed",
+                    attributes: ["error": error.localizedDescription]
+                )
+            }
+
+            await MainActor.run {
+                self.currentGlobalDictationStartedAt = nil
+                self.currentGlobalDictationTarget = nil
+            }
+        }
+    }
+
+    private func globalDictationHotKeyPressed() {
+        if globalDictationPhase == .listening {
+            stopGlobalDictationAndInsert()
+            return
+        }
+        guard !globalDictationPhase.isBusy else { return }
+        if globalDictationPhase == .inserted || globalDictationPhase == .failed {
+            resetGlobalDictationState()
+        }
+        startGlobalDictation()
+    }
+
+    private func applyGlobalDictationHotKeyRegistration(for configuration: GlobalDictationConfiguration) throws {
+        dependencies.globalDictationHotKey.unregister()
+        guard configuration.isEnabled else { return }
+        try dependencies.globalDictationHotKey.register(shortcut: configuration.shortcut) { [weak self] in
+            self?.globalDictationHotKeyPressed()
+        }
+    }
+
+    private func registerGlobalDictationHotKeyIfNeeded() {
+        do {
+            try applyGlobalDictationHotKeyRegistration(for: globalDictationConfiguration)
+        } catch {
+            globalDictationConfiguration.isEnabled = false
+            presentError(error, defaultTitle: "Global dictation shortcut unavailable")
+            Task { [dependencies] in
+                await dependencies.metrics.log(
+                    name: "global_dictation_hotkey_registration_failed",
+                    attributes: ["error": error.localizedDescription]
+                )
+            }
+        }
+    }
+
     private func launchProcessing(for sessionID: UUID) {
         currentProcessingTasks[sessionID]?.cancel()
         markSessionProcessingLocally(sessionID: sessionID)
@@ -1949,6 +2518,7 @@ final class AppViewModel: ObservableObject {
                         self.exportMessage = nil
                     }
                 }
+                _ = await self.exportMarkdownAutomaticallyIfNeeded(sessionID: sessionID, transcript: transcript)
                 await self.dependencies.metrics.log(
                     name: "processing_succeeded",
                     sessionId: sessionID,
@@ -1999,7 +2569,7 @@ final class AppViewModel: ObservableObject {
     }
 
     private func importAudioFile(at sourceURL: URL) {
-        guard !isRecording, !isStoppingRecording else { return }
+        guard !isRecording, !isStoppingRecording, !isGlobalDictationBusy else { return }
 
         banner = nil
         exportMessage = nil
@@ -2468,9 +3038,144 @@ final class AppViewModel: ObservableObject {
         liveMeterTask = nil
     }
 
+    private func startGlobalDictationTimers() {
+        stopGlobalDictationTimers()
+
+        globalDictationClockTask = Task { [weak self] in
+            guard let self else { return }
+            while !Task.isCancelled {
+                await MainActor.run {
+                    if let started = self.currentGlobalDictationStartedAt {
+                        let roundedSeconds = Double(Int(Date().timeIntervalSince(started)))
+                        if self.globalDictationElapsedSeconds != roundedSeconds {
+                            self.globalDictationElapsedSeconds = roundedSeconds
+                        }
+                    }
+                }
+                try? await Task.sleep(for: .milliseconds(200))
+            }
+        }
+
+        globalDictationMeterTask = Task { [weak self] in
+            guard let self else { return }
+            while !Task.isCancelled {
+                let next = await self.dependencies.recorder.currentMeterLevel()
+                await MainActor.run {
+                    var samples = self.globalDictationMeterSamples
+                    samples.append(next)
+                    if samples.count > 28 {
+                        samples.removeFirst(samples.count - 28)
+                    }
+                    self.globalDictationMeterSamples = samples
+                }
+                try? await Task.sleep(for: .milliseconds(85))
+            }
+        }
+    }
+
+    private func stopGlobalDictationTimers() {
+        globalDictationClockTask?.cancel()
+        globalDictationClockTask = nil
+        globalDictationMeterTask?.cancel()
+        globalDictationMeterTask = nil
+    }
+
+    private func resetGlobalDictationState() {
+        stopGlobalDictationTimers()
+        globalDictationPhase = .idle
+        globalDictationElapsedSeconds = 0
+        globalDictationMeterSamples = Array(repeating: 0.08, count: 28)
+        globalDictationTranscriptText = ""
+        globalDictationTargetLabel = nil
+        globalDictationStatusLine = "Ready"
+        currentGlobalDictationStartedAt = nil
+        currentGlobalDictationTarget = nil
+    }
+
     private func presentError(_ error: Error, defaultTitle: String) {
         let mapped = UserFacingErrorMapper.map(error, defaultTitle: defaultTitle)
         banner = AppBanner(kind: .error, title: mapped.title, message: mapped.message)
+    }
+
+    private func exportMarkdownAutomaticallyIfNeeded(
+        sessionID: UUID,
+        transcript: TranscriptDocument
+    ) async -> URL? {
+        let configuration = automaticMarkdownExportConfiguration
+        guard configuration.isEnabled, let folderURL = configuration.folderURL else {
+            return nil
+        }
+
+        do {
+            guard let session = try await dependencies.store.loadSession(id: sessionID) else {
+                throw LorreError.sessionNotFound
+            }
+
+            let suggestedFileName = dependencies.exporter.suggestedFileName(session: session, format: .markdown)
+            let destinationURL = uniqueExportDestinationURL(
+                in: folderURL,
+                suggestedFileName: suggestedFileName
+            )
+            let exportedURL = try await dependencies.exporter.export(
+                session: session,
+                transcript: transcript,
+                format: .markdown,
+                destinationURL: destinationURL
+            )
+
+            _ = try await dependencies.store.updateSession(id: sessionID) { session in
+                session.exports.append(
+                    ExportRecord(format: .markdown, fileName: exportedURL.lastPathComponent)
+                )
+                session.updatedAt = Date()
+            }
+
+            exportMessage = "Auto-exported Markdown to \(exportedURL.lastPathComponent)"
+            banner = AppBanner(
+                kind: .success,
+                title: "Markdown exported",
+                message: exportedURL.path(percentEncoded: false)
+            )
+            await dependencies.metrics.log(
+                name: "automatic_markdown_export_succeeded",
+                sessionId: sessionID,
+                attributes: ["file": exportedURL.lastPathComponent]
+            )
+            return exportedURL
+        } catch {
+            banner = AppBanner(
+                kind: .error,
+                title: "Automatic export failed",
+                message: "Transcript saved, but Lorre could not write Markdown to \(configuration.folderDisplayName). \(error.localizedDescription)"
+            )
+            await dependencies.metrics.log(
+                name: "automatic_markdown_export_failed",
+                sessionId: sessionID,
+                attributes: ["error": error.localizedDescription]
+            )
+            return nil
+        }
+    }
+
+    private func uniqueExportDestinationURL(in folderURL: URL, suggestedFileName: String) -> URL {
+        let candidate = folderURL.appendingPathComponent(suggestedFileName, isDirectory: false)
+        let path = candidate.path(percentEncoded: false)
+        guard FileManager.default.fileExists(atPath: path) else {
+            return candidate
+        }
+
+        let baseName = candidate.deletingPathExtension().lastPathComponent
+        let pathExtension = candidate.pathExtension
+        for suffix in 2...999 {
+            let fileName = pathExtension.isEmpty
+                ? "\(baseName)-\(suffix)"
+                : "\(baseName)-\(suffix).\(pathExtension)"
+            let next = folderURL.appendingPathComponent(fileName, isDirectory: false)
+            if !FileManager.default.fileExists(atPath: next.path(percentEncoded: false)) {
+                return next
+            }
+        }
+        return folderURL.appendingPathComponent(UUID().uuidString + ".md", isDirectory: false)
     }
 
     private func chooseExportDestinationURL(session: SessionManifest, format: ExportFormat) -> URL? {
@@ -2483,6 +3188,23 @@ final class AppViewModel: ObservableObject {
         let response = savePanel.runModal()
         guard response == .OK else { return nil }
         return savePanel.url
+        #else
+        return nil
+        #endif
+    }
+
+    private func chooseAutomaticMarkdownExportFolderURL() -> URL? {
+        #if canImport(AppKit)
+        let panel = NSOpenPanel()
+        panel.title = "Choose Automatic Markdown Export Folder"
+        panel.prompt = "Use Folder"
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.canCreateDirectories = true
+        panel.allowsMultipleSelection = false
+        let response = panel.runModal()
+        guard response == .OK else { return nil }
+        return panel.url
         #else
         return nil
         #endif
@@ -2548,6 +3270,8 @@ final class AppViewModel: ObservableObject {
             let restoredLivePreset = settings.liveTranscriptionPreset
             let restoredModelRegistry = settings.modelRegistryConfiguration
             let restoredDiarizationEngine = settings.diarizationEngine
+            let restoredAutomaticMarkdownExport = settings.automaticMarkdownExport
+            let restoredGlobalDictation = settings.globalDictation
             FluidAudioRuntimeConfiguration.apply(modelRegistry: restoredModelRegistry)
             await dependencies.diarization.setDiarizationEngine(restoredDiarizationEngine)
             await dependencies.transcription.setBatchTranscriptionConfiguration(restoredBatchTranscription)
@@ -2569,6 +3293,8 @@ final class AppViewModel: ObservableObject {
                 self.isLiveTranscriptionEnabled = restoredLiveEnabled
                 self.isDeleteAudioAfterTranscriptionEnabled = settings.isDeleteAudioAfterTranscriptionEnabled
                 self.isTranscriptConfidenceVisible = settings.isTranscriptConfidenceVisible
+                self.automaticMarkdownExportConfiguration = restoredAutomaticMarkdownExport
+                self.globalDictationConfiguration = restoredGlobalDictation
                 if let snapshot = settings.modelPreparation {
                     self.applyModelPreparationReadyState(snapshot: snapshot)
                 }

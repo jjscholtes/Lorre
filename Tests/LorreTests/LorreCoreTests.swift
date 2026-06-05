@@ -853,6 +853,8 @@ struct LorreCoreTests {
         XCTAssertEqual(settings.vocabularyBoosting.simpleFormatTerms, "")
         XCTAssertEqual(settings.batchTranscription, BatchTranscriptionConfiguration())
         XCTAssertEqual(settings.liveTranscriptionPreset, .balanced)
+        XCTAssertEqual(settings.automaticMarkdownExport, AutomaticMarkdownExportConfiguration())
+        XCTAssertEqual(settings.globalDictation, GlobalDictationConfiguration())
     }
 
 
@@ -1398,6 +1400,66 @@ struct LorreCoreTests {
 
 
     @Test
+    func testAppSettingsStorePersistsAutomaticMarkdownExportConfiguration() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("LorreAutoMarkdownExportSettingTests-\(UUID().uuidString)", isDirectory: true)
+        let exportFolder = root.appendingPathComponent("exports", isDirectory: true)
+        let store = AppSettingsStore(baseURL: root)
+
+        let initial = try await store.load()
+        XCTAssertFalse(initial.automaticMarkdownExport.isEnabled)
+        XCTAssertNil(initial.automaticMarkdownExport.folderPath)
+
+        _ = try await store.setAutomaticMarkdownExportFolderURL(exportFolder)
+        let configured = try await store.load()
+        XCTAssertTrue(configured.automaticMarkdownExport.isEnabled)
+        XCTAssertEqual(
+            configured.automaticMarkdownExport.folderPath,
+            exportFolder.standardizedFileURL.path(percentEncoded: false)
+        )
+
+        _ = try await store.setAutomaticMarkdownExportEnabled(false)
+        let disabled = try await store.load()
+        XCTAssertFalse(disabled.automaticMarkdownExport.isEnabled)
+        XCTAssertEqual(
+            disabled.automaticMarkdownExport.folderPath,
+            exportFolder.standardizedFileURL.path(percentEncoded: false)
+        )
+    }
+
+
+    @Test
+    func testAppSettingsStorePersistsGlobalDictationConfiguration() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("LorreGlobalDictationSettingTests-\(UUID().uuidString)", isDirectory: true)
+        let store = AppSettingsStore(baseURL: root)
+
+        let initial = try await store.load()
+        XCTAssertFalse(initial.globalDictation.isEnabled)
+        XCTAssertEqual(initial.globalDictation.shortcut, .controlOptionD)
+
+        _ = try await store.saveGlobalDictationConfiguration(
+            GlobalDictationConfiguration(
+                isEnabled: true,
+                shortcut: .controlOptionCommandD
+            )
+        )
+        let configured = try await store.load()
+        XCTAssertTrue(configured.globalDictation.isEnabled)
+        XCTAssertEqual(configured.globalDictation.shortcut, .controlOptionCommandD)
+
+        _ = try await store.setGlobalDictationShortcut(.controlOptionSpace)
+        let shortcutChanged = try await store.load()
+        XCTAssertEqual(shortcutChanged.globalDictation.shortcut, .controlOptionSpace)
+
+        _ = try await store.setGlobalDictationEnabled(false)
+        let disabled = try await store.load()
+        XCTAssertFalse(disabled.globalDictation.isEnabled)
+        XCTAssertEqual(disabled.globalDictation.shortcut, .controlOptionSpace)
+    }
+
+
+    @Test
     func testAppSettingsStorePersistsVocabularyBoostingConfiguration() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("LorreVocabularyBoostingSettingTests-\(UUID().uuidString)", isDirectory: true)
@@ -1879,6 +1941,107 @@ struct LorreCoreTests {
         XCTAssertEqual(collapsed.spans[2].sourceSpeakerId, "S7")
         XCTAssertEqual(collapsed.spans[3].sourceSpeakerId, "S3")
         XCTAssertEqual(collapsed.speakerProfiles.map(\.id), ["S5"])
+    }
+
+
+    @Test
+    func testAppViewModelAutomaticallyExportsMarkdownAfterProcessing() async throws {
+        let root = makeTemporaryRoot(named: "LorreAutoMarkdownExportFlowTests")
+        let exportFolder = root.appendingPathComponent("auto-md", isDirectory: true)
+        let store = FileSessionStore(baseURL: root)
+        let dependencies = makeTestDependencies(
+            root: root,
+            store: store,
+            recorder: ControlledRecorderService()
+        )
+        _ = try await dependencies.settings.saveAutomaticMarkdownExportConfiguration(
+            AutomaticMarkdownExportConfiguration(
+                isEnabled: true,
+                folderPath: exportFolder.path(percentEncoded: false)
+            )
+        )
+        let viewModel = await MainActor.run {
+            AppViewModel(dependencies: dependencies)
+        }
+
+        await viewModel.start()
+        await MainActor.run {
+            XCTAssertTrue(viewModel.isAutomaticMarkdownExportEnabled)
+            viewModel.startRecordingTapped()
+        }
+        try await waitUntil {
+            await MainActor.run { viewModel.isRecording }
+        }
+
+        await MainActor.run {
+            viewModel.stopRecordingTapped()
+        }
+        try await waitUntil(timeout: .seconds(4)) {
+            await MainActor.run {
+                viewModel.selectedSession?.status == .ready
+                    && viewModel.selectedSession?.exports.contains(where: { $0.format == .markdown }) == true
+            }
+        }
+
+        let files = try FileManager.default.contentsOfDirectory(
+            at: exportFolder,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]
+        )
+        let markdownFiles = files.filter { $0.pathExtension == "md" }
+        XCTAssertEqual(markdownFiles.count, 1)
+
+        let markdown = try String(contentsOf: markdownFiles[0], encoding: .utf8)
+        XCTAssertTrue(markdown.contains("We need a clean transcript"))
+        await MainActor.run {
+            XCTAssertEqual(viewModel.banner?.title, "Markdown exported")
+            XCTAssertTrue(viewModel.exportMessage?.contains("Auto-exported Markdown") == true)
+        }
+    }
+
+
+    @Test
+    func testAppViewModelGlobalDictationHotkeyTranscribesAndInsertsText() async throws {
+        let root = makeTemporaryRoot(named: "LorreGlobalDictationFlowTests")
+        let recorder = ControlledRecorderService()
+        let hotKey = TestGlobalDictationHotKeyService()
+        let insertion = TestGlobalTextInsertionService()
+        let dependencies = makeTestDependencies(
+            root: root,
+            recorder: recorder,
+            globalDictationHotKey: hotKey,
+            globalTextInsertion: insertion
+        )
+        _ = try await dependencies.settings.saveGlobalDictationConfiguration(
+            GlobalDictationConfiguration(isEnabled: true, shortcut: .controlOptionD)
+        )
+        let viewModel = await MainActor.run {
+            AppViewModel(dependencies: dependencies)
+        }
+
+        await viewModel.start()
+        await MainActor.run {
+            XCTAssertTrue(viewModel.isGlobalDictationEnabled)
+            XCTAssertEqual(hotKey.registeredShortcut, .controlOptionD)
+            hotKey.fire()
+        }
+
+        try await waitUntil {
+            await MainActor.run { viewModel.globalDictationPhase == .listening }
+        }
+
+        await MainActor.run {
+            hotKey.fire()
+        }
+
+        try await waitUntil(timeout: .seconds(4)) {
+            await MainActor.run { viewModel.globalDictationPhase == .inserted }
+        }
+
+        await MainActor.run {
+            XCTAssertTrue(insertion.insertedText?.contains("We need a clean transcript") == true)
+            XCTAssertEqual(viewModel.banner?.title, "Dictation inserted")
+        }
     }
 
 

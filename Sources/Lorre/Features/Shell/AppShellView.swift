@@ -25,6 +25,11 @@ struct AppShellView: View {
                 }
                 .padding(.horizontal, horizontalPadding)
                 .padding(.vertical, verticalPadding)
+
+                #if canImport(AppKit)
+                GlobalDictationPanelPresenter(viewModel: viewModel)
+                    .frame(width: 0, height: 0)
+                #endif
             }
         }
     }
