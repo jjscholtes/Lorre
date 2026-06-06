@@ -128,7 +128,8 @@ actor AppSettingsStore {
         var settings = try loadFromDisk()
         settings.automaticMarkdownExport = AutomaticMarkdownExportConfiguration(
             isEnabled: isEnabled,
-            folderPath: settings.automaticMarkdownExport.folderPath
+            folderPath: settings.automaticMarkdownExport.folderPath,
+            fileNameTemplate: settings.automaticMarkdownExport.fileNameTemplate
         )
         settings.updatedAt = Date()
         try save(settings)
@@ -140,7 +141,21 @@ actor AppSettingsStore {
         var settings = try loadFromDisk()
         settings.automaticMarkdownExport = AutomaticMarkdownExportConfiguration(
             isEnabled: folderURL != nil,
-            folderPath: folderURL?.path(percentEncoded: false)
+            folderPath: folderURL?.path(percentEncoded: false),
+            fileNameTemplate: settings.automaticMarkdownExport.fileNameTemplate
+        )
+        settings.updatedAt = Date()
+        try save(settings)
+        return settings
+    }
+
+    @discardableResult
+    func setAutomaticMarkdownExportFileNameTemplate(_ template: String) async throws -> AppSettings {
+        var settings = try loadFromDisk()
+        settings.automaticMarkdownExport = AutomaticMarkdownExportConfiguration(
+            isEnabled: settings.automaticMarkdownExport.isEnabled,
+            folderPath: settings.automaticMarkdownExport.folderPath,
+            fileNameTemplate: template
         )
         settings.updatedAt = Date()
         try save(settings)
@@ -171,6 +186,41 @@ actor AppSettingsStore {
     func setGlobalDictationShortcut(_ shortcut: GlobalDictationShortcutChoice) async throws -> AppSettings {
         var settings = try loadFromDisk()
         settings.globalDictation.shortcut = shortcut
+        settings.updatedAt = Date()
+        try save(settings)
+        return settings
+    }
+
+    @discardableResult
+    func saveCallWatcherConfiguration(_ configuration: CallWatcherConfiguration) async throws -> AppSettings {
+        var settings = try loadFromDisk()
+        settings.callWatcher = configuration
+        settings.updatedAt = Date()
+        try save(settings)
+        return settings
+    }
+
+    @discardableResult
+    func setCallWatcherEnabled(_ isEnabled: Bool) async throws -> AppSettings {
+        var settings = try loadFromDisk()
+        settings.callWatcher = CallWatcherConfiguration(
+            isEnabled: isEnabled,
+            defaultRecordingSource: settings.callWatcher.defaultRecordingSource,
+            cooldownSeconds: settings.callWatcher.cooldownSeconds
+        )
+        settings.updatedAt = Date()
+        try save(settings)
+        return settings
+    }
+
+    @discardableResult
+    func setCallWatcherDefaultRecordingSource(_ source: RecordingSource) async throws -> AppSettings {
+        var settings = try loadFromDisk()
+        settings.callWatcher = CallWatcherConfiguration(
+            isEnabled: settings.callWatcher.isEnabled,
+            defaultRecordingSource: source,
+            cooldownSeconds: settings.callWatcher.cooldownSeconds
+        )
         settings.updatedAt = Date()
         try save(settings)
         return settings

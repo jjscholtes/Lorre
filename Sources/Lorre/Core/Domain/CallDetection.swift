@@ -388,6 +388,7 @@ actor CallDetectionEngine {
             "google meet",
             "zoom meeting",
             "microsoft teams",
+            "teams.microsoft.com",
             "teams meeting",
             "webex",
             "whereby",

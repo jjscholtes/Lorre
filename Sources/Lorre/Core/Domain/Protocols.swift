@@ -90,6 +90,10 @@ protocol AudioPlaybackService: AnyObject {
     func setPlaybackRate(_ rate: Double)
 }
 
+protocol CallWatcherService: Sendable {
+    func makeDetectionStream(configuration: CallWatcherConfiguration) async -> AsyncStream<CallDetectionEvent>
+}
+
 protocol GlobalDictationHotKeyService: AnyObject, Sendable {
     func register(
         shortcut: GlobalDictationShortcutChoice,

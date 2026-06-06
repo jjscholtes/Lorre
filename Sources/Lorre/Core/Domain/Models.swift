@@ -1110,13 +1110,21 @@ struct SessionFolder: Identifiable, Codable, Equatable, Sendable {
 }
 
 struct AutomaticMarkdownExportConfiguration: Codable, Equatable, Sendable {
+    static let defaultFileNameTemplate = "{date}-{smart_title}.md"
+
     var isEnabled: Bool
     var folderPath: String?
+    var fileNameTemplate: String
 
-    init(isEnabled: Bool = false, folderPath: String? = nil) {
+    init(
+        isEnabled: Bool = false,
+        folderPath: String? = nil,
+        fileNameTemplate: String = AutomaticMarkdownExportConfiguration.defaultFileNameTemplate
+    ) {
         let normalizedPath = Self.normalizedFolderPath(folderPath)
         self.folderPath = normalizedPath
         self.isEnabled = isEnabled && normalizedPath != nil
+        self.fileNameTemplate = Self.normalizedFileNameTemplate(fileNameTemplate)
     }
 
     var folderURL: URL? {
@@ -1144,10 +1152,38 @@ struct AutomaticMarkdownExportConfiguration: Codable, Equatable, Sendable {
             .standardizedFileURL
             .path(percentEncoded: false)
     }
+
+    static func normalizedFileNameTemplate(_ rawValue: String?) -> String {
+        let trimmed = rawValue?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmed.isEmpty ? Self.defaultFileNameTemplate : trimmed
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case isEnabled
+        case folderPath
+        case fileNameTemplate
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            isEnabled: try container.decodeIfPresent(Bool.self, forKey: .isEnabled) ?? false,
+            folderPath: try container.decodeIfPresent(String.self, forKey: .folderPath),
+            fileNameTemplate: try container.decodeIfPresent(String.self, forKey: .fileNameTemplate)
+                ?? Self.defaultFileNameTemplate
+        )
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(isEnabled, forKey: .isEnabled)
+        try container.encodeIfPresent(folderPath, forKey: .folderPath)
+        try container.encode(fileNameTemplate, forKey: .fileNameTemplate)
+    }
 }
 
 struct AppSettings: Codable, Equatable, Sendable {
-    static let currentSchemaVersion = 6
+    static let currentSchemaVersion = 8
 
     var schemaVersion: Int
     var updatedAt: Date
@@ -1165,6 +1201,7 @@ struct AppSettings: Codable, Equatable, Sendable {
     var batchTranscription: BatchTranscriptionConfiguration
     var liveTranscriptionPreset: LiveTranscriptionPreset
     var automaticMarkdownExport: AutomaticMarkdownExportConfiguration
+    var callWatcher: CallWatcherConfiguration
     var globalDictation: GlobalDictationConfiguration
     var folders: [SessionFolder]
     var sidebarExpandedViewFilterIDs: [String]
@@ -1187,6 +1224,7 @@ struct AppSettings: Codable, Equatable, Sendable {
         batchTranscription: BatchTranscriptionConfiguration = .init(),
         liveTranscriptionPreset: LiveTranscriptionPreset = .balanced,
         automaticMarkdownExport: AutomaticMarkdownExportConfiguration = .init(),
+        callWatcher: CallWatcherConfiguration = .init(),
         globalDictation: GlobalDictationConfiguration = .init(),
         folders: [SessionFolder] = [],
         sidebarExpandedViewFilterIDs: [String] = [],
@@ -1208,6 +1246,7 @@ struct AppSettings: Codable, Equatable, Sendable {
         self.batchTranscription = batchTranscription.normalized
         self.liveTranscriptionPreset = liveTranscriptionPreset
         self.automaticMarkdownExport = automaticMarkdownExport
+        self.callWatcher = callWatcher
         self.globalDictation = globalDictation
         self.folders = folders
         self.sidebarExpandedViewFilterIDs = sidebarExpandedViewFilterIDs
@@ -1231,6 +1270,7 @@ struct AppSettings: Codable, Equatable, Sendable {
         case batchTranscription
         case liveTranscriptionPreset
         case automaticMarkdownExport
+        case callWatcher
         case globalDictation
         case folders
         case sidebarExpandedViewFilterIDs
@@ -1265,10 +1305,17 @@ struct AppSettings: Codable, Equatable, Sendable {
             AutomaticMarkdownExportConfiguration.self,
             forKey: .automaticMarkdownExport
         ) ?? .init()
+        self.callWatcher = try container.decodeIfPresent(
+            CallWatcherConfiguration.self,
+            forKey: .callWatcher
+        ) ?? .init()
         self.globalDictation = try container.decodeIfPresent(
             GlobalDictationConfiguration.self,
             forKey: .globalDictation
         ) ?? .init()
+        if self.schemaVersion < 7 && self.globalDictation.shortcut == .controlOptionD {
+            self.globalDictation.shortcut = .optionShiftD
+        }
         self.folders = try container.decodeIfPresent([SessionFolder].self, forKey: .folders) ?? []
         self.sidebarExpandedViewFilterIDs = try container.decodeIfPresent([String].self, forKey: .sidebarExpandedViewFilterIDs) ?? []
         self.sidebarExpandedFolderIDs = try container.decodeIfPresent([String].self, forKey: .sidebarExpandedFolderIDs) ?? []
@@ -1298,6 +1345,7 @@ struct AppSettings: Codable, Equatable, Sendable {
         try container.encode(batchTranscription.normalized, forKey: .batchTranscription)
         try container.encode(liveTranscriptionPreset, forKey: .liveTranscriptionPreset)
         try container.encode(automaticMarkdownExport, forKey: .automaticMarkdownExport)
+        try container.encode(callWatcher, forKey: .callWatcher)
         try container.encode(globalDictation, forKey: .globalDictation)
         try container.encode(folders, forKey: .folders)
         try container.encode(sidebarExpandedViewFilterIDs, forKey: .sidebarExpandedViewFilterIDs)

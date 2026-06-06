@@ -67,6 +67,13 @@ struct GlobalDictationOverlayCard: View {
                         .buttonStyle(SecondaryControlButtonStyle())
                         .disabled(true)
                 case .inserted, .failed:
+                    if viewModel.globalDictationPhase == .failed {
+                        Button("Open Accessibility") {
+                            viewModel.openGlobalDictationAccessibilitySettings()
+                        }
+                        .buttonStyle(SecondaryControlButtonStyle())
+                    }
+
                     if !viewModel.globalDictationTranscriptText.isEmpty {
                         Button("Copy") {
                             viewModel.copyGlobalDictationTranscriptToClipboard()

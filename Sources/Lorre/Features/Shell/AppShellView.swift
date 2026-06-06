@@ -46,6 +46,10 @@ private struct WorkStageContainerView: View {
                 }
             }
 
+            if viewModel.callPromptCandidate != nil {
+                CallRecordingPromptView(viewModel: viewModel)
+            }
+
             if viewModel.isBrowsingArchivedSessionWhileRecording {
                 ActiveRecordingWorkspaceView(viewModel: viewModel)
             }
@@ -68,6 +72,56 @@ private struct WorkStageContainerView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+}
+
+private struct CallRecordingPromptView: View {
+    @ObservedObject var viewModel: AppViewModel
+
+    var body: some View {
+        HStack(alignment: .top, spacing: DS.Space.x3) {
+            Image(systemName: "phone.bubble.left.fill")
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundStyle(DS.ColorToken.fgPrimary)
+                .frame(width: 22, height: 22)
+
+            VStack(alignment: .leading, spacing: DS.Space.x1_5) {
+                HStack(spacing: DS.Space.x2) {
+                    Text("Wil je opnemen?")
+                        .font(DS.FontStyle.panelTitle)
+                        .foregroundStyle(DS.ColorToken.fgPrimary)
+
+                    CapsLabel(text: "Call Watcher")
+                }
+
+                Text(viewModel.callPromptDetail)
+                    .font(DS.FontStyle.body)
+                    .foregroundStyle(DS.ColorToken.fgSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Spacer(minLength: DS.Space.x3)
+
+            HStack(spacing: DS.Space.x2) {
+                Button("Opnemen") {
+                    viewModel.acceptCallPromptTapped()
+                }
+                .buttonStyle(PrimaryControlButtonStyle())
+
+                Button("Niet nu") {
+                    viewModel.dismissCallPromptTapped()
+                }
+                .buttonStyle(SecondaryControlButtonStyle())
+
+                Button("Uitschakelen") {
+                    viewModel.disableCallWatcherFromPromptTapped()
+                }
+                .buttonStyle(SecondaryControlButtonStyle())
+            }
+        }
+        .padding(DS.Space.x4)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .dsPanelSurface(cornerRadius: DS.Radius.lg)
     }
 }
 

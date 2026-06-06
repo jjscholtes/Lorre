@@ -226,6 +226,98 @@ struct LorreCoreTests {
 
 
     @Test
+    func testAutomaticExportFileNameBuilderUsesTopicPhraseFromTranscript() {
+        let sessionID = UUID()
+        let now = Calendar.current.date(from: DateComponents(year: 2026, month: 6, day: 6, hour: 14, minute: 32))!
+        let session = SessionManifest(
+            id: sessionID,
+            title: "Session Jun 6",
+            status: .ready,
+            recordedAt: now,
+            durationSeconds: 42 * 60,
+            recordingSource: .microphoneAndSystemAudio,
+            audioFileName: "audio.caf",
+            transcriptFileName: "transcript.json"
+        )
+        let transcript = TranscriptDocument(
+            sessionId: sessionID,
+            languageHint: "nl",
+            sourceEngine: "Test",
+            segments: [
+                TranscriptSegment(
+                    startMs: 0,
+                    endMs: 4_000,
+                    text: "Vandaag bespreken we de onboarding flow, pricing pagina en openstaande bugs.",
+                    speakerId: "S1"
+                ),
+                TranscriptSegment(
+                    startMs: 4_000,
+                    endMs: 8_000,
+                    text: "Daarna pakken we korte vragen.",
+                    speakerId: "S2"
+                )
+            ],
+            speakers: [
+                .defaultProfile(id: "S1"),
+                .defaultProfile(id: "S2")
+            ]
+        )
+
+        let fileName = AutomaticExportFileNameBuilder.fileName(
+            session: session,
+            transcript: transcript,
+            template: "{date}-{speaker_count}-{smart_title}",
+            now: now
+        )
+
+        XCTAssertEqual(
+            fileName,
+            "2026-06-06-2spk-onboarding-flow-pricing-pagina-openstaande-bugs.md"
+        )
+    }
+
+
+    @Test
+    func testAutomaticExportFileNameBuilderFallsBackToRankedKeywordsAndTemplateTokens() {
+        let sessionID = UUID()
+        let now = Calendar.current.date(from: DateComponents(year: 2026, month: 6, day: 6, hour: 9, minute: 5))!
+        let session = SessionManifest(
+            id: sessionID,
+            title: "Fallback Session",
+            status: .ready,
+            recordedAt: now,
+            durationSeconds: 75,
+            recordingSource: .microphone,
+            audioFileName: "audio.caf",
+            transcriptFileName: "transcript.json"
+        )
+        let transcript = TranscriptDocument(
+            sessionId: sessionID,
+            languageHint: "en",
+            sourceEngine: "Test",
+            segments: [
+                TranscriptSegment(
+                    startMs: 0,
+                    endMs: 5_000,
+                    text: "We need a clean transcript with speaker labels and a quick export.",
+                    speakerId: "S1"
+                )
+            ],
+            speakers: [.defaultProfile(id: "S1")]
+        )
+
+        let fileName = AutomaticExportFileNameBuilder.fileName(
+            session: session,
+            transcript: transcript,
+            template: "{datetime}-{duration}-{keywords}.md",
+            now: now
+        )
+
+        XCTAssertEqual(fileName, "2026-06-06-09-05-1m-need-clean-transcript-speaker-labels-quick.md")
+    }
+
+
+    @Test
     func testDiarizationSpeakerLabelNormalizerAvoidsNumericCollisions() {
         XCTAssertEqual(DiarizationSpeakerLabelNormalizer.normalize("0"), "S1")
         XCTAssertEqual(DiarizationSpeakerLabelNormalizer.normalize("1"), "S2")
@@ -1409,6 +1501,10 @@ struct LorreCoreTests {
         let initial = try await store.load()
         XCTAssertFalse(initial.automaticMarkdownExport.isEnabled)
         XCTAssertNil(initial.automaticMarkdownExport.folderPath)
+        XCTAssertEqual(
+            initial.automaticMarkdownExport.fileNameTemplate,
+            AutomaticMarkdownExportConfiguration.defaultFileNameTemplate
+        )
 
         _ = try await store.setAutomaticMarkdownExportFolderURL(exportFolder)
         let configured = try await store.load()
@@ -1425,6 +1521,11 @@ struct LorreCoreTests {
             disabled.automaticMarkdownExport.folderPath,
             exportFolder.standardizedFileURL.path(percentEncoded: false)
         )
+
+        _ = try await store.setAutomaticMarkdownExportFileNameTemplate("{datetime}-{speaker_count}-{keywords}")
+        let templated = try await store.load()
+        XCTAssertFalse(templated.automaticMarkdownExport.isEnabled)
+        XCTAssertEqual(templated.automaticMarkdownExport.fileNameTemplate, "{datetime}-{speaker_count}-{keywords}")
     }
 
 
@@ -1436,26 +1537,70 @@ struct LorreCoreTests {
 
         let initial = try await store.load()
         XCTAssertFalse(initial.globalDictation.isEnabled)
-        XCTAssertEqual(initial.globalDictation.shortcut, .controlOptionD)
+        XCTAssertEqual(initial.globalDictation.shortcut, .optionShiftD)
 
         _ = try await store.saveGlobalDictationConfiguration(
             GlobalDictationConfiguration(
                 isEnabled: true,
-                shortcut: .controlOptionCommandD
+                shortcut: .commandOptionShiftD
             )
         )
         let configured = try await store.load()
         XCTAssertTrue(configured.globalDictation.isEnabled)
-        XCTAssertEqual(configured.globalDictation.shortcut, .controlOptionCommandD)
+        XCTAssertEqual(configured.globalDictation.shortcut, .commandOptionShiftD)
 
-        _ = try await store.setGlobalDictationShortcut(.controlOptionSpace)
+        _ = try await store.setGlobalDictationShortcut(.optionShiftSpace)
         let shortcutChanged = try await store.load()
-        XCTAssertEqual(shortcutChanged.globalDictation.shortcut, .controlOptionSpace)
+        XCTAssertEqual(shortcutChanged.globalDictation.shortcut, .optionShiftSpace)
 
         _ = try await store.setGlobalDictationEnabled(false)
         let disabled = try await store.load()
         XCTAssertFalse(disabled.globalDictation.isEnabled)
-        XCTAssertEqual(disabled.globalDictation.shortcut, .controlOptionSpace)
+        XCTAssertEqual(disabled.globalDictation.shortcut, .optionShiftSpace)
+    }
+
+
+    @Test
+    func testAppSettingsMigratesLegacyControlGlobalDictationShortcut() async throws {
+        let legacyJSON = """
+        {
+          "schemaVersion" : 6,
+          "globalDictation" : {
+            "isEnabled" : true,
+            "shortcut" : "controlOptionD",
+            "retainsSnippets" : false
+          }
+        }
+        """
+
+        let settings = try JSONDecoder().decode(AppSettings.self, from: Data(legacyJSON.utf8))
+
+        XCTAssertTrue(settings.globalDictation.isEnabled)
+        XCTAssertEqual(settings.globalDictation.shortcut, .optionShiftD)
+    }
+
+
+    @Test
+    func testAppViewModelGlobalDictationShortcutChoicesAvoidControl() async throws {
+        let root = makeTemporaryRoot(named: "LorreGlobalDictationShortcutChoiceTests")
+        let viewModel = await MainActor.run {
+            AppViewModel(
+                dependencies: makeTestDependencies(
+                    root: root,
+                    recorder: ControlledRecorderService()
+                )
+            )
+        }
+
+        await MainActor.run {
+            XCTAssertEqual(
+                viewModel.globalDictationShortcutChoices,
+                [.optionShiftD, .optionShiftSpace, .commandOptionShiftD]
+            )
+            XCTAssertFalse(viewModel.globalDictationShortcutChoices.contains(.controlOptionD))
+            XCTAssertFalse(viewModel.globalDictationShortcutChoices.contains(.controlOptionSpace))
+            XCTAssertFalse(viewModel.globalDictationShortcutChoices.contains(.controlOptionCommandD))
+        }
     }
 
 
@@ -1957,7 +2102,8 @@ struct LorreCoreTests {
         _ = try await dependencies.settings.saveAutomaticMarkdownExportConfiguration(
             AutomaticMarkdownExportConfiguration(
                 isEnabled: true,
-                folderPath: exportFolder.path(percentEncoded: false)
+                folderPath: exportFolder.path(percentEncoded: false),
+                fileNameTemplate: "{date}-{keywords}"
             )
         )
         let viewModel = await MainActor.run {
@@ -1990,6 +2136,14 @@ struct LorreCoreTests {
         )
         let markdownFiles = files.filter { $0.pathExtension == "md" }
         XCTAssertEqual(markdownFiles.count, 1)
+        let expectedFileName = await MainActor.run {
+            AutomaticExportFileNameBuilder.fileName(
+                session: viewModel.selectedSession!,
+                transcript: viewModel.activeTranscript!,
+                template: "{date}-{keywords}"
+            )
+        }
+        XCTAssertEqual(markdownFiles[0].lastPathComponent, expectedFileName)
 
         let markdown = try String(contentsOf: markdownFiles[0], encoding: .utf8)
         XCTAssertTrue(markdown.contains("We need a clean transcript"))
@@ -2013,7 +2167,7 @@ struct LorreCoreTests {
             globalTextInsertion: insertion
         )
         _ = try await dependencies.settings.saveGlobalDictationConfiguration(
-            GlobalDictationConfiguration(isEnabled: true, shortcut: .controlOptionD)
+            GlobalDictationConfiguration(isEnabled: true, shortcut: .optionShiftD)
         )
         let viewModel = await MainActor.run {
             AppViewModel(dependencies: dependencies)
@@ -2022,7 +2176,7 @@ struct LorreCoreTests {
         await viewModel.start()
         await MainActor.run {
             XCTAssertTrue(viewModel.isGlobalDictationEnabled)
-            XCTAssertEqual(hotKey.registeredShortcut, .controlOptionD)
+            XCTAssertEqual(hotKey.registeredShortcut, .optionShiftD)
             hotKey.fire()
         }
 
@@ -2041,6 +2195,44 @@ struct LorreCoreTests {
         await MainActor.run {
             XCTAssertTrue(insertion.insertedText?.contains("We need a clean transcript") == true)
             XCTAssertEqual(viewModel.banner?.title, "Dictation inserted")
+        }
+    }
+
+
+    @Test
+    func testAppViewModelGlobalDictationShowsFailureStateWhenAccessibilityIsMissing() async throws {
+        let root = makeTemporaryRoot(named: "LorreGlobalDictationPermissionTests")
+        let hotKey = TestGlobalDictationHotKeyService()
+        let insertion = TestGlobalTextInsertionService()
+        await MainActor.run {
+            insertion.preparation = .missingAccessibilityPermission
+        }
+        let dependencies = makeTestDependencies(
+            root: root,
+            recorder: ControlledRecorderService(),
+            globalDictationHotKey: hotKey,
+            globalTextInsertion: insertion
+        )
+        _ = try await dependencies.settings.saveGlobalDictationConfiguration(
+            GlobalDictationConfiguration(isEnabled: true, shortcut: .optionShiftD)
+        )
+        let viewModel = await MainActor.run {
+            AppViewModel(dependencies: dependencies)
+        }
+
+        await viewModel.start()
+        await MainActor.run {
+            hotKey.fire()
+        }
+
+        try await waitUntil {
+            await MainActor.run { viewModel.globalDictationPhase == .failed }
+        }
+
+        await MainActor.run {
+            XCTAssertEqual(viewModel.globalDictationTargetLabel, "Accessibility")
+            XCTAssertTrue(viewModel.globalDictationStatusLine.localizedCaseInsensitiveContains("Accessibility"))
+            XCTAssertEqual(viewModel.banner?.title, "Cannot start global dictation")
         }
     }
 
@@ -2109,6 +2301,76 @@ struct LorreCoreTests {
 
         let startCallCount = await recorder.startCallCount
         XCTAssertEqual(startCallCount, 1)
+    }
+
+
+    @Test
+    func testAppSettingsStorePersistsCallWatcherConfiguration() async throws {
+        let root = makeTemporaryRoot(named: "LorreCallWatcherSettingsTests")
+        let store = AppSettingsStore(baseURL: root)
+
+        _ = try await store.saveCallWatcherConfiguration(
+            CallWatcherConfiguration(
+                isEnabled: true,
+                defaultRecordingSource: .systemAudio,
+                cooldownSeconds: 120
+            )
+        )
+
+        let loaded = try await store.load()
+        XCTAssertTrue(loaded.callWatcher.isEnabled)
+        XCTAssertEqual(loaded.callWatcher.defaultRecordingSource, .systemAudio)
+        XCTAssertEqual(loaded.callWatcher.cooldownSeconds, 120)
+    }
+
+
+    @Test
+    func testAppViewModelStartsRecordingFromCallPrompt() async throws {
+        let root = makeTemporaryRoot(named: "LorreCallPromptStartTests")
+        let recorder = ControlledRecorderService()
+        let callWatcher = TestCallWatcherService()
+        let dependencies = makeTestDependencies(root: root, recorder: recorder, callWatcher: callWatcher)
+        let viewModel = await MainActor.run {
+            AppViewModel(dependencies: dependencies)
+        }
+
+        await viewModel.start()
+        await MainActor.run {
+            viewModel.setCallWatcherEnabled(true)
+        }
+        try await waitUntil {
+            callWatcher.isSubscribed
+        }
+
+        let now = Date(timeIntervalSince1970: 1_000)
+        let candidate = CallDetectionCandidate(
+            fingerprint: "com.google.Chrome:3",
+            appBundleID: "com.google.Chrome",
+            appDisplayName: "Google Chrome",
+            confidenceScore: 90,
+            recommendedRecordingSource: .microphoneAndSystemAudio,
+            firstDetectedAt: now,
+            lastSeenAt: now,
+            reasons: [.browserCallWindowTitle]
+        )
+
+        callWatcher.emit(.candidateDetected(candidate))
+
+        try await waitUntil {
+            await MainActor.run { viewModel.callPromptCandidate != nil }
+        }
+
+        await MainActor.run {
+            XCTAssertEqual(viewModel.callPromptCandidate?.appDisplayName, "Google Chrome")
+            viewModel.acceptCallPromptTapped()
+        }
+
+        try await waitUntil {
+            await recorder.lastStartRequest != nil
+        }
+
+        let request = await recorder.lastStartRequest
+        XCTAssertEqual(request?.source, .microphoneAndSystemAudio)
     }
 
 

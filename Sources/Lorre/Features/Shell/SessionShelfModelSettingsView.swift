@@ -413,6 +413,90 @@ struct ModelStatusPanelView: View {
                             .foregroundStyle(DS.ColorToken.fgTertiary)
                             .lineLimit(1)
                             .truncationMode(.middle)
+
+                        TextField(
+                            AutomaticMarkdownExportConfiguration.defaultFileNameTemplate,
+                            text: $viewModel.automaticMarkdownExportFileNameTemplate
+                        )
+                        .textFieldStyle(.plain)
+                        .font(DS.FontStyle.mono)
+                        .foregroundStyle(DS.ColorToken.fgPrimary)
+                        .padding(.horizontal, DS.Space.x2)
+                        .padding(.vertical, DS.Space.x2)
+                        .background(DS.ColorToken.fieldBg)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: DS.Radius.sm)
+                                .stroke(DS.ColorToken.fieldBorder, lineWidth: 1)
+                        )
+
+                        HStack(spacing: DS.Space.x2) {
+                            Button("Save Template") {
+                                viewModel.saveAutomaticMarkdownExportFileNameTemplate()
+                            }
+                            .buttonStyle(SecondaryControlButtonStyle())
+
+                            Button("Reset") {
+                                viewModel.resetAutomaticMarkdownExportFileNameTemplate()
+                            }
+                            .buttonStyle(SecondaryControlButtonStyle())
+
+                            Text("Preview: \(viewModel.automaticMarkdownExportFileNamePreview)")
+                                .font(DS.FontStyle.mono)
+                                .foregroundStyle(DS.ColorToken.fgTertiary)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                        }
+
+                        Text(viewModel.automaticMarkdownExportTemplateSummary)
+                            .font(DS.FontStyle.helper)
+                            .foregroundStyle(DS.ColorToken.fgSecondary)
+                            .lineLimit(2)
+                    }
+                }
+
+                toggleSettingsRow(
+                    id: "call-watcher",
+                    label: "Call Watcher",
+                    tooltip: "Watches local macOS app and window signals while Lorre is open, then asks before starting a recording.",
+                    isOn: viewModel.isCallWatcherEnabled,
+                    setValue: viewModel.setCallWatcherEnabled
+                ) {
+                    VStack(alignment: .leading, spacing: DS.Space.x1_5) {
+                        Text(viewModel.callWatcherSummary)
+                            .font(DS.FontStyle.helper)
+                            .foregroundStyle(DS.ColorToken.fgSecondary)
+                            .lineLimit(3)
+
+                        Menu {
+                            ForEach(RecordingSource.allCases) { source in
+                                Button {
+                                    viewModel.setCallWatcherDefaultRecordingSource(source)
+                                } label: {
+                                    HStack {
+                                        Text(source.label)
+                                        if source == viewModel.callWatcherConfiguration.defaultRecordingSource {
+                                            Image(systemName: "checkmark")
+                                        }
+                                    }
+                                }
+                            }
+                        } label: {
+                            HStack(spacing: DS.Space.x1) {
+                                Text(viewModel.callWatcherDefaultSourceLabel)
+                                    .lineLimit(1)
+                                    .minimumScaleFactor(0.72)
+                                Image(systemName: "chevron.down")
+                                    .font(.system(size: 10, weight: .semibold))
+                            }
+                            .frame(maxWidth: .infinity, alignment: .center)
+                        }
+                        .buttonStyle(SecondaryControlButtonStyle())
+                        .frame(width: 210)
+
+                        Text("Lorre only asks. It does not record until you choose Opnemen.")
+                            .font(DS.FontStyle.helper)
+                            .foregroundStyle(DS.ColorToken.fgTertiary)
+                            .lineLimit(2)
                     }
                 }
 
@@ -439,11 +523,15 @@ struct ModelStatusPanelView: View {
                             } label: {
                                 HStack(spacing: DS.Space.x1) {
                                     Text(viewModel.globalDictationShortcutLabel)
+                                        .lineLimit(1)
+                                        .minimumScaleFactor(0.72)
                                     Image(systemName: "chevron.down")
                                         .font(.system(size: 10, weight: .semibold))
                                 }
+                                .frame(maxWidth: .infinity, alignment: .center)
                             }
                             .buttonStyle(SecondaryControlButtonStyle())
+                            .frame(width: 160)
 
                             Button(viewModel.globalDictationPhase == .listening ? "Stop Dictation" : "Start Now") {
                                 if viewModel.globalDictationPhase == .listening {
@@ -457,12 +545,29 @@ struct ModelStatusPanelView: View {
                                 !viewModel.isGlobalDictationEnabled ||
                                     (viewModel.globalDictationPhase.isBusy && viewModel.globalDictationPhase != .listening)
                             )
+                            .lineLimit(1)
+                            .frame(width: 96)
                         }
 
-                        Text("Requires Microphone and Accessibility permission. Secure fields are blocked.")
+                        Button {
+                            viewModel.openGlobalDictationAccessibilitySettings()
+                        } label: {
+                            HStack(spacing: DS.Space.x1_5) {
+                                Image(systemName: "accessibility")
+                                    .font(.system(size: 12, weight: .semibold))
+                                Text("Accessibility")
+                                    .lineLimit(1)
+                            }
+                            .frame(width: 244, alignment: .center)
+                        }
+                        .buttonStyle(SecondaryControlButtonStyle())
+                        .help("Open macOS Accessibility permissions")
+
+                        Text("Requires Microphone and Accessibility. If permission loops after rebuilding, remove and re-add the current app.")
                             .font(DS.FontStyle.helper)
                             .foregroundStyle(DS.ColorToken.fgTertiary)
-                            .lineLimit(2)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .lineLimit(3)
                     }
                 }
 

@@ -1,6 +1,9 @@
 import Foundation
 
 enum GlobalDictationShortcutChoice: String, Codable, CaseIterable, Identifiable, Equatable, Sendable {
+    case optionShiftD
+    case optionShiftSpace
+    case commandOptionShiftD
     case controlOptionD
     case controlOptionSpace
     case controlOptionCommandD
@@ -9,6 +12,12 @@ enum GlobalDictationShortcutChoice: String, Codable, CaseIterable, Identifiable,
 
     var label: String {
         switch self {
+        case .optionShiftD:
+            return "Option-Shift-D"
+        case .optionShiftSpace:
+            return "Option-Shift-Space"
+        case .commandOptionShiftD:
+            return "Command-Option-Shift-D"
         case .controlOptionD:
             return "Control-Option-D"
         case .controlOptionSpace:
@@ -20,12 +29,18 @@ enum GlobalDictationShortcutChoice: String, Codable, CaseIterable, Identifiable,
 
     var detail: String {
         switch self {
+        case .optionShiftD:
+            return "Default shortcut without Control or Command."
+        case .optionShiftSpace:
+            return "Compact Control-free shortcut; may conflict with text input in some apps."
+        case .commandOptionShiftD:
+            return "Explicit Control-free shortcut with fewer accidental triggers."
         case .controlOptionD:
-            return "Default global dictation shortcut."
+            return "Legacy shortcut; may conflict in apps that bind Control."
         case .controlOptionSpace:
-            return "Compact shortcut, but more likely to conflict with launchers."
+            return "Legacy compact shortcut; more likely to conflict with launchers."
         case .controlOptionCommandD:
-            return "More explicit shortcut with fewer accidental triggers."
+            return "Legacy explicit shortcut with Control."
         }
     }
 }
@@ -37,7 +52,7 @@ struct GlobalDictationConfiguration: Codable, Equatable, Sendable {
 
     init(
         isEnabled: Bool = false,
-        shortcut: GlobalDictationShortcutChoice = .controlOptionD,
+        shortcut: GlobalDictationShortcutChoice = .optionShiftD,
         retainsSnippets: Bool = false
     ) {
         self.isEnabled = isEnabled
@@ -102,7 +117,7 @@ enum GlobalTextInsertionPreparation: Equatable, Sendable {
         case .ready:
             return "Ready"
         case .missingAccessibilityPermission:
-            return "Accessibility permission is required so Lorre can verify the focused text field and insert dictated text."
+            return "Accessibility permission is required for Global Dictation. If Lorre is already enabled there, remove it and add the current Lorre.app again; rebuilt local apps can look different to macOS."
         case let .noEditableTarget(appName):
             let target = appName ?? "the focused app"
             return "No editable text field was detected in \(target). Focus a normal text field and try again."

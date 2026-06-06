@@ -83,15 +83,19 @@ final class CarbonGlobalDictationHotKeyService: GlobalDictationHotKeyService, @u
 private extension GlobalDictationShortcutChoice {
     var carbonKeyCode: UInt32 {
         switch self {
-        case .controlOptionD, .controlOptionCommandD:
+        case .optionShiftD, .commandOptionShiftD, .controlOptionD, .controlOptionCommandD:
             return 2
-        case .controlOptionSpace:
+        case .optionShiftSpace, .controlOptionSpace:
             return 49
         }
     }
 
     var carbonModifierFlags: UInt32 {
         switch self {
+        case .optionShiftD, .optionShiftSpace:
+            return UInt32(optionKey | shiftKey)
+        case .commandOptionShiftD:
+            return UInt32(cmdKey | optionKey | shiftKey)
         case .controlOptionD, .controlOptionSpace:
             return UInt32(controlKey | optionKey)
         case .controlOptionCommandD:
@@ -102,41 +106,72 @@ private extension GlobalDictationShortcutChoice {
 #endif
 
 #if canImport(AppKit)
-struct MacGlobalTextInsertionService: GlobalTextInsertionService {
+final class MacGlobalTextInsertionService: GlobalTextInsertionService, @unchecked Sendable {
+    private var lastNonLorreApplication: NSRunningApplication?
+    private var activationObserver: NSObjectProtocol?
+    private let ownBundleIdentifier = Bundle.main.bundleIdentifier
+    private let ownProcessIdentifier = ProcessInfo.processInfo.processIdentifier
+
+    init() {
+        let frontmostApplication = NSWorkspace.shared.frontmostApplication
+        if let frontmostApplication,
+           Self.isUsableTargetApplication(
+            frontmostApplication,
+            ownBundleIdentifier: ownBundleIdentifier,
+            ownProcessIdentifier: ownProcessIdentifier
+           ) {
+            lastNonLorreApplication = frontmostApplication
+        }
+
+        activationObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didActivateApplicationNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            guard let self,
+                  let application = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication else {
+                return
+            }
+            self.rememberTargetApplicationIfUsable(application)
+        }
+    }
+
+    deinit {
+        if let activationObserver {
+            NSWorkspace.shared.notificationCenter.removeObserver(activationObserver)
+        }
+    }
+
     @MainActor
     func prepareTarget(promptForPermission: Bool) -> GlobalTextInsertionPreparation {
         guard isAccessibilityTrusted(promptForPermission: promptForPermission) else {
             return .missingAccessibilityPermission
         }
 
-        guard let frontmostApplication = NSWorkspace.shared.frontmostApplication else {
+        guard let targetApplication = currentTargetApplication() else {
             return .noEditableTarget(appName: nil)
         }
 
-        let appName = frontmostApplication.localizedName ?? "Focused app"
-        let systemElement = AXUIElementCreateSystemWide()
-        guard let focusedElement = copyAXElement(
-            from: systemElement,
-            attribute: kAXFocusedUIElementAttribute
-        ) else {
-            return .noEditableTarget(appName: appName)
-        }
-
-        let role = copyAXString(from: focusedElement, attribute: kAXRoleAttribute)
-        let subrole = copyAXString(from: focusedElement, attribute: kAXSubroleAttribute)
-        if isSecureTextTarget(role: role, subrole: subrole) {
-            return .secureTarget(appName: appName)
-        }
-
-        guard isEditableTextTarget(focusedElement, role: role) else {
-            return .noEditableTarget(appName: appName)
+        let appName = targetApplication.localizedName ?? "Focused app"
+        if isFrontmostApplication(targetApplication) {
+            let systemElement = AXUIElementCreateSystemWide()
+            if let focusedElement = copyAXElement(
+                from: systemElement,
+                attribute: kAXFocusedUIElementAttribute
+            ) {
+                let role = copyAXString(from: focusedElement, attribute: kAXRoleAttribute)
+                let subrole = copyAXString(from: focusedElement, attribute: kAXSubroleAttribute)
+                if isSecureTextTarget(role: role, subrole: subrole) {
+                    return .secureTarget(appName: appName)
+                }
+            }
         }
 
         return .ready(
             GlobalTextInsertionTarget(
                 appName: appName,
-                bundleIdentifier: frontmostApplication.bundleIdentifier,
-                processIdentifier: frontmostApplication.processIdentifier,
+                bundleIdentifier: targetApplication.bundleIdentifier,
+                processIdentifier: targetApplication.processIdentifier,
                 capturedAt: Date()
             )
         )
@@ -146,6 +181,12 @@ struct MacGlobalTextInsertionService: GlobalTextInsertionService {
     func insert(_ text: String, into target: GlobalTextInsertionTarget) async -> GlobalTextInsertionResult {
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             return .failed(code: "empty_text", message: "There is no dictated text to insert.")
+        }
+        guard isAccessibilityTrusted(promptForPermission: false) else {
+            return .failed(
+                code: "missing_accessibility_permission",
+                message: GlobalTextInsertionPreparation.missingAccessibilityPermission.userFacingMessage
+            )
         }
 
         guard let application = NSRunningApplication(processIdentifier: target.processIdentifier) else {
@@ -163,13 +204,22 @@ struct MacGlobalTextInsertionService: GlobalTextInsertionService {
             return .failed(code: "target_app_activation_failed", message: "Lorre could not return focus to \(target.displayName).")
         }
 
-        try? await Task.sleep(for: .milliseconds(140))
+        try? await Task.sleep(for: .milliseconds(260))
+        if focusedElementIsSecureTextTarget() {
+            snapshot.restore(to: pasteboard)
+            return .failed(
+                code: "secure_target",
+                message: GlobalTextInsertionPreparation.secureTarget(appName: target.displayName).userFacingMessage
+            )
+        }
+
         guard sendPasteCommand() else {
             snapshot.restore(to: pasteboard)
             return .failed(code: "paste_event_failed", message: "Lorre could not send the paste command to \(target.displayName).")
         }
 
-        try? await Task.sleep(for: .milliseconds(350))
+        rememberTargetApplicationIfUsable(application)
+        try? await Task.sleep(for: .milliseconds(900))
         snapshot.restore(to: pasteboard)
         return .inserted
     }
@@ -185,10 +235,69 @@ struct MacGlobalTextInsertionService: GlobalTextInsertionService {
         return AXIsProcessTrustedWithOptions(options)
     }
 
+    private func currentTargetApplication() -> NSRunningApplication? {
+        if let frontmostApplication = NSWorkspace.shared.frontmostApplication,
+           Self.isUsableTargetApplication(
+            frontmostApplication,
+            ownBundleIdentifier: ownBundleIdentifier,
+            ownProcessIdentifier: ownProcessIdentifier
+           ) {
+            rememberTargetApplicationIfUsable(frontmostApplication)
+            return frontmostApplication
+        }
+
+        if let lastNonLorreApplication,
+           Self.isUsableTargetApplication(
+            lastNonLorreApplication,
+            ownBundleIdentifier: ownBundleIdentifier,
+            ownProcessIdentifier: ownProcessIdentifier
+           ) {
+            return lastNonLorreApplication
+        }
+
+        return nil
+    }
+
+    private func rememberTargetApplicationIfUsable(_ application: NSRunningApplication) {
+        guard Self.isUsableTargetApplication(
+            application,
+            ownBundleIdentifier: ownBundleIdentifier,
+            ownProcessIdentifier: ownProcessIdentifier
+        ) else {
+            return
+        }
+        lastNonLorreApplication = application
+    }
+
+    private func isFrontmostApplication(_ application: NSRunningApplication) -> Bool {
+        NSWorkspace.shared.frontmostApplication?.processIdentifier == application.processIdentifier
+    }
+
+    private static func isUsableTargetApplication(
+        _ application: NSRunningApplication,
+        ownBundleIdentifier: String?,
+        ownProcessIdentifier: Int32
+    ) -> Bool {
+        if application.isTerminated {
+            return false
+        }
+        if application.processIdentifier == ownProcessIdentifier {
+            return false
+        }
+        if let ownBundleIdentifier,
+           application.bundleIdentifier == ownBundleIdentifier {
+            return false
+        }
+        return application.activationPolicy != .prohibited
+    }
+
     private func copyAXElement(from element: AXUIElement, attribute: String) -> AXUIElement? {
         var value: CFTypeRef?
         guard AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success,
               let value else {
+            return nil
+        }
+        guard CFGetTypeID(value) == AXUIElementGetTypeID() else {
             return nil
         }
         return (value as! AXUIElement)
@@ -208,21 +317,18 @@ struct MacGlobalTextInsertionService: GlobalTextInsertionService {
         return normalizedRole == "AXSecureTextField" || normalizedSubrole == "AXSecureTextField"
     }
 
-    private func isEditableTextTarget(_ element: AXUIElement, role: String?) -> Bool {
-        var isSettable = DarwinBoolean(false)
-        if AXUIElementIsAttributeSettable(element, kAXValueAttribute as CFString, &isSettable) == .success,
-           isSettable.boolValue {
-            return true
+    private func focusedElementIsSecureTextTarget() -> Bool {
+        let systemElement = AXUIElementCreateSystemWide()
+        guard let focusedElement = copyAXElement(
+            from: systemElement,
+            attribute: kAXFocusedUIElementAttribute
+        ) else {
+            return false
         }
-
-        let editableRoles: Set<String> = [
-            "AXTextField",
-            "AXTextArea",
-            "AXTextView",
-            "AXTextEditor",
-            "AXComboBox"
-        ]
-        return role.map { editableRoles.contains($0) } ?? false
+        return isSecureTextTarget(
+            role: copyAXString(from: focusedElement, attribute: kAXRoleAttribute),
+            subrole: copyAXString(from: focusedElement, attribute: kAXSubroleAttribute)
+        )
     }
 
     private func sendPasteCommand() -> Bool {

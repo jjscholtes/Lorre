@@ -428,6 +428,24 @@ final class TestGlobalTextInsertionService: GlobalTextInsertionService {
     }
 }
 
+final class TestCallWatcherService: CallWatcherService, @unchecked Sendable {
+    private var continuation: AsyncStream<CallDetectionEvent>.Continuation?
+    var isSubscribed: Bool {
+        continuation != nil
+    }
+
+    func makeDetectionStream(configuration: CallWatcherConfiguration) async -> AsyncStream<CallDetectionEvent> {
+        _ = configuration
+        return AsyncStream { continuation in
+            self.continuation = continuation
+        }
+    }
+
+    func emit(_ event: CallDetectionEvent) {
+        continuation?.yield(event)
+    }
+}
+
 actor ProcessingUpdateCollector {
     private var updates: [ProcessingUpdate] = []
 
@@ -452,6 +470,7 @@ func makeTestDependencies(
     transcription: any TranscriptionService = MockTranscriptionService(),
     diarization: any SpeakerDiarizationService = MockSpeakerDiarizationService(),
     speakerEnrollment: any SpeakerEnrollmentService = TestSpeakerEnrollmentService(),
+    callWatcher: any CallWatcherService = DisabledCallWatcherService(),
     globalDictationHotKey: any GlobalDictationHotKeyService = TestGlobalDictationHotKeyService(),
     globalTextInsertion: any GlobalTextInsertionService = TestGlobalTextInsertionService(),
     runtimeCapabilities: RuntimeCapabilities = .mock,
@@ -476,6 +495,7 @@ func makeTestDependencies(
         speakerEnrollment: speakerEnrollment,
         playback: TestPlaybackService(),
         exporter: MarkdownExportService(),
+        callWatcher: callWatcher,
         globalDictationHotKey: globalDictationHotKey,
         globalTextInsertion: globalTextInsertion,
         processingCoordinator: coordinator,

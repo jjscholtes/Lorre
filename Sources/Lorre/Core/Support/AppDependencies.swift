@@ -10,6 +10,7 @@ struct AppDependencies {
     let speakerEnrollment: any SpeakerEnrollmentService
     let playback: any AudioPlaybackService
     let exporter: any ExportService
+    let callWatcher: any CallWatcherService
     let globalDictationHotKey: any GlobalDictationHotKeyService
     let globalTextInsertion: any GlobalTextInsertionService
     let processingCoordinator: ProcessingCoordinator
@@ -61,6 +62,12 @@ struct AppDependencies {
         let playback: any AudioPlaybackService = UnsupportedAudioPlaybackService()
         #endif
 
+        #if canImport(AppKit)
+        let callWatcher: any CallWatcherService = MacCallWatcherService()
+        #else
+        let callWatcher: any CallWatcherService = DisabledCallWatcherService()
+        #endif
+
         #if canImport(AppKit) && canImport(Carbon)
         let globalDictationHotKey: any GlobalDictationHotKeyService = CarbonGlobalDictationHotKeyService()
         #else
@@ -88,6 +95,7 @@ struct AppDependencies {
             speakerEnrollment: speakerEnrollmentService,
             playback: playback,
             exporter: MarkdownExportService(),
+            callWatcher: callWatcher,
             globalDictationHotKey: globalDictationHotKey,
             globalTextInsertion: globalTextInsertion,
             processingCoordinator: coordinator,
