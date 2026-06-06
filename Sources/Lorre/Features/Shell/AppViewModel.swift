@@ -77,6 +77,7 @@ final class AppViewModel: ObservableObject {
     @Published private(set) var globalDictationTranscriptText: String = ""
     @Published private(set) var globalDictationTargetLabel: String?
     @Published private(set) var globalDictationStatusLine: String = "Ready"
+    @Published private(set) var globalDictationFailureCode: String?
     @Published private(set) var liveTranscriptPreview: LiveTranscriptPreview?
     @Published private(set) var knownSpeakers: [KnownSpeaker] = []
     @Published var knownSpeakerDraftName: String = ""
@@ -2301,6 +2302,7 @@ final class AppViewModel: ObservableObject {
     func cancelGlobalDictationTapped() {
         guard globalDictationPhase == .listening else { return }
         globalDictationPhase = .failed
+        globalDictationFailureCode = "cancelled"
         globalDictationStatusLine = "Cancelling dictation…"
         stopGlobalDictationTimers()
 
@@ -2320,6 +2322,7 @@ final class AppViewModel: ObservableObject {
             } catch {
                 await MainActor.run {
                     self.globalDictationPhase = .failed
+                    self.globalDictationFailureCode = "cancel_failed"
                     self.globalDictationStatusLine = error.localizedDescription
                     self.presentError(error, defaultTitle: "Could not cancel dictation")
                 }
@@ -2506,6 +2509,7 @@ final class AppViewModel: ObservableObject {
         guard case let .ready(target) = preparation else {
             let code = preparation.failureCode ?? "unknown"
             globalDictationPhase = .failed
+            globalDictationFailureCode = code
             globalDictationElapsedSeconds = 0
             globalDictationTranscriptText = ""
             globalDictationTargetLabel = code == "missing_accessibility_permission" ? "Accessibility" : "Target"
@@ -2533,6 +2537,7 @@ final class AppViewModel: ObservableObject {
         globalDictationTranscriptText = ""
         globalDictationTargetLabel = target.displayName
         globalDictationStatusLine = "Listening for speech"
+        globalDictationFailureCode = nil
         globalDictationMeterSamples = Array(repeating: 0.08, count: 28)
         globalDictationPhase = .listening
 
@@ -2560,6 +2565,7 @@ final class AppViewModel: ObservableObject {
                 await MainActor.run {
                     self.stopGlobalDictationTimers()
                     self.globalDictationPhase = .failed
+                    self.globalDictationFailureCode = "start_failed"
                     self.globalDictationStatusLine = error.localizedDescription
                     self.currentGlobalDictationStartedAt = nil
                     self.currentGlobalDictationTarget = nil
@@ -2638,6 +2644,7 @@ final class AppViewModel: ObservableObject {
                     switch insertion {
                     case .inserted:
                         self.globalDictationPhase = .inserted
+                        self.globalDictationFailureCode = nil
                         self.globalDictationStatusLine = "Inserted \(text.count) characters."
                         self.banner = AppBanner(
                             kind: .success,
@@ -2646,6 +2653,7 @@ final class AppViewModel: ObservableObject {
                         )
                     case let .failed(code, message):
                         self.globalDictationPhase = .failed
+                        self.globalDictationFailureCode = code
                         self.globalDictationStatusLine = message
                         self.banner = AppBanner(
                             kind: .error,
@@ -2674,6 +2682,7 @@ final class AppViewModel: ObservableObject {
             } catch {
                 await MainActor.run {
                     self.globalDictationPhase = .failed
+                    self.globalDictationFailureCode = "transcription_failed"
                     self.globalDictationStatusLine = error.localizedDescription
                     self.presentError(error, defaultTitle: "Global dictation failed")
                 }
@@ -3335,6 +3344,7 @@ final class AppViewModel: ObservableObject {
         globalDictationTranscriptText = ""
         globalDictationTargetLabel = nil
         globalDictationStatusLine = "Ready"
+        globalDictationFailureCode = nil
         currentGlobalDictationStartedAt = nil
         currentGlobalDictationTarget = nil
     }

@@ -67,7 +67,8 @@ struct GlobalDictationOverlayCard: View {
                         .buttonStyle(SecondaryControlButtonStyle())
                         .disabled(true)
                 case .inserted, .failed:
-                    if viewModel.globalDictationPhase == .failed {
+                    if viewModel.globalDictationPhase == .failed,
+                       viewModel.globalDictationFailureCode == "missing_accessibility_permission" {
                         Button("Open Accessibility") {
                             viewModel.openGlobalDictationAccessibilitySettings()
                         }

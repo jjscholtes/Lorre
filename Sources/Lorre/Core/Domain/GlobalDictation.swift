@@ -84,6 +84,7 @@ struct GlobalTextInsertionTarget: Equatable, Sendable {
     var bundleIdentifier: String?
     var processIdentifier: Int32
     var capturedAt: Date
+    var accessibilityElementID: UUID? = nil
 
     var displayName: String {
         appName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Focused app" : appName

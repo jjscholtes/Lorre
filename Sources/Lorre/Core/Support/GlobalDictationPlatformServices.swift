@@ -107,10 +107,17 @@ private extension GlobalDictationShortcutChoice {
 
 #if canImport(AppKit)
 final class MacGlobalTextInsertionService: GlobalTextInsertionService, @unchecked Sendable {
+    private struct RememberedTextTarget {
+        var element: AXUIElement
+        var capturedAt: Date
+    }
+
     private var lastNonLorreApplication: NSRunningApplication?
+    private var rememberedTextTargets: [UUID: RememberedTextTarget] = [:]
     private var activationObserver: NSObjectProtocol?
     private let ownBundleIdentifier = Bundle.main.bundleIdentifier
     private let ownProcessIdentifier = ProcessInfo.processInfo.processIdentifier
+    private let rememberedTextTargetMaxAge: TimeInterval = 300
 
     init() {
         let frontmostApplication = NSWorkspace.shared.frontmostApplication
@@ -153,21 +160,35 @@ final class MacGlobalTextInsertionService: GlobalTextInsertionService, @unchecke
         }
 
         let appName = targetApplication.localizedName ?? "Focused app"
-        switch validateFocusedTextTarget(for: targetApplication) {
+        guard let focusedElement = focusedElement(for: targetApplication) else {
+            return .noEditableTarget(appName: appName)
+        }
+
+        let targetValidation = validateTextTarget(focusedElement)
+        switch targetValidation {
         case .editable:
             break
         case .secure:
             return .secureTarget(appName: appName)
         case .missing, .notEditable:
-            return .noEditableTarget(appName: appName)
+            guard Self.supportsPasteFallback(bundleIdentifier: targetApplication.bundleIdentifier) else {
+                return .noEditableTarget(appName: appName)
+            }
         }
 
+        let accessibilityElementID: UUID?
+        if case .editable = targetValidation {
+            accessibilityElementID = rememberTextTarget(focusedElement)
+        } else {
+            accessibilityElementID = nil
+        }
         return .ready(
             GlobalTextInsertionTarget(
                 appName: appName,
                 bundleIdentifier: targetApplication.bundleIdentifier,
                 processIdentifier: targetApplication.processIdentifier,
-                capturedAt: Date()
+                capturedAt: Date(),
+                accessibilityElementID: accessibilityElementID
             )
         )
     }
@@ -187,14 +208,13 @@ final class MacGlobalTextInsertionService: GlobalTextInsertionService, @unchecke
         guard let application = NSRunningApplication(processIdentifier: target.processIdentifier) else {
             return .failed(code: "target_app_unavailable", message: "\(target.displayName) is no longer available.")
         }
-
-        let pasteboard = NSPasteboard.general
-        let snapshot = PasteboardSnapshot.capture(from: pasteboard)
-        pasteboard.clearContents()
-        pasteboard.setString(text, forType: .string)
+        let rememberedTextTarget = rememberedTextTarget(for: target)
+        defer {
+            forgetTextTarget(for: target)
+        }
 
         raiseApplication(processIdentifier: target.processIdentifier)
-        _ = application.activate(options: [])
+        _ = application.activate(options: [.activateAllWindows])
 
         let startActivate = Date()
         var isFrontmost = false
@@ -210,28 +230,54 @@ final class MacGlobalTextInsertionService: GlobalTextInsertionService, @unchecke
         try? await Task.sleep(for: .milliseconds(150))
 
         guard isFrontmost || isApplicationFrontmost(processIdentifier: target.processIdentifier) else {
-            snapshot.restore(to: pasteboard)
             return .failed(code: "target_app_activation_failed", message: "Lorre could not return focus to \(target.displayName).")
         }
 
-        switch validateFocusedTextTarget(for: application) {
+        let validation: FocusedTextTargetValidation
+        if let rememberedTextTarget, isReachableAXElement(rememberedTextTarget) {
+            if isSecureTextTarget(rememberedTextTarget) {
+                validation = .secure
+            } else {
+                _ = restoreFocus(to: rememberedTextTarget, in: application)
+                validation = .editable
+            }
+        } else {
+            validation = validateFocusedTextTarget(for: application)
+        }
+
+        switch validation {
         case .editable:
             break
         case .secure:
-            snapshot.restore(to: pasteboard)
             return .failed(
                 code: "secure_target",
                 message: GlobalTextInsertionPreparation.secureTarget(appName: target.displayName).userFacingMessage
             )
         case .missing, .notEditable:
-            snapshot.restore(to: pasteboard)
-            return .failed(
-                code: "no_editable_target",
-                message: GlobalTextInsertionPreparation.noEditableTarget(appName: target.displayName).userFacingMessage
-            )
+            guard Self.supportsPasteFallback(bundleIdentifier: target.bundleIdentifier) else {
+                return .failed(
+                    code: "no_editable_target",
+                    message: GlobalTextInsertionPreparation.noEditableTarget(appName: target.displayName).userFacingMessage
+                )
+            }
         }
 
-        guard sendPasteCommand() else {
+        if let rememberedTextTarget,
+           insertTextUsingAccessibility(text, into: rememberedTextTarget) {
+            rememberTargetApplicationIfUsable(application)
+            return .inserted
+        }
+
+        guard targetApplicationOwnsInputFocus(target) else {
+            return .failed(code: "target_app_activation_failed", message: "Lorre could not return keyboard focus to \(target.displayName).")
+        }
+
+        let pasteboard = NSPasteboard.general
+        let snapshot = PasteboardSnapshot.capture(from: pasteboard)
+        pasteboard.clearContents()
+        pasteboard.setString(text, forType: .string)
+
+        guard sendPasteCommand(to: target.processIdentifier) else {
             snapshot.restore(to: pasteboard)
             return .failed(code: "paste_event_failed", message: "Lorre could not send the paste command to \(target.displayName).")
         }
@@ -295,6 +341,48 @@ final class MacGlobalTextInsertionService: GlobalTextInsertionService, @unchecke
         NSWorkspace.shared.frontmostApplication?.processIdentifier == processIdentifier
     }
 
+    private func targetApplicationOwnsInputFocus(_ target: GlobalTextInsertionTarget) -> Bool {
+        let processIdentifier = target.processIdentifier
+        guard isApplicationFrontmost(processIdentifier: processIdentifier) else {
+            return false
+        }
+
+        if let focusedApplicationProcessIdentifier,
+           focusedApplicationProcessIdentifier != processIdentifier {
+            return false
+        }
+
+        if let focusedBundleIdentifier = NSWorkspace.shared.frontmostApplication?.bundleIdentifier,
+           let targetBundleIdentifier = target.bundleIdentifier,
+           focusedBundleIdentifier != targetBundleIdentifier {
+            return false
+        }
+
+        return true
+    }
+
+    private var focusedApplicationProcessIdentifier: pid_t? {
+        let systemElement = AXUIElementCreateSystemWide()
+        guard let focusedApplication = copyAXElement(
+            from: systemElement,
+            attribute: kAXFocusedApplicationAttribute
+        ) else {
+            return nil
+        }
+        return processIdentifier(of: focusedApplication)
+    }
+
+    private var focusedElementProcessIdentifier: pid_t? {
+        let systemElement = AXUIElementCreateSystemWide()
+        guard let focusedElement = copyAXElement(
+            from: systemElement,
+            attribute: kAXFocusedUIElementAttribute
+        ) else {
+            return nil
+        }
+        return processIdentifier(of: focusedElement)
+    }
+
     private static func isUsableTargetApplication(
         _ application: NSRunningApplication,
         ownBundleIdentifier: String?,
@@ -313,9 +401,51 @@ final class MacGlobalTextInsertionService: GlobalTextInsertionService, @unchecke
         return application.activationPolicy != .prohibited
     }
 
+    private static func supportsPasteFallback(bundleIdentifier: String?) -> Bool {
+        guard let bundleIdentifier else { return false }
+        return [
+            "com.apple.Terminal",
+            "com.googlecode.iterm2",
+            "com.tinyspeck.slackmacgap"
+        ].contains(bundleIdentifier)
+    }
+
     private func raiseApplication(processIdentifier: pid_t) {
         let applicationElement = AXUIElementCreateApplication(processIdentifier)
         AXUIElementPerformAction(applicationElement, kAXRaiseAction as CFString)
+    }
+
+    private func rememberTextTarget(_ element: AXUIElement) -> UUID {
+        cleanupRememberedTextTargets(now: Date())
+        let id = UUID()
+        rememberedTextTargets[id] = RememberedTextTarget(element: element, capturedAt: Date())
+        return id
+    }
+
+    private func rememberedTextTarget(for target: GlobalTextInsertionTarget) -> AXUIElement? {
+        guard let id = target.accessibilityElementID,
+              let remembered = rememberedTextTargets[id]
+        else {
+            return nil
+        }
+
+        guard Date().timeIntervalSince(remembered.capturedAt) <= rememberedTextTargetMaxAge else {
+            rememberedTextTargets[id] = nil
+            return nil
+        }
+
+        return remembered.element
+    }
+
+    private func forgetTextTarget(for target: GlobalTextInsertionTarget) {
+        guard let id = target.accessibilityElementID else { return }
+        rememberedTextTargets[id] = nil
+    }
+
+    private func cleanupRememberedTextTargets(now: Date) {
+        rememberedTextTargets = rememberedTextTargets.filter { _, remembered in
+            now.timeIntervalSince(remembered.capturedAt) <= rememberedTextTargetMaxAge
+        }
     }
 
     private enum FocusedTextTargetValidation {
@@ -329,13 +459,16 @@ final class MacGlobalTextInsertionService: GlobalTextInsertionService, @unchecke
         guard let focusedElement = focusedElement(for: application) else {
             return .missing
         }
+        return validateTextTarget(focusedElement)
+    }
 
-        let role = copyAXString(from: focusedElement, attribute: kAXRoleAttribute)
-        let subrole = copyAXString(from: focusedElement, attribute: kAXSubroleAttribute)
+    private func validateTextTarget(_ element: AXUIElement) -> FocusedTextTargetValidation {
+        let role = copyAXString(from: element, attribute: kAXRoleAttribute)
+        let subrole = copyAXString(from: element, attribute: kAXSubroleAttribute)
         if isSecureTextTarget(role: role, subrole: subrole) {
             return .secure
         }
-        if isEditableTextTarget(focusedElement, role: role, subrole: subrole) {
+        if isEditableTextTarget(element, role: role, subrole: subrole) {
             return .editable
         }
         return .notEditable
@@ -376,10 +509,146 @@ final class MacGlobalTextInsertionService: GlobalTextInsertionService, @unchecke
         return value as? String
     }
 
+    private func processIdentifier(of element: AXUIElement) -> pid_t? {
+        var processIdentifier = pid_t()
+        guard AXUIElementGetPid(element, &processIdentifier) == .success else {
+            return nil
+        }
+        return processIdentifier
+    }
+
     private func isSecureTextTarget(role: String?, subrole: String?) -> Bool {
         let normalizedRole = role ?? ""
         let normalizedSubrole = subrole ?? ""
         return normalizedRole == "AXSecureTextField" || normalizedSubrole == "AXSecureTextField"
+    }
+
+    private func isSecureTextTarget(_ element: AXUIElement) -> Bool {
+        isSecureTextTarget(
+            role: copyAXString(from: element, attribute: kAXRoleAttribute),
+            subrole: copyAXString(from: element, attribute: kAXSubroleAttribute)
+        )
+    }
+
+    private func isReachableAXElement(_ element: AXUIElement) -> Bool {
+        var attributeNames: CFArray?
+        return AXUIElementCopyAttributeNames(element, &attributeNames) == .success
+    }
+
+    private func restoreFocus(to element: AXUIElement, in application: NSRunningApplication) -> Bool {
+        let applicationElement = AXUIElementCreateApplication(application.processIdentifier)
+        var didRestore = false
+
+        if AXUIElementSetAttributeValue(
+            applicationElement,
+            kAXFocusedUIElementAttribute as CFString,
+            element
+        ) == .success {
+            didRestore = true
+        }
+
+        if AXUIElementSetAttributeValue(
+            element,
+            kAXFocusedAttribute as CFString,
+            kCFBooleanTrue
+        ) == .success {
+            didRestore = true
+        }
+
+        return didRestore
+    }
+
+    private func insertTextUsingAccessibility(_ text: String, into element: AXUIElement) -> Bool {
+        guard !isSecureTextTarget(element) else {
+            return false
+        }
+
+        if isAXAttributeSettable(element, attribute: kAXSelectedTextAttribute),
+           AXUIElementSetAttributeValue(
+            element,
+            kAXSelectedTextAttribute as CFString,
+            text as CFString
+           ) == .success {
+            return true
+        }
+
+        return replaceTextValueUsingAccessibility(text, in: element)
+    }
+
+    private func replaceTextValueUsingAccessibility(_ text: String, in element: AXUIElement) -> Bool {
+        guard isAXAttributeSettable(element, attribute: kAXValueAttribute),
+              let currentValue = copyAXString(from: element, attribute: kAXValueAttribute),
+              let selectedRange = selectedTextRange(from: element)
+        else {
+            return false
+        }
+
+        let currentNSString = currentValue as NSString
+        guard selectedRange.location >= 0,
+              selectedRange.length >= 0,
+              selectedRange.location <= currentNSString.length,
+              selectedRange.location + selectedRange.length <= currentNSString.length
+        else {
+            return false
+        }
+
+        let updatedValue = NSMutableString(string: currentValue)
+        updatedValue.replaceCharacters(
+            in: NSRange(location: selectedRange.location, length: selectedRange.length),
+            with: text
+        )
+
+        guard AXUIElementSetAttributeValue(
+            element,
+            kAXValueAttribute as CFString,
+            updatedValue.copy() as! CFString
+        ) == .success else {
+            return false
+        }
+
+        let insertedLength = (text as NSString).length
+        _ = setSelectedTextRange(
+            CFRange(location: selectedRange.location + insertedLength, length: 0),
+            on: element
+        )
+        return true
+    }
+
+    private func selectedTextRange(from element: AXUIElement) -> CFRange? {
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(
+            element,
+            kAXSelectedTextRangeAttribute as CFString,
+            &value
+        ) == .success,
+              let value,
+              CFGetTypeID(value) == AXValueGetTypeID()
+        else {
+            return nil
+        }
+
+        var range = CFRange()
+        guard AXValueGetValue(value as! AXValue, .cfRange, &range) else {
+            return nil
+        }
+        return range
+    }
+
+    private func setSelectedTextRange(_ range: CFRange, on element: AXUIElement) -> Bool {
+        guard isAXAttributeSettable(element, attribute: kAXSelectedTextRangeAttribute) else {
+            return false
+        }
+
+        var mutableRange = range
+        guard let value = AXValueCreate(.cfRange, &mutableRange) else {
+            return false
+        }
+
+        return AXUIElementSetAttributeValue(
+            element,
+            kAXSelectedTextRangeAttribute as CFString,
+            value
+        ) == .success
     }
 
     private func isEditableTextTarget(_ element: AXUIElement, role: String?, subrole: String?) -> Bool {
@@ -398,6 +667,7 @@ final class MacGlobalTextInsertionService: GlobalTextInsertionService, @unchecke
 
         return isAXAttributeSettable(element, attribute: kAXSelectedTextAttribute)
             || isAXAttributeSettable(element, attribute: kAXSelectedTextRangeAttribute)
+            || isAXAttributeSettable(element, attribute: kAXValueAttribute)
     }
 
     private func isAXAttributeSettable(_ element: AXUIElement, attribute: String) -> Bool {
@@ -406,7 +676,7 @@ final class MacGlobalTextInsertionService: GlobalTextInsertionService, @unchecke
         return result == .success && isSettable.boolValue
     }
 
-    private func sendPasteCommand() -> Bool {
+    private func sendPasteCommand(to processIdentifier: pid_t) -> Bool {
         guard let source = CGEventSource(stateID: .combinedSessionState),
               let keyDown = CGEvent(keyboardEventSource: source, virtualKey: 9, keyDown: true),
               let keyUp = CGEvent(keyboardEventSource: source, virtualKey: 9, keyDown: false) else {
@@ -414,8 +684,8 @@ final class MacGlobalTextInsertionService: GlobalTextInsertionService, @unchecke
         }
         keyDown.flags = .maskCommand
         keyUp.flags = .maskCommand
-        keyDown.post(tap: .cghidEventTap)
-        keyUp.post(tap: .cghidEventTap)
+        keyDown.postToPid(processIdentifier)
+        keyUp.postToPid(processIdentifier)
         return true
     }
 
