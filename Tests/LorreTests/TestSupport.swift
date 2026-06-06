@@ -410,16 +410,18 @@ final class TestGlobalTextInsertionService: GlobalTextInsertionService {
     )
     var insertionResult: GlobalTextInsertionResult = .inserted
     private(set) var insertedText: String?
+    private(set) var insertedTarget: GlobalTextInsertionTarget?
     private(set) var copiedText: String?
+    private(set) var promptRequests: [Bool] = []
 
     func prepareTarget(promptForPermission: Bool) -> GlobalTextInsertionPreparation {
-        _ = promptForPermission
+        promptRequests.append(promptForPermission)
         return preparation
     }
 
     func insert(_ text: String, into target: GlobalTextInsertionTarget) async -> GlobalTextInsertionResult {
-        _ = target
         insertedText = text
+        insertedTarget = target
         return insertionResult
     }
 
@@ -430,6 +432,7 @@ final class TestGlobalTextInsertionService: GlobalTextInsertionService {
 
 final class TestCallWatcherService: CallWatcherService, @unchecked Sendable {
     private var continuation: AsyncStream<CallDetectionEvent>.Continuation?
+    private(set) var suppressedPrompts: [(fingerprint: String, cooldownSeconds: Int)] = []
     var isSubscribed: Bool {
         continuation != nil
     }
@@ -444,10 +447,16 @@ final class TestCallWatcherService: CallWatcherService, @unchecked Sendable {
     func emit(_ event: CallDetectionEvent) {
         continuation?.yield(event)
     }
+
+    func suppressPrompt(for candidate: CallDetectionCandidate, cooldownSeconds: Int) async {
+        suppressedPrompts.append((fingerprint: candidate.fingerprint, cooldownSeconds: cooldownSeconds))
+    }
 }
 
 final class TestCallPromptNotificationService: CallPromptNotificationService, @unchecked Sendable {
     private var actionContinuation: AsyncStream<CallPromptNotificationAction>.Continuation?
+    var authorizationGranted = true
+    var showCallPromptResult: Bool?
     var authorizationRequestCount = 0
     var shownCandidates: [CallDetectionCandidate] = []
     var removedFingerprints: [String] = []
@@ -457,12 +466,13 @@ final class TestCallPromptNotificationService: CallPromptNotificationService, @u
 
     func requestAuthorizationIfNeeded() async -> Bool {
         authorizationRequestCount += 1
-        return true
+        return authorizationGranted
     }
 
     func showCallPrompt(for candidate: CallDetectionCandidate) async -> Bool {
+        guard authorizationGranted else { return false }
         shownCandidates.append(candidate)
-        return true
+        return showCallPromptResult ?? true
     }
 
     func removeCallPrompt(fingerprint: String) async {

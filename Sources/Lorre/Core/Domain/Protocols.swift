@@ -92,6 +92,7 @@ protocol AudioPlaybackService: AnyObject {
 
 protocol CallWatcherService: Sendable {
     func makeDetectionStream(configuration: CallWatcherConfiguration) async -> AsyncStream<CallDetectionEvent>
+    func suppressPrompt(for candidate: CallDetectionCandidate, cooldownSeconds: Int) async
 }
 
 enum CallPromptNotificationAction: Equatable, Sendable {

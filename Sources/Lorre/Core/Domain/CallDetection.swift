@@ -470,6 +470,5 @@ actor CallPromptCoordinator {
 
     func resetWhenSignalEnded(fingerprint: String) {
         promptedFingerprints.remove(fingerprint)
-        dismissedUntil[fingerprint] = nil
     }
 }

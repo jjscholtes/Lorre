@@ -100,6 +100,8 @@ final class AppViewModel: ObservableObject {
     private var activeRecordingSource: RecordingSource?
     private var currentGlobalDictationStartedAt: Date?
     private var currentGlobalDictationTarget: GlobalTextInsertionTarget?
+    private var callPromptCandidatesByFingerprint: [String: CallDetectionCandidate] = [:]
+    private var handledCallPromptActionFingerprints: Set<String> = []
     private var currentProcessingTasks: [UUID: Task<Void, Never>] = [:]
     private var currentProcessingTaskTokens: [UUID: UUID] = [:]
     private let transcriptPersistenceQueue = TranscriptPersistenceQueue()
@@ -708,8 +710,7 @@ final class AppViewModel: ObservableObject {
 
     func acceptCallPromptTapped() {
         guard let candidate = callPromptCandidate else { return }
-        callPromptCandidate = nil
-        removeCallPromptNotification(fingerprint: candidate.fingerprint)
+        guard claimCallPromptAction(for: candidate) else { return }
         callWatcherStatusLine = "Recording from call prompt"
         startRecording(source: candidate.recommendedRecordingSource, startReason: "call_prompt")
         Task { [dependencies] in
@@ -726,10 +727,10 @@ final class AppViewModel: ObservableObject {
 
     func dismissCallPromptTapped() {
         guard let candidate = callPromptCandidate else { return }
-        callPromptCandidate = nil
-        removeCallPromptNotification(fingerprint: candidate.fingerprint)
+        guard claimCallPromptAction(for: candidate) else { return }
         callWatcherStatusLine = callWatcherConfiguration.isEnabled ? "Dismissed. Listening for a new call." : "Off"
-        Task { [dependencies] in
+        Task { [dependencies, cooldownSeconds = callWatcherConfiguration.cooldownSeconds] in
+            await dependencies.callWatcher.suppressPrompt(for: candidate, cooldownSeconds: cooldownSeconds)
             await dependencies.metrics.log(
                 name: "call_prompt_dismissed",
                 attributes: [
@@ -742,7 +743,7 @@ final class AppViewModel: ObservableObject {
 
     func disableCallWatcherFromPromptTapped() {
         if let candidate = callPromptCandidate {
-            removeCallPromptNotification(fingerprint: candidate.fingerprint)
+            _ = claimCallPromptAction(for: candidate)
         }
         callPromptCandidate = nil
         setCallWatcherEnabled(false)
@@ -2501,7 +2502,7 @@ final class AppViewModel: ObservableObject {
             return
         }
 
-        let preparation = dependencies.globalTextInsertion.prepareTarget(promptForPermission: false)
+        let preparation = dependencies.globalTextInsertion.prepareTarget(promptForPermission: true)
         guard case let .ready(target) = preparation else {
             let code = preparation.failureCode ?? "unknown"
             globalDictationPhase = .failed
@@ -2627,11 +2628,10 @@ final class AppViewModel: ObservableObject {
                     self.globalDictationStatusLine = "Inserting text…"
                 }
 
-                let insertionTarget = await MainActor.run {
-                    let refreshedTarget = self.currentGlobalDictationInsertionTarget(fallback: target)
-                    self.globalDictationTargetLabel = refreshedTarget.displayName
-                    self.globalDictationStatusLine = "Inserting text into \(refreshedTarget.displayName)…"
-                    return refreshedTarget
+                let insertionTarget = target
+                await MainActor.run {
+                    self.globalDictationTargetLabel = insertionTarget.displayName
+                    self.globalDictationStatusLine = "Inserting text into \(insertionTarget.displayName)…"
                 }
                 let insertion = await self.dependencies.globalTextInsertion.insert(text, into: insertionTarget)
                 await MainActor.run {
@@ -3572,18 +3572,12 @@ final class AppViewModel: ObservableObject {
         }
     }
 
-    private func currentGlobalDictationInsertionTarget(fallback: GlobalTextInsertionTarget) -> GlobalTextInsertionTarget {
-        let preparation = dependencies.globalTextInsertion.prepareTarget(promptForPermission: false)
-        if case let .ready(target) = preparation {
-            return target
-        }
-        return fallback
-    }
-
     private func startCallWatcherIfNeeded() {
         callWatcherTask?.cancel()
         callWatcherTask = nil
         callPromptCandidate = nil
+        callPromptCandidatesByFingerprint.removeAll()
+        handledCallPromptActionFingerprints.removeAll()
 
         guard callWatcherConfiguration.isEnabled else {
             callWatcherStatusLine = "Off"
@@ -3626,11 +3620,41 @@ final class AppViewModel: ObservableObject {
                 callWatcherStatusLine = "Call-like activity detected. Recorder is busy."
                 return
             }
+            guard callPromptCandidatesByFingerprint[candidate.fingerprint] == nil,
+                  !handledCallPromptActionFingerprints.contains(candidate.fingerprint)
+            else {
+                return
+            }
 
+            callPromptCandidatesByFingerprint[candidate.fingerprint] = candidate
             callPromptCandidate = candidate
             callWatcherStatusLine = "Call-like activity detected in \(candidate.appDisplayName)"
-            Task { [dependencies] in
+            Task { [weak self, dependencies] in
                 let didShowNotification = await dependencies.callPromptNotifications.showCallPrompt(for: candidate)
+                if !didShowNotification {
+                    await MainActor.run {
+                        guard let self,
+                              self.callPromptCandidate?.fingerprint == candidate.fingerprint,
+                              self.callWatcherConfiguration.isEnabled
+                        else {
+                            return
+                        }
+                        self.callWatcherStatusLine = "Call detected in \(candidate.appDisplayName). Notifications unavailable; showing the prompt in Lorre."
+                        self.banner = AppBanner(
+                            kind: .info,
+                            title: "Call detected",
+                            message: "Notification permission is unavailable, so the recording prompt is shown in Lorre."
+                        )
+                        self.requestUserAttentionForCallPromptFallback()
+                    }
+                    await dependencies.metrics.log(
+                        name: "call_prompt_notification_unavailable",
+                        attributes: [
+                            "app": candidate.appDisplayName,
+                            "confidence": "\(candidate.confidenceScore)"
+                        ]
+                    )
+                }
                 await dependencies.metrics.log(
                     name: "call_prompt_shown",
                     attributes: [
@@ -3645,6 +3669,8 @@ final class AppViewModel: ObservableObject {
 
         case let .candidateEnded(fingerprint):
             removeCallPromptNotification(fingerprint: fingerprint)
+            callPromptCandidatesByFingerprint[fingerprint] = nil
+            handledCallPromptActionFingerprints.remove(fingerprint)
             if callPromptCandidate?.fingerprint == fingerprint {
                 callPromptCandidate = nil
             }
@@ -3652,23 +3678,95 @@ final class AppViewModel: ObservableObject {
         }
     }
 
+    private func callPromptCandidate(for fingerprint: String) -> CallDetectionCandidate? {
+        if callPromptCandidate?.fingerprint == fingerprint {
+            return callPromptCandidate
+        }
+        return callPromptCandidatesByFingerprint[fingerprint]
+    }
+
+    private func claimCallPromptAction(for candidate: CallDetectionCandidate) -> Bool {
+        guard !handledCallPromptActionFingerprints.contains(candidate.fingerprint) else {
+            return false
+        }
+        handledCallPromptActionFingerprints.insert(candidate.fingerprint)
+        callPromptCandidatesByFingerprint[candidate.fingerprint] = nil
+        if callPromptCandidate?.fingerprint == candidate.fingerprint {
+            callPromptCandidate = nil
+        }
+        removeCallPromptNotification(fingerprint: candidate.fingerprint)
+        return true
+    }
+
+    private func requestUserAttentionForCallPromptFallback() {
+        #if canImport(AppKit)
+        NSApplication.shared.requestUserAttention(.informationalRequest)
+        #endif
+    }
+
     private func handleCallPromptNotificationAction(_ action: CallPromptNotificationAction) {
         switch action {
         case let .accept(fingerprint):
-            guard callPromptCandidate?.fingerprint == fingerprint else { return }
-            acceptCallPromptTapped()
+            guard let candidate = callPromptCandidate(for: fingerprint),
+                  claimCallPromptAction(for: candidate)
+            else {
+                return
+            }
+            callWatcherStatusLine = "Recording from call prompt"
+            startRecording(source: candidate.recommendedRecordingSource, startReason: "call_prompt")
+            Task { [dependencies] in
+                await dependencies.metrics.log(
+                    name: "call_prompt_accepted",
+                    attributes: [
+                        "app": candidate.appDisplayName,
+                        "confidence": "\(candidate.confidenceScore)",
+                        "source": candidate.recommendedRecordingSource.rawValue
+                    ]
+                )
+            }
         case let .dismiss(fingerprint):
-            guard callPromptCandidate?.fingerprint == fingerprint else { return }
-            dismissCallPromptTapped()
+            guard let candidate = callPromptCandidate(for: fingerprint),
+                  claimCallPromptAction(for: candidate)
+            else {
+                return
+            }
+            callWatcherStatusLine = callWatcherConfiguration.isEnabled ? "Dismissed. Listening for a new call." : "Off"
+            Task { [dependencies, cooldownSeconds = callWatcherConfiguration.cooldownSeconds] in
+                await dependencies.callWatcher.suppressPrompt(for: candidate, cooldownSeconds: cooldownSeconds)
+                await dependencies.metrics.log(
+                    name: "call_prompt_dismissed",
+                    attributes: [
+                        "app": candidate.appDisplayName,
+                        "confidence": "\(candidate.confidenceScore)"
+                    ]
+                )
+            }
         case let .disable(fingerprint):
-            guard callPromptCandidate?.fingerprint == fingerprint else { return }
+            guard let candidate = callPromptCandidate(for: fingerprint) else { return }
+            _ = claimCallPromptAction(for: candidate)
             disableCallWatcherFromPromptTapped()
         }
     }
 
     private func requestCallPromptNotificationAuthorization() {
-        Task { [dependencies] in
-            _ = await dependencies.callPromptNotifications.requestAuthorizationIfNeeded()
+        Task { [weak self, dependencies] in
+            let granted = await dependencies.callPromptNotifications.requestAuthorizationIfNeeded()
+            guard !granted else { return }
+            await dependencies.metrics.log(name: "call_prompt_notification_permission_blocked")
+            await MainActor.run {
+                guard let self,
+                      self.callWatcherConfiguration.isEnabled,
+                      self.callPromptCandidate == nil
+                else {
+                    return
+                }
+                self.callWatcherStatusLine = "Listening for calls; notification permission is blocked."
+                self.banner = AppBanner(
+                    kind: .info,
+                    title: "Notification permission blocked",
+                    message: "Call Watcher will still show prompts inside Lorre, but macOS notifications are unavailable."
+                )
+            }
         }
     }
 

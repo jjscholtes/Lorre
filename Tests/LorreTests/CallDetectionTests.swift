@@ -221,8 +221,30 @@ struct CallDetectionTests {
             lastSeenAt: nextCallStartedAt,
             reasons: candidate.reasons
         )
-        let nextCallPrompt = await coordinator.shouldPrompt(for: nextCandidate, now: nextCallStartedAt, isRecording: false)
-        XCTAssertTrue(nextCallPrompt)
+        let nextCallPromptDuringCooldown = await coordinator.shouldPrompt(
+            for: nextCandidate,
+            now: nextCallStartedAt,
+            isRecording: false
+        )
+        XCTAssertFalse(nextCallPromptDuringCooldown)
+
+        let postCooldownCallStartedAt = now.addingTimeInterval(603)
+        let postCooldownCandidate = CallDetectionCandidate(
+            fingerprint: candidate.fingerprint,
+            appBundleID: candidate.appBundleID,
+            appDisplayName: candidate.appDisplayName,
+            confidenceScore: candidate.confidenceScore,
+            recommendedRecordingSource: candidate.recommendedRecordingSource,
+            firstDetectedAt: postCooldownCallStartedAt,
+            lastSeenAt: postCooldownCallStartedAt,
+            reasons: candidate.reasons
+        )
+        let nextCallPromptAfterCooldown = await coordinator.shouldPrompt(
+            for: postCooldownCandidate,
+            now: postCooldownCallStartedAt,
+            isRecording: false
+        )
+        XCTAssertTrue(nextCallPromptAfterCooldown)
     }
 
     @Test

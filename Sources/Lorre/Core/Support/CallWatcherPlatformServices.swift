@@ -13,6 +13,11 @@ struct DisabledCallWatcherService: CallWatcherService {
             continuation.finish()
         }
     }
+
+    func suppressPrompt(for candidate: CallDetectionCandidate, cooldownSeconds: Int) async {
+        _ = candidate
+        _ = cooldownSeconds
+    }
 }
 
 #if canImport(AppKit)
@@ -47,6 +52,10 @@ struct MacCallWatcherService: CallWatcherService {
                 task.cancel()
             }
         }
+    }
+
+    func suppressPrompt(for candidate: CallDetectionCandidate, cooldownSeconds: Int) async {
+        await coordinator.dismiss(candidate: candidate, now: Date(), cooldownSeconds: cooldownSeconds)
     }
 
     @MainActor

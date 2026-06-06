@@ -129,7 +129,7 @@ final class MacCallPromptNotificationService: NSObject, CallPromptNotificationSe
             completionHandler([])
             return
         }
-        completionHandler([.banner, .sound])
+        completionHandler([.banner, .list, .sound])
     }
 
     private func configureCategories() {

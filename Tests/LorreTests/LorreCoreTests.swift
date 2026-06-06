@@ -2193,8 +2193,67 @@ struct LorreCoreTests {
         }
 
         await MainActor.run {
+            XCTAssertTrue(insertion.promptRequests.last == true)
             XCTAssertTrue(insertion.insertedText?.contains("We need a clean transcript") == true)
             XCTAssertEqual(viewModel.banner?.title, "Dictation inserted")
+        }
+    }
+
+    @Test
+    func testAppViewModelGlobalDictationUsesOriginalTargetWhenFocusChangesBeforeInsert() async throws {
+        let root = makeTemporaryRoot(named: "LorreGlobalDictationOriginalTargetTests")
+        let recorder = ControlledRecorderService()
+        let hotKey = TestGlobalDictationHotKeyService()
+        let insertion = TestGlobalTextInsertionService()
+        let originalTarget = GlobalTextInsertionTarget(
+            appName: "Notes",
+            bundleIdentifier: "com.apple.Notes",
+            processIdentifier: 42,
+            capturedAt: Date(timeIntervalSince1970: 1_000)
+        )
+        let laterTarget = GlobalTextInsertionTarget(
+            appName: "Mail",
+            bundleIdentifier: "com.apple.mail",
+            processIdentifier: 84,
+            capturedAt: Date(timeIntervalSince1970: 1_100)
+        )
+        await MainActor.run {
+            insertion.preparation = .ready(originalTarget)
+        }
+        let dependencies = makeTestDependencies(
+            root: root,
+            recorder: recorder,
+            globalDictationHotKey: hotKey,
+            globalTextInsertion: insertion
+        )
+        _ = try await dependencies.settings.saveGlobalDictationConfiguration(
+            GlobalDictationConfiguration(isEnabled: true, shortcut: .optionShiftD)
+        )
+        let viewModel = await MainActor.run {
+            AppViewModel(dependencies: dependencies)
+        }
+
+        await viewModel.start()
+        await MainActor.run {
+            hotKey.fire()
+        }
+
+        try await waitUntil {
+            await MainActor.run { viewModel.globalDictationPhase == .listening }
+        }
+
+        await MainActor.run {
+            insertion.preparation = .ready(laterTarget)
+            hotKey.fire()
+        }
+
+        try await waitUntil(timeout: .seconds(4)) {
+            await MainActor.run { viewModel.globalDictationPhase == .inserted }
+        }
+
+        await MainActor.run {
+            XCTAssertEqual(insertion.insertedTarget, originalTarget)
+            XCTAssertEqual(viewModel.globalDictationTargetLabel, originalTarget.displayName)
         }
     }
 
@@ -2230,9 +2289,60 @@ struct LorreCoreTests {
         }
 
         await MainActor.run {
+            XCTAssertTrue(insertion.promptRequests.last == true)
             XCTAssertEqual(viewModel.globalDictationTargetLabel, "Accessibility")
             XCTAssertTrue(viewModel.globalDictationStatusLine.localizedCaseInsensitiveContains("Accessibility"))
             XCTAssertEqual(viewModel.banner?.title, "Cannot start global dictation")
+        }
+    }
+
+    @Test
+    func testAppViewModelGlobalDictationKeepsTranscriptAvailableWhenInsertionFails() async throws {
+        let root = makeTemporaryRoot(named: "LorreGlobalDictationInsertionFallbackTests")
+        let recorder = ControlledRecorderService()
+        let hotKey = TestGlobalDictationHotKeyService()
+        let insertion = TestGlobalTextInsertionService()
+        await MainActor.run {
+            insertion.insertionResult = .failed(
+                code: "no_editable_target",
+                message: "No editable text field was detected in Notes."
+            )
+        }
+        let dependencies = makeTestDependencies(
+            root: root,
+            recorder: recorder,
+            globalDictationHotKey: hotKey,
+            globalTextInsertion: insertion
+        )
+        _ = try await dependencies.settings.saveGlobalDictationConfiguration(
+            GlobalDictationConfiguration(isEnabled: true, shortcut: .optionShiftD)
+        )
+        let viewModel = await MainActor.run {
+            AppViewModel(dependencies: dependencies)
+        }
+
+        await viewModel.start()
+        await MainActor.run {
+            hotKey.fire()
+        }
+
+        try await waitUntil {
+            await MainActor.run { viewModel.globalDictationPhase == .listening }
+        }
+
+        await MainActor.run {
+            hotKey.fire()
+        }
+
+        try await waitUntil(timeout: .seconds(4)) {
+            await MainActor.run { viewModel.globalDictationPhase == .failed }
+        }
+
+        await MainActor.run {
+            XCTAssertTrue(viewModel.globalDictationTranscriptText.contains("We need a clean transcript"))
+            XCTAssertEqual(viewModel.banner?.title, "Dictation insertion failed")
+            viewModel.copyGlobalDictationTranscriptToClipboard()
+            XCTAssertEqual(insertion.copiedText, viewModel.globalDictationTranscriptText)
         }
     }
 
@@ -2426,6 +2536,166 @@ struct LorreCoreTests {
 
         let request = await recorder.lastStartRequest
         XCTAssertEqual(request?.source, .microphoneAndSystemAudio)
+        XCTAssertTrue(notifications.removedFingerprints.contains(candidate.fingerprint))
+    }
+
+    @Test
+    func testAppViewModelCallPromptFallsBackToInAppWhenNotificationsAreDenied() async throws {
+        let root = makeTemporaryRoot(named: "LorreCallPromptNotificationDeniedTests")
+        let recorder = ControlledRecorderService()
+        let callWatcher = TestCallWatcherService()
+        let notifications = TestCallPromptNotificationService()
+        notifications.authorizationGranted = false
+        let dependencies = makeTestDependencies(
+            root: root,
+            recorder: recorder,
+            callWatcher: callWatcher,
+            callPromptNotifications: notifications
+        )
+        let viewModel = await MainActor.run {
+            AppViewModel(dependencies: dependencies)
+        }
+
+        await viewModel.start()
+        await MainActor.run {
+            viewModel.setCallWatcherEnabled(true)
+        }
+        try await waitUntil {
+            callWatcher.isSubscribed
+        }
+
+        let now = Date(timeIntervalSince1970: 1_000)
+        let candidate = CallDetectionCandidate(
+            fingerprint: "com.google.Chrome:3",
+            appBundleID: "com.google.Chrome",
+            appDisplayName: "Google Chrome",
+            confidenceScore: 90,
+            recommendedRecordingSource: .microphoneAndSystemAudio,
+            firstDetectedAt: now,
+            lastSeenAt: now,
+            reasons: [.browserCallWindowTitle]
+        )
+
+        callWatcher.emit(.candidateDetected(candidate))
+
+        try await waitUntil {
+            await MainActor.run {
+                viewModel.callPromptCandidate?.fingerprint == candidate.fingerprint
+                    && viewModel.callWatcherStatusLine.contains("Notifications unavailable")
+            }
+        }
+
+        await MainActor.run {
+            XCTAssertTrue(notifications.shownCandidates.isEmpty)
+            XCTAssertEqual(viewModel.banner?.title, "Call detected")
+        }
+    }
+
+    @Test
+    func testAppViewModelIgnoresDuplicateCallPromptNotificationAccepts() async throws {
+        let root = makeTemporaryRoot(named: "LorreCallPromptDuplicateAcceptTests")
+        let recorder = ControlledRecorderService(startDelay: .milliseconds(200))
+        let callWatcher = TestCallWatcherService()
+        let notifications = TestCallPromptNotificationService()
+        let dependencies = makeTestDependencies(
+            root: root,
+            recorder: recorder,
+            callWatcher: callWatcher,
+            callPromptNotifications: notifications
+        )
+        let viewModel = await MainActor.run {
+            AppViewModel(dependencies: dependencies)
+        }
+
+        await viewModel.start()
+        await MainActor.run {
+            viewModel.setCallWatcherEnabled(true)
+        }
+        try await waitUntil {
+            callWatcher.isSubscribed
+        }
+
+        let now = Date(timeIntervalSince1970: 1_000)
+        let candidate = CallDetectionCandidate(
+            fingerprint: "us.zoom.xos:3",
+            appBundleID: "us.zoom.xos",
+            appDisplayName: "Zoom",
+            confidenceScore: 95,
+            recommendedRecordingSource: .microphoneAndSystemAudio,
+            firstDetectedAt: now,
+            lastSeenAt: now,
+            reasons: [.knownCommunicationAppForeground, .captureDeviceInUse]
+        )
+
+        callWatcher.emit(.candidateDetected(candidate))
+
+        try await waitUntil {
+            notifications.shownCandidates.contains(where: { $0.fingerprint == candidate.fingerprint })
+        }
+
+        notifications.emit(.accept(fingerprint: candidate.fingerprint))
+        notifications.emit(.accept(fingerprint: candidate.fingerprint))
+
+        try await waitUntil {
+            await recorder.startCallCount == 1
+        }
+        try await Task.sleep(for: .milliseconds(100))
+
+        let startCallCount = await recorder.startCallCount
+        XCTAssertEqual(startCallCount, 1)
+    }
+
+    @Test
+    func testAppViewModelDismissedCallPromptSuppressesWatcherPrompt() async throws {
+        let root = makeTemporaryRoot(named: "LorreCallPromptDismissSuppressTests")
+        let recorder = ControlledRecorderService()
+        let callWatcher = TestCallWatcherService()
+        let notifications = TestCallPromptNotificationService()
+        let dependencies = makeTestDependencies(
+            root: root,
+            recorder: recorder,
+            callWatcher: callWatcher,
+            callPromptNotifications: notifications
+        )
+        let viewModel = await MainActor.run {
+            AppViewModel(dependencies: dependencies)
+        }
+
+        await viewModel.start()
+        await MainActor.run {
+            viewModel.setCallWatcherEnabled(true)
+        }
+        try await waitUntil {
+            callWatcher.isSubscribed
+        }
+
+        let now = Date(timeIntervalSince1970: 1_000)
+        let candidate = CallDetectionCandidate(
+            fingerprint: "com.microsoft.edgemac:3",
+            appBundleID: "com.microsoft.edgemac",
+            appDisplayName: "Microsoft Edge",
+            confidenceScore: 90,
+            recommendedRecordingSource: .microphoneAndSystemAudio,
+            firstDetectedAt: now,
+            lastSeenAt: now,
+            reasons: [.captureDeviceInUse]
+        )
+
+        callWatcher.emit(.candidateDetected(candidate))
+
+        try await waitUntil {
+            await MainActor.run { viewModel.callPromptCandidate?.fingerprint == candidate.fingerprint }
+        }
+
+        await MainActor.run {
+            viewModel.dismissCallPromptTapped()
+        }
+
+        try await waitUntil {
+            callWatcher.suppressedPrompts.contains {
+                $0.fingerprint == candidate.fingerprint && $0.cooldownSeconds == 600
+            }
+        }
         XCTAssertTrue(notifications.removedFingerprints.contains(candidate.fingerprint))
     }
 

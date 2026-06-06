@@ -153,18 +153,13 @@ final class MacGlobalTextInsertionService: GlobalTextInsertionService, @unchecke
         }
 
         let appName = targetApplication.localizedName ?? "Focused app"
-        if isFrontmostApplication(targetApplication) {
-            let systemElement = AXUIElementCreateSystemWide()
-            if let focusedElement = copyAXElement(
-                from: systemElement,
-                attribute: kAXFocusedUIElementAttribute
-            ) {
-                let role = copyAXString(from: focusedElement, attribute: kAXRoleAttribute)
-                let subrole = copyAXString(from: focusedElement, attribute: kAXSubroleAttribute)
-                if isSecureTextTarget(role: role, subrole: subrole) {
-                    return .secureTarget(appName: appName)
-                }
-            }
+        switch validateFocusedTextTarget(for: targetApplication) {
+        case .editable:
+            break
+        case .secure:
+            return .secureTarget(appName: appName)
+        case .missing, .notEditable:
+            return .noEditableTarget(appName: appName)
         }
 
         return .ready(
@@ -212,18 +207,27 @@ final class MacGlobalTextInsertionService: GlobalTextInsertionService, @unchecke
         }
 
         // Give the target app a brief moment to focus its text field
-        try? await Task.sleep(for: .milliseconds(100))
+        try? await Task.sleep(for: .milliseconds(150))
 
         guard isFrontmost || isApplicationFrontmost(processIdentifier: target.processIdentifier) else {
             snapshot.restore(to: pasteboard)
             return .failed(code: "target_app_activation_failed", message: "Lorre could not return focus to \(target.displayName).")
         }
 
-        if focusedElementIsSecureTextTarget() {
+        switch validateFocusedTextTarget(for: application) {
+        case .editable:
+            break
+        case .secure:
             snapshot.restore(to: pasteboard)
             return .failed(
                 code: "secure_target",
                 message: GlobalTextInsertionPreparation.secureTarget(appName: target.displayName).userFacingMessage
+            )
+        case .missing, .notEditable:
+            snapshot.restore(to: pasteboard)
+            return .failed(
+                code: "no_editable_target",
+                message: GlobalTextInsertionPreparation.noEditableTarget(appName: target.displayName).userFacingMessage
             )
         }
 
@@ -314,6 +318,44 @@ final class MacGlobalTextInsertionService: GlobalTextInsertionService, @unchecke
         AXUIElementPerformAction(applicationElement, kAXRaiseAction as CFString)
     }
 
+    private enum FocusedTextTargetValidation {
+        case editable
+        case secure
+        case missing
+        case notEditable
+    }
+
+    private func validateFocusedTextTarget(for application: NSRunningApplication) -> FocusedTextTargetValidation {
+        guard let focusedElement = focusedElement(for: application) else {
+            return .missing
+        }
+
+        let role = copyAXString(from: focusedElement, attribute: kAXRoleAttribute)
+        let subrole = copyAXString(from: focusedElement, attribute: kAXSubroleAttribute)
+        if isSecureTextTarget(role: role, subrole: subrole) {
+            return .secure
+        }
+        if isEditableTextTarget(focusedElement, role: role, subrole: subrole) {
+            return .editable
+        }
+        return .notEditable
+    }
+
+    private func focusedElement(for application: NSRunningApplication) -> AXUIElement? {
+        if isFrontmostApplication(application) {
+            let systemElement = AXUIElementCreateSystemWide()
+            if let focusedElement = copyAXElement(
+                from: systemElement,
+                attribute: kAXFocusedUIElementAttribute
+            ) {
+                return focusedElement
+            }
+        }
+
+        let applicationElement = AXUIElementCreateApplication(application.processIdentifier)
+        return copyAXElement(from: applicationElement, attribute: kAXFocusedUIElementAttribute)
+    }
+
     private func copyAXElement(from element: AXUIElement, attribute: String) -> AXUIElement? {
         var value: CFTypeRef?
         guard AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success,
@@ -340,18 +382,28 @@ final class MacGlobalTextInsertionService: GlobalTextInsertionService, @unchecke
         return normalizedRole == "AXSecureTextField" || normalizedSubrole == "AXSecureTextField"
     }
 
-    private func focusedElementIsSecureTextTarget() -> Bool {
-        let systemElement = AXUIElementCreateSystemWide()
-        guard let focusedElement = copyAXElement(
-            from: systemElement,
-            attribute: kAXFocusedUIElementAttribute
-        ) else {
-            return false
+    private func isEditableTextTarget(_ element: AXUIElement, role: String?, subrole: String?) -> Bool {
+        let normalizedRole = role ?? ""
+        let normalizedSubrole = subrole ?? ""
+        let editableRoles: Set<String> = [
+            "AXTextArea",
+            "AXTextField",
+            "AXComboBox",
+            "AXSearchField"
+        ]
+
+        if editableRoles.contains(normalizedRole) || editableRoles.contains(normalizedSubrole) {
+            return true
         }
-        return isSecureTextTarget(
-            role: copyAXString(from: focusedElement, attribute: kAXRoleAttribute),
-            subrole: copyAXString(from: focusedElement, attribute: kAXSubroleAttribute)
-        )
+
+        return isAXAttributeSettable(element, attribute: kAXSelectedTextAttribute)
+            || isAXAttributeSettable(element, attribute: kAXSelectedTextRangeAttribute)
+    }
+
+    private func isAXAttributeSettable(_ element: AXUIElement, attribute: String) -> Bool {
+        var isSettable = DarwinBoolean(false)
+        let result = AXUIElementIsAttributeSettable(element, attribute as CFString, &isSettable)
+        return result == .success && isSettable.boolValue
     }
 
     private func sendPasteCommand() -> Bool {
@@ -362,8 +414,8 @@ final class MacGlobalTextInsertionService: GlobalTextInsertionService, @unchecke
         }
         keyDown.flags = .maskCommand
         keyUp.flags = .maskCommand
-        keyDown.post(tap: .cgAnnotatedSessionEventTap)
-        keyUp.post(tap: .cgAnnotatedSessionEventTap)
+        keyDown.post(tap: .cghidEventTap)
+        keyUp.post(tap: .cghidEventTap)
         return true
     }
 
