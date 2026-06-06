@@ -199,7 +199,7 @@ final class MacGlobalTextInsertionService: GlobalTextInsertionService, @unchecke
         pasteboard.setString(text, forType: .string)
 
         raiseApplication(processIdentifier: target.processIdentifier)
-        _ = application.activate(options: [.activateIgnoringOtherApps])
+        _ = application.activate(options: [])
 
         let startActivate = Date()
         var isFrontmost = false
