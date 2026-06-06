@@ -199,10 +199,22 @@ final class MacGlobalTextInsertionService: GlobalTextInsertionService, @unchecke
         pasteboard.setString(text, forType: .string)
 
         raiseApplication(processIdentifier: target.processIdentifier)
-        let activated = application.activate(options: [])
-        try? await Task.sleep(for: .milliseconds(260))
+        _ = application.activate(options: [.activateIgnoringOtherApps])
 
-        guard activated || isApplicationFrontmost(processIdentifier: target.processIdentifier) else {
+        let startActivate = Date()
+        var isFrontmost = false
+        while Date().timeIntervalSince(startActivate) < 1.0 {
+            if isApplicationFrontmost(processIdentifier: target.processIdentifier) {
+                isFrontmost = true
+                break
+            }
+            try? await Task.sleep(for: .milliseconds(50))
+        }
+
+        // Give the target app a brief moment to focus its text field
+        try? await Task.sleep(for: .milliseconds(100))
+
+        guard isFrontmost || isApplicationFrontmost(processIdentifier: target.processIdentifier) else {
             snapshot.restore(to: pasteboard)
             return .failed(code: "target_app_activation_failed", message: "Lorre could not return focus to \(target.displayName).")
         }
@@ -350,8 +362,8 @@ final class MacGlobalTextInsertionService: GlobalTextInsertionService, @unchecke
         }
         keyDown.flags = .maskCommand
         keyUp.flags = .maskCommand
-        keyDown.post(tap: .cghidEventTap)
-        keyUp.post(tap: .cghidEventTap)
+        keyDown.post(tap: .cgAnnotatedSessionEventTap)
+        keyUp.post(tap: .cgAnnotatedSessionEventTap)
         return true
     }
 
