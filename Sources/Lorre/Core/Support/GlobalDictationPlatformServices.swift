@@ -198,19 +198,27 @@ final class MacGlobalTextInsertionService: GlobalTextInsertionService, @unchecke
         pasteboard.clearContents()
         pasteboard.setString(text, forType: .string)
 
+        raiseApplication(processIdentifier: target.processIdentifier)
         let activated = application.activate(options: [])
-        guard activated else {
+        try? await Task.sleep(for: .milliseconds(260))
+
+        guard activated || isApplicationFrontmost(processIdentifier: target.processIdentifier) else {
             snapshot.restore(to: pasteboard)
             return .failed(code: "target_app_activation_failed", message: "Lorre could not return focus to \(target.displayName).")
         }
 
-        try? await Task.sleep(for: .milliseconds(260))
         if focusedElementIsSecureTextTarget() {
             snapshot.restore(to: pasteboard)
             return .failed(
                 code: "secure_target",
                 message: GlobalTextInsertionPreparation.secureTarget(appName: target.displayName).userFacingMessage
             )
+        }
+
+        if await sendUnicodeText(text) {
+            rememberTargetApplicationIfUsable(application)
+            snapshot.restore(to: pasteboard)
+            return .inserted
         }
 
         guard sendPasteCommand() else {
@@ -273,6 +281,10 @@ final class MacGlobalTextInsertionService: GlobalTextInsertionService, @unchecke
         NSWorkspace.shared.frontmostApplication?.processIdentifier == application.processIdentifier
     }
 
+    private func isApplicationFrontmost(processIdentifier: pid_t) -> Bool {
+        NSWorkspace.shared.frontmostApplication?.processIdentifier == processIdentifier
+    }
+
     private static func isUsableTargetApplication(
         _ application: NSRunningApplication,
         ownBundleIdentifier: String?,
@@ -289,6 +301,11 @@ final class MacGlobalTextInsertionService: GlobalTextInsertionService, @unchecke
             return false
         }
         return application.activationPolicy != .prohibited
+    }
+
+    private func raiseApplication(processIdentifier: pid_t) {
+        let applicationElement = AXUIElementCreateApplication(processIdentifier)
+        AXUIElementPerformAction(applicationElement, kAXRaiseAction as CFString)
     }
 
     private func copyAXElement(from element: AXUIElement, attribute: String) -> AXUIElement? {
@@ -341,6 +358,43 @@ final class MacGlobalTextInsertionService: GlobalTextInsertionService, @unchecke
         keyUp.flags = .maskCommand
         keyDown.post(tap: .cghidEventTap)
         keyUp.post(tap: .cghidEventTap)
+        return true
+    }
+
+    private func sendUnicodeText(_ text: String) async -> Bool {
+        guard let source = CGEventSource(stateID: .combinedSessionState) else {
+            return false
+        }
+
+        var currentChunk = ""
+        for character in text {
+            currentChunk.append(character)
+            if currentChunk.utf16.count >= 48 {
+                guard postUnicodeChunk(currentChunk, source: source) else { return false }
+                currentChunk = ""
+                try? await Task.sleep(for: .milliseconds(4))
+            }
+        }
+
+        if !currentChunk.isEmpty {
+            guard postUnicodeChunk(currentChunk, source: source) else { return false }
+        }
+        try? await Task.sleep(for: .milliseconds(180))
+        return true
+    }
+
+    private func postUnicodeChunk(_ text: String, source: CGEventSource) -> Bool {
+        let units = Array(text.utf16)
+        guard let event = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: true) else {
+            return false
+        }
+        units.withUnsafeBufferPointer { buffer in
+            event.keyboardSetUnicodeString(
+                stringLength: buffer.count,
+                unicodeString: buffer.baseAddress
+            )
+        }
+        event.post(tap: .cghidEventTap)
         return true
     }
 }

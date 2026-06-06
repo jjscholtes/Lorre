@@ -337,7 +337,14 @@ actor CallDetectionEngine {
         }
 
         if let captureDeviceUsage = sample.captureDeviceUsage, captureDeviceUsage.isAnyDeviceInUse {
-            score += captureDeviceUsage.isCameraAndMicrophoneInUse ? 45 : 25
+            let isForegroundBrowser = selectedRule.category == .browser
+                && frontmostRule?.bundleID == selectedRule.bundleID
+            if isForegroundBrowser {
+                // Browser tabs often hide call details from CGWindow unless Screen Recording is allowed.
+                score += captureDeviceUsage.isCameraAndMicrophoneInUse ? 85 : 70
+            } else {
+                score += captureDeviceUsage.isCameraAndMicrophoneInUse ? 45 : 25
+            }
             reasons.append(.captureDeviceInUse)
         }
 

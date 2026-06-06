@@ -65,6 +65,49 @@ struct CallDetectionTests {
     }
 
     @Test
+    func testForegroundBrowserWithCaptureDeviceUseCanEmitWithoutCallTitle() async {
+        let engine = CallDetectionEngine(debounceSeconds: 0)
+        let event = await engine.ingest(
+            CallSignalSample(
+                observedAt: Date(timeIntervalSince1970: 1_000),
+                frontmostBundleID: "com.microsoft.edgemac",
+                runningBundleIDs: ["com.microsoft.edgemac"],
+                captureDeviceUsage: CaptureDeviceUsageSummary(
+                    isMicrophoneInUseByAnotherApplication: true
+                )
+            ),
+            configuration: enabledConfiguration
+        )
+
+        guard case let .candidateDetected(candidate) = event else {
+            XCTFail("Expected foreground browser capture device use to create a candidate")
+            return
+        }
+        XCTAssertEqual(candidate.appDisplayName, "Microsoft Edge")
+        XCTAssertEqual(candidate.confidenceBand, .high)
+        XCTAssertTrue(candidate.reasons.contains(.captureDeviceInUse))
+        XCTAssertFalse(candidate.reasons.contains(.browserCallWindowTitle))
+    }
+
+    @Test
+    func testBackgroundBrowserWithCaptureDeviceUseDoesNotPromptWithoutCallTitle() async {
+        let engine = CallDetectionEngine(debounceSeconds: 0)
+        let event = await engine.ingest(
+            CallSignalSample(
+                observedAt: Date(timeIntervalSince1970: 1_000),
+                frontmostBundleID: "com.apple.finder",
+                runningBundleIDs: ["com.microsoft.edgemac"],
+                captureDeviceUsage: CaptureDeviceUsageSummary(
+                    isMicrophoneInUseByAnotherApplication: true
+                )
+            ),
+            configuration: enabledConfiguration
+        )
+
+        XCTAssertNil(event)
+    }
+
+    @Test
     func testBrowserCallTitleCanEmitCandidate() async {
         let engine = CallDetectionEngine(debounceSeconds: 0)
         let event = await engine.ingest(

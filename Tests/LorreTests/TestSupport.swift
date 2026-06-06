@@ -446,6 +446,40 @@ final class TestCallWatcherService: CallWatcherService, @unchecked Sendable {
     }
 }
 
+final class TestCallPromptNotificationService: CallPromptNotificationService, @unchecked Sendable {
+    private var actionContinuation: AsyncStream<CallPromptNotificationAction>.Continuation?
+    var authorizationRequestCount = 0
+    var shownCandidates: [CallDetectionCandidate] = []
+    var removedFingerprints: [String] = []
+    var isActionStreamSubscribed: Bool {
+        actionContinuation != nil
+    }
+
+    func requestAuthorizationIfNeeded() async -> Bool {
+        authorizationRequestCount += 1
+        return true
+    }
+
+    func showCallPrompt(for candidate: CallDetectionCandidate) async -> Bool {
+        shownCandidates.append(candidate)
+        return true
+    }
+
+    func removeCallPrompt(fingerprint: String) async {
+        removedFingerprints.append(fingerprint)
+    }
+
+    func makeActionStream() async -> AsyncStream<CallPromptNotificationAction> {
+        AsyncStream { continuation in
+            self.actionContinuation = continuation
+        }
+    }
+
+    func emit(_ action: CallPromptNotificationAction) {
+        actionContinuation?.yield(action)
+    }
+}
+
 actor ProcessingUpdateCollector {
     private var updates: [ProcessingUpdate] = []
 
@@ -471,6 +505,7 @@ func makeTestDependencies(
     diarization: any SpeakerDiarizationService = MockSpeakerDiarizationService(),
     speakerEnrollment: any SpeakerEnrollmentService = TestSpeakerEnrollmentService(),
     callWatcher: any CallWatcherService = DisabledCallWatcherService(),
+    callPromptNotifications: any CallPromptNotificationService = DisabledCallPromptNotificationService(),
     globalDictationHotKey: any GlobalDictationHotKeyService = TestGlobalDictationHotKeyService(),
     globalTextInsertion: any GlobalTextInsertionService = TestGlobalTextInsertionService(),
     runtimeCapabilities: RuntimeCapabilities = .mock,
@@ -496,6 +531,7 @@ func makeTestDependencies(
         playback: TestPlaybackService(),
         exporter: MarkdownExportService(),
         callWatcher: callWatcher,
+        callPromptNotifications: callPromptNotifications,
         globalDictationHotKey: globalDictationHotKey,
         globalTextInsertion: globalTextInsertion,
         processingCoordinator: coordinator,

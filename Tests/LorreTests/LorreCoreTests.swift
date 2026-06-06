@@ -2373,6 +2373,115 @@ struct LorreCoreTests {
         XCTAssertEqual(request?.source, .microphoneAndSystemAudio)
     }
 
+    @Test
+    func testAppViewModelStartsRecordingFromCallPromptNotificationAction() async throws {
+        let root = makeTemporaryRoot(named: "LorreCallPromptNotificationStartTests")
+        let recorder = ControlledRecorderService()
+        let callWatcher = TestCallWatcherService()
+        let notifications = TestCallPromptNotificationService()
+        let dependencies = makeTestDependencies(
+            root: root,
+            recorder: recorder,
+            callWatcher: callWatcher,
+            callPromptNotifications: notifications
+        )
+        let viewModel = await MainActor.run {
+            AppViewModel(dependencies: dependencies)
+        }
+
+        await viewModel.start()
+        try await waitUntil {
+            notifications.isActionStreamSubscribed
+        }
+        await MainActor.run {
+            viewModel.setCallWatcherEnabled(true)
+        }
+        try await waitUntil {
+            callWatcher.isSubscribed
+        }
+
+        let now = Date(timeIntervalSince1970: 1_000)
+        let candidate = CallDetectionCandidate(
+            fingerprint: "com.microsoft.edgemac:3",
+            appBundleID: "com.microsoft.edgemac",
+            appDisplayName: "Microsoft Edge",
+            confidenceScore: 90,
+            recommendedRecordingSource: .microphoneAndSystemAudio,
+            firstDetectedAt: now,
+            lastSeenAt: now,
+            reasons: [.captureDeviceInUse]
+        )
+
+        callWatcher.emit(.candidateDetected(candidate))
+
+        try await waitUntil {
+            notifications.shownCandidates.contains(where: { $0.fingerprint == candidate.fingerprint })
+        }
+
+        notifications.emit(.accept(fingerprint: candidate.fingerprint))
+
+        try await waitUntil {
+            await recorder.lastStartRequest != nil
+        }
+
+        let request = await recorder.lastStartRequest
+        XCTAssertEqual(request?.source, .microphoneAndSystemAudio)
+        XCTAssertTrue(notifications.removedFingerprints.contains(candidate.fingerprint))
+    }
+
+    @Test
+    func testAppViewModelRemovesCallPromptNotificationWhenCandidateEnds() async throws {
+        let root = makeTemporaryRoot(named: "LorreCallPromptNotificationEndTests")
+        let recorder = ControlledRecorderService()
+        let callWatcher = TestCallWatcherService()
+        let notifications = TestCallPromptNotificationService()
+        let dependencies = makeTestDependencies(
+            root: root,
+            recorder: recorder,
+            callWatcher: callWatcher,
+            callPromptNotifications: notifications
+        )
+        let viewModel = await MainActor.run {
+            AppViewModel(dependencies: dependencies)
+        }
+
+        await viewModel.start()
+        await MainActor.run {
+            viewModel.setCallWatcherEnabled(true)
+        }
+        try await waitUntil {
+            callWatcher.isSubscribed
+        }
+
+        let now = Date(timeIntervalSince1970: 1_000)
+        let candidate = CallDetectionCandidate(
+            fingerprint: "com.microsoft.edgemac:3",
+            appBundleID: "com.microsoft.edgemac",
+            appDisplayName: "Microsoft Edge",
+            confidenceScore: 90,
+            recommendedRecordingSource: .microphoneAndSystemAudio,
+            firstDetectedAt: now,
+            lastSeenAt: now,
+            reasons: [.captureDeviceInUse]
+        )
+
+        callWatcher.emit(.candidateDetected(candidate))
+
+        try await waitUntil {
+            notifications.shownCandidates.contains(where: { $0.fingerprint == candidate.fingerprint })
+        }
+
+        callWatcher.emit(.candidateEnded(fingerprint: candidate.fingerprint))
+
+        try await waitUntil {
+            notifications.removedFingerprints.contains(candidate.fingerprint)
+        }
+
+        await MainActor.run {
+            XCTAssertNil(viewModel.callPromptCandidate)
+        }
+    }
+
 
     @Test
     func testAppViewModelPassesLivePreviewRequestWhenSupportedAndEnabledByDefault() async throws {

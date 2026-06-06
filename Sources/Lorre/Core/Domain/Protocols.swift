@@ -94,6 +94,19 @@ protocol CallWatcherService: Sendable {
     func makeDetectionStream(configuration: CallWatcherConfiguration) async -> AsyncStream<CallDetectionEvent>
 }
 
+enum CallPromptNotificationAction: Equatable, Sendable {
+    case accept(fingerprint: String)
+    case dismiss(fingerprint: String)
+    case disable(fingerprint: String)
+}
+
+protocol CallPromptNotificationService: Sendable {
+    func requestAuthorizationIfNeeded() async -> Bool
+    func showCallPrompt(for candidate: CallDetectionCandidate) async -> Bool
+    func removeCallPrompt(fingerprint: String) async
+    func makeActionStream() async -> AsyncStream<CallPromptNotificationAction>
+}
+
 protocol GlobalDictationHotKeyService: AnyObject, Sendable {
     func register(
         shortcut: GlobalDictationShortcutChoice,
