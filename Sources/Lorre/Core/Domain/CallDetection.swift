@@ -305,7 +305,7 @@ actor CallDetectionEngine {
     }
 
     private func score(_ sample: CallSignalSample) -> ScoredSignal? {
-        let frontmostRule = rule(for: sample.frontmostBundleID)
+        let frontmostRule = rule(for: sample.frontmostBundleID, appDisplayName: sample.frontmostAppName)
         let runningRule = sample.runningBundleIDs.compactMap(rule(for:)).first
         let titleMatch = bestTitleMatch(in: sample.windowTitleHints, frontmostRule: frontmostRule, runningRule: runningRule)
 
@@ -318,7 +318,7 @@ actor CallDetectionEngine {
 
         switch selectedRule.category {
         case .communication:
-            if frontmostRule?.bundleID == selectedRule.bundleID {
+            if Self.isSameRule(frontmostRule, selectedRule) {
                 score += 50
                 reasons.append(.knownCommunicationAppForeground)
             } else {
@@ -338,7 +338,7 @@ actor CallDetectionEngine {
 
         if let captureDeviceUsage = sample.captureDeviceUsage, captureDeviceUsage.isAnyDeviceInUse {
             let isForegroundBrowser = selectedRule.category == .browser
-                && frontmostRule?.bundleID == selectedRule.bundleID
+                && Self.isSameRule(frontmostRule, selectedRule)
             if isForegroundBrowser {
                 // Browser tabs often hide call details from CGWindow unless Screen Recording is allowed.
                 score += captureDeviceUsage.isCameraAndMicrophoneInUse ? 85 : 70
@@ -369,7 +369,7 @@ actor CallDetectionEngine {
         runningRule: AppRule?
     ) -> (rule: AppRule, reason: CallDetectionReason)? {
         for hint in hints where Self.isCallLikeTitle(hint.title) {
-            if let rule = rule(for: hint.appBundleID) {
+            if let rule = rule(for: hint.appBundleID, appDisplayName: hint.appDisplayName) {
                 let reason: CallDetectionReason = rule.category == .browser ? .browserCallWindowTitle : .callLikeWindowTitle
                 return (rule, reason)
             }
@@ -384,8 +384,40 @@ actor CallDetectionEngine {
     }
 
     private func rule(for bundleID: String?) -> AppRule? {
+        rule(for: bundleID, appDisplayName: nil)
+    }
+
+    private func rule(for bundleID: String?, appDisplayName: String?) -> AppRule? {
         guard let bundleID else { return nil }
-        return appRulesByBundleID[bundleID.lowercased()]
+        if let rule = appRulesByBundleID[bundleID.lowercased()] {
+            return rule
+        }
+        guard Self.isBrowserWebAppBundleID(bundleID) else { return nil }
+        return AppRule(
+            bundleID: bundleID,
+            displayName: Self.browserWebAppDisplayName(appDisplayName: appDisplayName),
+            category: .browser
+        )
+    }
+
+    private static func isSameRule(_ lhs: AppRule?, _ rhs: AppRule) -> Bool {
+        lhs?.bundleID.lowercased() == rhs.bundleID.lowercased()
+    }
+
+    private static func isBrowserWebAppBundleID(_ bundleID: String) -> Bool {
+        let normalized = bundleID.lowercased()
+        return [
+            "com.microsoft.edgemac.app.",
+            "com.google.chrome.app.",
+            "org.chromium.chromium.app.",
+            "com.brave.browser.app.",
+            "com.apple.safari.webapp."
+        ].contains { normalized.hasPrefix($0) }
+    }
+
+    private static func browserWebAppDisplayName(appDisplayName: String?) -> String {
+        let trimmed = appDisplayName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmed.isEmpty ? "Browser Web App" : trimmed
     }
 
     private static func isCallLikeTitle(_ title: String) -> Bool {

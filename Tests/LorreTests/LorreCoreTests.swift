@@ -2543,6 +2543,33 @@ struct LorreCoreTests {
         XCTAssertEqual(loaded.callWatcher.cooldownSeconds, 120)
     }
 
+    @Test
+    func testAppViewModelRequestsCallPromptNotificationAuthorizationWhenRestoredEnabled() async throws {
+        let root = makeTemporaryRoot(named: "LorreRestoredCallWatcherNotificationTests")
+        let settings = AppSettingsStore(baseURL: root)
+        _ = try await settings.saveCallWatcherConfiguration(
+            CallWatcherConfiguration(isEnabled: true)
+        )
+        let recorder = ControlledRecorderService()
+        let callWatcher = TestCallWatcherService()
+        let notifications = TestCallPromptNotificationService()
+        let dependencies = makeTestDependencies(
+            root: root,
+            recorder: recorder,
+            callWatcher: callWatcher,
+            callPromptNotifications: notifications
+        )
+        let viewModel = await MainActor.run {
+            AppViewModel(dependencies: dependencies)
+        }
+
+        await viewModel.start()
+
+        try await waitUntil {
+            callWatcher.isSubscribed && notifications.authorizationRequestCount > 0
+        }
+    }
+
 
     @Test
     func testAppViewModelStartsRecordingFromCallPrompt() async throws {

@@ -131,6 +131,62 @@ struct CallDetectionTests {
     }
 
     @Test
+    func testTeamsPWACallTitleCanEmitCandidate() async {
+        let engine = CallDetectionEngine(debounceSeconds: 0)
+        let teamsPWABundleID = "com.microsoft.edgemac.app.cifhbcnohmdccbgoicgdjpfamggdegmo"
+        let event = await engine.ingest(
+            CallSignalSample(
+                observedAt: Date(timeIntervalSince1970: 1_000),
+                frontmostBundleID: teamsPWABundleID,
+                frontmostAppName: "Microsoft Teams",
+                runningBundleIDs: [teamsPWABundleID],
+                windowTitleHints: [
+                    WindowTitleHint(
+                        appBundleID: teamsPWABundleID,
+                        appDisplayName: "Microsoft Teams",
+                        title: "Weekly sync | Microsoft Teams"
+                    )
+                ]
+            ),
+            configuration: enabledConfiguration
+        )
+
+        guard case let .candidateDetected(candidate) = event else {
+            XCTFail("Expected Teams PWA call title to create a candidate")
+            return
+        }
+        XCTAssertEqual(candidate.appBundleID, teamsPWABundleID)
+        XCTAssertEqual(candidate.appDisplayName, "Microsoft Teams")
+        XCTAssertTrue(candidate.reasons.contains(.browserCallWindowTitle))
+    }
+
+    @Test
+    func testForegroundTeamsPWAWithCaptureDeviceUseCanEmitWithoutCallTitle() async {
+        let engine = CallDetectionEngine(debounceSeconds: 0)
+        let teamsPWABundleID = "com.microsoft.edgemac.app.cifhbcnohmdccbgoicgdjpfamggdegmo"
+        let event = await engine.ingest(
+            CallSignalSample(
+                observedAt: Date(timeIntervalSince1970: 1_000),
+                frontmostBundleID: teamsPWABundleID,
+                frontmostAppName: "Microsoft Teams",
+                runningBundleIDs: [teamsPWABundleID],
+                captureDeviceUsage: CaptureDeviceUsageSummary(
+                    isMicrophoneInUseByAnotherApplication: true
+                )
+            ),
+            configuration: enabledConfiguration
+        )
+
+        guard case let .candidateDetected(candidate) = event else {
+            XCTFail("Expected foreground Teams PWA capture device use to create a candidate")
+            return
+        }
+        XCTAssertEqual(candidate.appBundleID, teamsPWABundleID)
+        XCTAssertEqual(candidate.appDisplayName, "Microsoft Teams")
+        XCTAssertTrue(candidate.reasons.contains(.captureDeviceInUse))
+    }
+
+    @Test
     func testMediaAppWithDeviceUseDoesNotPrompt() async {
         let engine = CallDetectionEngine(debounceSeconds: 0)
         let event = await engine.ingest(

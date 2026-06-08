@@ -155,6 +155,9 @@ final class AppViewModel: ObservableObject {
         registerGlobalDictationHotKeyIfNeeded()
         startCallPromptNotificationActions()
         startCallWatcherIfNeeded()
+        if callWatcherConfiguration.isEnabled {
+            requestCallPromptNotificationAuthorization()
+        }
         await reloadKnownSpeakers()
         await reloadFolders()
         await reloadSessions(selectMostRecentIfNeeded: true)
