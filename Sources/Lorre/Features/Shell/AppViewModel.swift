@@ -2384,7 +2384,7 @@ final class AppViewModel: ObservableObject {
                 _ = try await self.dependencies.settings.setModelRegistryConfiguration(configuration)
                 await self.dependencies.metrics.log(
                     name: "model_registry_configuration_saved",
-                    attributes: ["custom_base_url": configuration.normalizedBaseURL ?? "default"]
+                    attributes: ["configured": configuration.normalizedBaseURL == nil ? "false" : "true"]
                 )
                 await MainActor.run {
                     self.banner = AppBanner(
@@ -3084,7 +3084,7 @@ final class AppViewModel: ObservableObject {
             throw LorreError.playbackFailed("This session deleted its source audio after transcription for privacy.")
         }
         let sessionDirectory = await dependencies.store.sessionDirectoryURL(for: session.id)
-        let audioURL = sessionDirectory.appendingPathComponent(session.audioFileName)
+        let audioURL = try SafeSessionFileResolver.fileURL(named: session.audioFileName, in: sessionDirectory)
         guard FileManager.default.fileExists(atPath: audioURL.path(percentEncoded: false)) else {
             throw LorreError.playbackFailed("Audio file is missing for this session.")
         }
@@ -3194,7 +3194,17 @@ final class AppViewModel: ObservableObject {
         waveformLoadTask = Task { [weak self] in
             guard let self else { return }
             let sessionDirectory = await self.dependencies.store.sessionDirectoryURL(for: session.id)
-            let audioURL = sessionDirectory.appendingPathComponent(session.audioFileName)
+            let audioURL: URL
+            do {
+                audioURL = try SafeSessionFileResolver.fileURL(named: session.audioFileName, in: sessionDirectory)
+            } catch {
+                await MainActor.run {
+                    guard self.selectedSessionID == session.id else { return }
+                    self.isPlaybackWaveformLoading = false
+                    self.playbackWaveformBins = []
+                }
+                return
+            }
             guard FileManager.default.fileExists(atPath: audioURL.path(percentEncoded: false)) else {
                 await MainActor.run {
                     guard self.selectedSessionID == session.id else { return }
@@ -3530,7 +3540,8 @@ final class AppViewModel: ObservableObject {
             let restoredVocabularyBoosting = settings.vocabularyBoosting
             let restoredBatchTranscription = settings.batchTranscription.normalized
             let restoredLivePreset = settings.liveTranscriptionPreset
-            let restoredModelRegistry = settings.modelRegistryConfiguration
+            let restoredModelRegistry = (try? settings.modelRegistryConfiguration.validatedForModelDownloads())
+                ?? ModelRegistryConfiguration()
             let restoredDiarizationEngine = settings.diarizationEngine
             let restoredAutomaticMarkdownExport = settings.automaticMarkdownExport
             let restoredCallWatcher = settings.callWatcher
@@ -3806,22 +3817,13 @@ final class AppViewModel: ObservableObject {
 
     private func validatedModelRegistryConfiguration() throws -> ModelRegistryConfiguration {
         let configuration = currentModelRegistryConfiguration()
-        guard let normalizedBaseURL = configuration.normalizedBaseURL else {
-            return configuration
-        }
-
-        guard let url = URL(string: normalizedBaseURL),
-              let scheme = url.scheme,
-              !scheme.isEmpty,
-              let host = url.host,
-              !host.isEmpty else {
-            throw LorreError.persistenceFailed("Enter a full registry base URL, for example https://huggingface.co.")
-        }
-        return configuration
+        return try configuration.validatedForModelDownloads()
     }
 
     private func applyCurrentRuntimeConfiguration() {
-        FluidAudioRuntimeConfiguration.apply(modelRegistry: currentModelRegistryConfiguration())
+        let configuration = (try? currentModelRegistryConfiguration().validatedForModelDownloads())
+            ?? ModelRegistryConfiguration()
+        FluidAudioRuntimeConfiguration.apply(modelRegistry: configuration)
     }
 
     private func reloadKnownSpeakers() async {

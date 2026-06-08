@@ -253,7 +253,7 @@ actor FluidAudioTranscriptionService: TranscriptionService {
             throw LorreError.processingFailed("ASR manager is not initialized.")
         }
 
-        logger.debug("transcribing session=\"\(sessionTitle, privacy: .public)\" source=\(source.rawValue, privacy: .public)")
+        logger.debug("transcribing session=\"\(sessionTitle, privacy: .private)\" source=\(source.rawValue, privacy: .public)")
         var result = try await managerBox.transcribe(
             url,
             language: parakeetLanguageHint(for: batchTranscriptionConfiguration)

@@ -31,9 +31,10 @@ actor AppSettingsStore {
 
     @discardableResult
     func setModelRegistryConfiguration(_ configuration: ModelRegistryConfiguration) async throws -> AppSettings {
+        let validatedConfiguration = try configuration.validatedForModelDownloads()
         var settings = try loadFromDisk()
         settings.modelRegistryConfiguration = ModelRegistryConfiguration(
-            customBaseURL: configuration.normalizedBaseURL
+            customBaseURL: validatedConfiguration.normalizedBaseURL
         )
         settings.updatedAt = Date()
         try save(settings)

@@ -6,10 +6,11 @@ import Foundation
 
 enum FluidAudioRuntimeConfiguration {
     static func apply(modelRegistry configuration: ModelRegistryConfiguration) {
+        let runtimeConfiguration = (try? configuration.validatedForModelDownloads()) ?? ModelRegistryConfiguration()
         #if canImport(FluidAudio)
-        ModelRegistry.baseURL = configuration.summaryLabel
+        ModelRegistry.baseURL = runtimeConfiguration.summaryLabel
         #else
-        _ = configuration
+        _ = runtimeConfiguration
         #endif
     }
 }

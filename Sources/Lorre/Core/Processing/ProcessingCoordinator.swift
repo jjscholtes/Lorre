@@ -53,7 +53,7 @@ actor ProcessingCoordinator {
             try Task.checkCancellation()
 
             let sessionDir = await store.sessionDirectoryURL(for: sessionId)
-            let audioURL = sessionDir.appendingPathComponent(session.audioFileName)
+            let audioURL = try SafeSessionFileResolver.fileURL(named: session.audioFileName, in: sessionDir)
 
             try await updateSession(&session, status: .processing, phase: .transcribing, label: "Transcribing audio", fraction: 0.3)
             await onProgress(ProcessingUpdate(phase: .transcribing, label: "Transcribing audio", fraction: 0.3))
@@ -232,7 +232,7 @@ actor ProcessingCoordinator {
         }
 
         for fileName in fileNames {
-            let fileURL = sessionDir.appendingPathComponent(fileName)
+            let fileURL = try SafeSessionFileResolver.fileURL(named: fileName, in: sessionDir)
             guard fileManager.fileExists(atPath: fileURL.path(percentEncoded: false)) else { continue }
             do {
                 try fileManager.removeItem(at: fileURL)

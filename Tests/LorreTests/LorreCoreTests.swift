@@ -743,6 +743,55 @@ struct LorreCoreTests {
 
 
     @Test
+    func testLocalMetricsLoggerSanitizesSensitiveAttributes() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("LorreMetricsSanitizerTests-\(UUID().uuidString)", isDirectory: true)
+        let logger = LocalMetricsLogger(baseURL: root)
+
+        await logger.log(
+            name: "privacy_check",
+            attributes: [
+                "app": "Zoom",
+                "custom_base_url": "https://models.internal.example.com/private",
+                "duration_seconds": "12.34",
+                "error": "Could not read /Users/alice/Secret Call.m4a",
+                "file": "Client Alice Call.m4a",
+                "folder_id": "client-research",
+                "notes": "private note text",
+                "source": "microphone",
+                "speaker_name": "Alice",
+                "target_app": "Notes",
+                "target_bundle": "com.apple.Notes"
+            ]
+        )
+
+        let fileURL = root.appendingPathComponent("metrics.jsonl")
+        let data = try Data(contentsOf: fileURL)
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let event = try decoder.decode(LocalMetricEvent.self, from: data)
+
+        XCTAssertEqual(event.attributes["app_present"], "true")
+        XCTAssertEqual(event.attributes["custom_base_url_configured"], "true")
+        XCTAssertEqual(event.attributes["duration_seconds"], "12.34")
+        XCTAssertEqual(event.attributes["error"], "redacted")
+        XCTAssertEqual(event.attributes["file_extension"], "m4a")
+        XCTAssertEqual(event.attributes["folder_id"], "redacted")
+        XCTAssertEqual(event.attributes["source"], "microphone")
+        XCTAssertEqual(event.attributes["speaker_name_present"], "true")
+        XCTAssertEqual(event.attributes["target_app_present"], "true")
+        XCTAssertEqual(event.attributes["target_bundle_present"], "true")
+        XCTAssertNil(event.attributes["app"])
+        XCTAssertNil(event.attributes["custom_base_url"])
+        XCTAssertNil(event.attributes["file"])
+        XCTAssertNil(event.attributes["notes"])
+        XCTAssertNil(event.attributes["speaker_name"])
+        XCTAssertNil(event.attributes["target_app"])
+        XCTAssertNil(event.attributes["target_bundle"])
+    }
+
+
+    @Test
     func testAppSettingsStorePersistsModelPreparationSnapshot() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("LorreSettingsTests-\(UUID().uuidString)", isDirectory: true)
@@ -780,6 +829,67 @@ struct LorreCoreTests {
         let loaded = try await store.load()
         XCTAssertEqual(loaded.modelRegistryConfiguration.normalizedBaseURL, "https://models.internal.example.com")
         XCTAssertEqual(loaded.modelRegistryConfiguration.summaryLabel, "https://models.internal.example.com")
+    }
+
+
+    @Test
+    func testModelRegistryConfigurationRequiresHTTPSURL() throws {
+        _ = try ModelRegistryConfiguration().validatedForModelDownloads()
+
+        let https = try ModelRegistryConfiguration(
+            customBaseURL: "https://models.internal.example.com///"
+        ).validatedForModelDownloads()
+        XCTAssertEqual(https.normalizedBaseURL, "https://models.internal.example.com")
+
+        XCTAssertThrowsError(
+            try ModelRegistryConfiguration(customBaseURL: "http://models.internal.example.com").validatedForModelDownloads()
+        )
+        XCTAssertThrowsError(
+            try ModelRegistryConfiguration(customBaseURL: "ftp://models.internal.example.com").validatedForModelDownloads()
+        )
+        XCTAssertThrowsError(
+            try ModelRegistryConfiguration(customBaseURL: "custom://models.internal.example.com").validatedForModelDownloads()
+        )
+        XCTAssertThrowsError(
+            try ModelRegistryConfiguration(customBaseURL: "https:///models").validatedForModelDownloads()
+        )
+    }
+
+
+    @Test
+    func testAppSettingsStoreRejectsNonHTTPSModelRegistryConfiguration() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("LorreRegistryRejectionTests-\(UUID().uuidString)", isDirectory: true)
+        let store = AppSettingsStore(baseURL: root)
+
+        do {
+            _ = try await store.setModelRegistryConfiguration(
+                ModelRegistryConfiguration(customBaseURL: "http://models.internal.example.com")
+            )
+            XCTFail("Expected non-HTTPS registry URL to be rejected.")
+        } catch {
+        }
+
+        let loaded = try await store.load()
+        XCTAssertTrue(loaded.modelRegistryConfiguration.isDefault)
+    }
+
+
+    @Test
+    func testSafeSessionFileResolverRejectsTraversalAndNestedPaths() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("LorreSafeSessionFileTests-\(UUID().uuidString)", isDirectory: true)
+        let sessionDirectory = root.appendingPathComponent(UUID().uuidString, isDirectory: true)
+
+        let valid = try SafeSessionFileResolver.fileURL(named: "audio.m4a", in: sessionDirectory)
+        XCTAssertEqual(valid.standardizedFileURL, sessionDirectory.appendingPathComponent("audio.m4a").standardizedFileURL)
+
+        for invalidName in ["", "../audio.m4a", "../../audio.m4a", "nested/audio.m4a", "nested\\audio.m4a", "/tmp/audio.m4a", "~/.ssh/id_rsa"] {
+            XCTAssertThrowsError(
+                try SafeSessionFileResolver.fileURL(named: invalidName, in: sessionDirectory),
+                "Expected \(invalidName) to be rejected."
+            )
+        }
     }
 
 

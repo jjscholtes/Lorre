@@ -422,6 +422,8 @@ struct KnownSpeaker: Identifiable, Codable, Equatable, Sendable {
 }
 
 struct ModelRegistryConfiguration: Codable, Equatable, Sendable {
+    static let defaultBaseURL = "https://huggingface.co"
+
     var customBaseURL: String?
 
     init(customBaseURL: String? = nil) {
@@ -437,7 +439,18 @@ struct ModelRegistryConfiguration: Codable, Equatable, Sendable {
     }
 
     var summaryLabel: String {
-        normalizedBaseURL ?? "https://huggingface.co"
+        normalizedBaseURL ?? Self.defaultBaseURL
+    }
+
+    func validatedForModelDownloads() throws -> ModelRegistryConfiguration {
+        guard let normalizedBaseURL else { return self }
+        guard let url = URL(string: normalizedBaseURL),
+              url.scheme?.lowercased() == "https",
+              let host = url.host,
+              !host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw LorreError.persistenceFailed("Enter a full HTTPS registry base URL, for example \(Self.defaultBaseURL).")
+        }
+        return self
     }
 
     static func normalize(_ rawValue: String?) -> String? {
