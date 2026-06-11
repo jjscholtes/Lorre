@@ -81,10 +81,8 @@ struct MacCallWatcherService: CallWatcherService {
             return []
         }
 
-        let runningAppsByProcessID = Dictionary(
-            uniqueKeysWithValues: NSWorkspace.shared.runningApplications.map { app in
-                (app.processIdentifier, app)
-            }
+        let runningAppsByProcessID = makeRunningApplicationsByProcessID(
+            NSWorkspace.shared.runningApplications
         )
 
         return windowInfo.compactMap { info in
@@ -101,6 +99,15 @@ struct MacCallWatcherService: CallWatcherService {
                 appDisplayName: app?.localizedName,
                 title: title
             )
+        }
+    }
+
+    @MainActor
+    static func makeRunningApplicationsByProcessID(
+        _ runningApplications: [NSRunningApplication]
+    ) -> [pid_t: NSRunningApplication] {
+        runningApplications.reduce(into: [:]) { applicationsByProcessID, app in
+            applicationsByProcessID[app.processIdentifier] = app
         }
     }
 

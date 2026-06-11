@@ -1,6 +1,6 @@
 # Lorre
 
-Lorre is a macOS transcription workspace for capturing or importing audio, processing it locally, reviewing speaker-labeled transcript segments, and exporting the result in multiple formats.
+Lorre is a macOS transcription workspace for capturing or importing audio, processing it locally, reviewing speaker-labeled transcript segments, dictating into other apps, and exporting the result in multiple formats.
 
 ## Key features
 
@@ -13,6 +13,9 @@ Lorre is a macOS transcription workspace for capturing or importing audio, proce
 - Enable `Privacy Mode` to automatically delete source audio after the transcript is saved.
 - Import existing audio files and run them through the same transcription pipeline.
 - Review transcripts with speaker labels, playback, speaker reassignment, and inline text editing.
+- Use `Global Dictation` from any app to record a short microphone snippet, transcribe it locally, and insert the result into the focused text field.
+- Let `Call Watcher` detect likely calls in apps such as FaceTime, Zoom, Microsoft Teams, Slack, Discord, Webex, and supported browser calls. Lorre always asks before recording and can show the prompt as a macOS notification or inside the app.
+- Automatically write a Markdown copy after processing, with a configurable destination and filename template based on the transcript, date, source, language, duration, and speaker count.
 - Export finished sessions as `Markdown`, `plain text`, or `JSON`.
 
 ## What is FluidAudio?
@@ -39,15 +42,17 @@ At a high level, Lorre routes recording, import, review, and export workflows th
 
 ```mermaid
 flowchart LR
-  input["Audio input<br/>microphone, system audio, imports"]
+  input["Audio input<br/>microphone, system audio, imports, dictation"]
+  signals["Local macOS signals<br/>focused field, apps, windows, device use"]
   ui["SwiftUI app<br/>recorder, shelf, transcript editor"]
   workflow["AppViewModel<br/>session and workflow state"]
   services["Core services<br/>record, play, process, export"]
   engines["On-device engines<br/>FluidAudio + macOS media frameworks"]
   storage["Local storage<br/>sessions, audio, transcripts, speakers, settings"]
-  exports["Exports<br/>Markdown, text, JSON"]
+  exports["Exports<br/>Markdown, text, JSON, automatic Markdown"]
 
   input --> ui
+  signals --> workflow
   ui --> workflow
   workflow --> services
   services --> engines
@@ -70,6 +75,17 @@ Lorre keeps app preferences in `~/Library/Application Support/Lorre/settings.jso
 | Live transcript preview | On or off | On when supported | Shows streaming text while recording. The final transcript is still produced by the selected batch transcription mode after recording stops. |
 | Live engine | `Parakeet low latency`, `Parakeet balanced`, `Parakeet high accuracy`, `Nemotron balanced`, `Nemotron high accuracy` | `Parakeet balanced` | Controls the streaming preview model and latency/quality balance. Live-engine changes are locked while a recording is active. |
 | Retention | `Keep Audio`, `Delete After Transcript` | `Keep Audio` | `Delete After Transcript` is privacy mode: Lorre deletes the source audio after the transcript is saved and keeps transcript data and exports. Playback and waveform review require retained audio. |
+
+### Automation and system integration
+
+| Option | Values | Default | Notes |
+| --- | --- | --- | --- |
+| Global Dictation | On or off | Off | Press the configured shortcut from another app to start listening. Press it again to stop, transcribe locally, and insert the result into the text field that was focused when dictation started. Password and secure-input fields are rejected. |
+| Dictation shortcut | `Option-Shift-D`, `Option-Shift-Space`, `Command-Option-Shift-D`, plus legacy Control-based choices | `Option-Shift-D` | Requires Microphone and Accessibility permission. Dictated text remains available to copy when insertion fails. |
+| Call Watcher | On or off | Off | Uses local running-app, visible-window-title, camera, and microphone-use signals while Lorre is open. It recognizes native communication apps, Teams PWAs, and supported browser call titles. Detection never starts recording automatically. |
+| Call recording source | `Microphone`, `System audio`, `Microphone + system audio` | `Microphone + system audio` | Used only after you accept a call prompt. Dismissed prompts have a cooldown before Lorre asks again for the same call. |
+| Automatic Markdown export | On or off, plus destination folder | Off | Writes a Markdown file after a transcript completes. A destination folder must be selected before the option can be enabled. |
+| Automatic export filename | Template string | `{date}-{smart_title}.md` | Supports `{date}`, `{time}`, `{datetime}`, `{session_title}`, `{keywords}`, `{smart_title}`, `{source}`, `{language}`, `{duration}`, `{speaker_count}`, and `{session_id_short}`. Invalid filename characters are sanitized. |
 
 ### Speech and processing options
 
@@ -108,6 +124,8 @@ Advanced settings file note: `batchTranscription.parallelChunkConcurrency` defau
 - macOS 14 or later
 - Microphone access for microphone recording
 - Screen and System Audio Recording access for system-audio capture
+- Accessibility access for inserting Global Dictation text into other apps
+- Notification access for Call Watcher prompts outside Lorre; if notifications are unavailable, Lorre falls back to an in-app prompt
 - A local build environment for Swift if you want to run from source
 
 ## Build and run
@@ -120,6 +138,12 @@ To build the app bundle in `dist/`:
 
 ```bash
 ./scripts/package_macos_app.sh
+```
+
+For an optimized release bundle:
+
+```bash
+./scripts/package_macos_app.sh release
 ```
 
 To run the test suite:
@@ -147,6 +171,8 @@ Each session is kept in its own folder and can contain:
 - exported transcript files
 
 If privacy mode is enabled before a recording or import, Lorre deletes the source audio after transcription completes and keeps the transcript and exports.
+
+Global Dictation captures microphone audio only after you invoke its shortcut. Call Watcher does not capture audio: while enabled and Lorre is open, it evaluates local app identifiers, visible window titles, and camera or microphone usage to decide whether to show a prompt. Neither feature sends those signals or transcript data to a cloud service.
 
 ## Export formats
 
