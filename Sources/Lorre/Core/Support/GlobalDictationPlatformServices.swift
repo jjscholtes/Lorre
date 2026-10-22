@@ -276,15 +276,16 @@ final class MacGlobalTextInsertionService: GlobalTextInsertionService, @unchecke
         let snapshot = PasteboardSnapshot.capture(from: pasteboard)
         pasteboard.clearContents()
         pasteboard.setString(text, forType: .string)
+        let insertedChangeCount = pasteboard.changeCount
 
         guard sendPasteCommand(to: target.processIdentifier) else {
-            snapshot.restore(to: pasteboard)
+            snapshot.restore(to: pasteboard, ifChangeCountIs: insertedChangeCount)
             return .failed(code: "paste_event_failed", message: "Lorre could not send the paste command to \(target.displayName).")
         }
 
         rememberTargetApplicationIfUsable(application)
         try? await Task.sleep(for: .milliseconds(900))
-        snapshot.restore(to: pasteboard)
+        snapshot.restore(to: pasteboard, ifChangeCountIs: insertedChangeCount)
         return .inserted
     }
 
@@ -691,7 +692,7 @@ final class MacGlobalTextInsertionService: GlobalTextInsertionService, @unchecke
 
 }
 
-private struct PasteboardSnapshot {
+struct PasteboardSnapshot {
     struct Representation {
         var type: NSPasteboard.PasteboardType
         var data: Data
@@ -712,6 +713,15 @@ private struct PasteboardSnapshot {
             return representations.isEmpty ? nil : Item(representations: representations)
         } ?? []
         return PasteboardSnapshot(items: items)
+    }
+
+    /// Restores the snapshot only while the pasteboard still holds what Lorre put there,
+    /// so anything the user copied in the meantime is kept.
+    @discardableResult
+    func restore(to pasteboard: NSPasteboard, ifChangeCountIs expectedChangeCount: Int) -> Bool {
+        guard pasteboard.changeCount == expectedChangeCount else { return false }
+        restore(to: pasteboard)
+        return true
     }
 
     func restore(to pasteboard: NSPasteboard) {

@@ -13,4 +13,12 @@ enum FluidAudioRuntimeConfiguration {
         _ = runtimeConfiguration
         #endif
     }
+
+    /// FluidAudio's debug lines can contain recognised transcript text; keep them out of the console and system log.
+    static func applyPrivateLogging() {
+        #if canImport(FluidAudio)
+        AppLogger.minimumLevel = .info
+        AppLogger.mirrorsToConsole = false
+        #endif
+    }
 }

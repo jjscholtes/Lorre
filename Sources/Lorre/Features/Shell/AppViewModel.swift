@@ -965,7 +965,7 @@ final class AppViewModel: ObservableObject {
 
     func exportSelectedSession(format: ExportFormat) {
         guard let session = selectedSession else { return }
-        guard let transcript = activeTranscript else {
+        guard let transcript = activeTranscript, transcript.sessionId == session.id else {
             banner = AppBanner(kind: .error, title: "No transcript yet", message: "Wait until processing completes before exporting.")
             return
         }
@@ -2932,7 +2932,7 @@ final class AppViewModel: ObservableObject {
         do {
             let transcript = try await dependencies.store.loadTranscript(sessionId: requestedSessionID)
             guard selectedSessionID == requestedSessionID else { return }
-            activeTranscript = transcript
+            activeTranscript = transcript?.sessionId == requestedSessionID ? transcript : nil
         } catch {
             guard selectedSessionID == requestedSessionID else { return }
             activeTranscript = nil
@@ -2944,7 +2944,9 @@ final class AppViewModel: ObservableObject {
         guard selectedSessionID == sessionID else { return }
         guard let session = selectedSession, session.id == sessionID, session.status == .processing else { return }
         do {
-            if let transcript = try await dependencies.store.loadTranscript(sessionId: sessionID) {
+            if let transcript = try await dependencies.store.loadTranscript(sessionId: sessionID),
+               transcript.sessionId == sessionID,
+               selectedSessionID == sessionID {
                 activeTranscript = transcript
             }
         } catch {

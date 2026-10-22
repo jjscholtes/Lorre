@@ -10,7 +10,7 @@ enum FluidAudioProgressSupport {
         phase: ProcessingPhase,
         component: ProcessingComponent,
         label: String,
-        progress: DownloadUtils.DownloadProgress
+        progress: DownloadProgress
     ) -> ProcessingUpdate {
         let detail: String
         switch progress.phase {
