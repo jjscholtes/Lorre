@@ -349,10 +349,10 @@ actor FluidAudioTranscriptionService: TranscriptionService {
         guard batchTranscriptionConfiguration.mode == .parakeetV3WithCohereQualityPass else {
             return []
         }
-        guard parakeetLanguage(for: batchTranscriptionConfiguration.languageCode) != nil else {
+        guard Self.parakeetLanguage(for: batchTranscriptionConfiguration.languageCode) != nil else {
             return []
         }
-        guard let language = cohereLanguage(for: batchTranscriptionConfiguration.languageCode) else {
+        guard let language = Self.cohereLanguage(for: batchTranscriptionConfiguration.languageCode) else {
             return []
         }
         guard #available(macOS 14, iOS 17, *) else {
@@ -391,7 +391,7 @@ actor FluidAudioTranscriptionService: TranscriptionService {
 
     private func ensureCohereModelDirectory() async throws -> URL {
         let modelsBaseDirectory = AsrModels.defaultCacheDirectory().deletingLastPathComponent()
-        try await DownloadUtils.downloadRepo(.cohereTranscribeCoreml, to: modelsBaseDirectory)
+        try await ModelHub.download(.cohereTranscribeCoreml, to: modelsBaseDirectory)
         return modelsBaseDirectory.appendingPathComponent(Repo.cohereTranscribeCoreml.folderName, isDirectory: true)
     }
 
@@ -420,10 +420,10 @@ actor FluidAudioTranscriptionService: TranscriptionService {
 
     private func parakeetLanguageHint(for configuration: BatchTranscriptionConfiguration) -> Language? {
         guard !Self.usesParakeetV2(configuration.mode) else { return nil }
-        return parakeetLanguage(for: configuration.languageCode)
+        return Self.parakeetLanguage(for: configuration.languageCode)
     }
 
-    private func parakeetLanguage(for languageCode: String) -> Language? {
+    static func parakeetLanguage(for languageCode: String) -> Language? {
         switch BatchTranscriptionConfiguration.normalizedLanguageCode(languageCode) {
         case "en": return .english
         case "fr": return .french
@@ -431,12 +431,13 @@ actor FluidAudioTranscriptionService: TranscriptionService {
         case "es": return .spanish
         case "it": return .italian
         case "pt": return .portuguese
+        case "nl": return .dutch
         case "pl": return .polish
         default: return nil
         }
     }
 
-    private func cohereLanguage(for languageCode: String) -> CohereAsrConfig.Language? {
+    static func cohereLanguage(for languageCode: String) -> CohereAsrConfig.Language? {
         switch BatchTranscriptionConfiguration.normalizedLanguageCode(languageCode) {
         case "en": return .english
         case "fr": return .french

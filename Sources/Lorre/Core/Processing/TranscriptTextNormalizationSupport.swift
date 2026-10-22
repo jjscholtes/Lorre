@@ -7,6 +7,7 @@ import Foundation
 enum TranscriptTextNormalizationSupport {
     static func normalize(_ transcript: TranscriptDocument) -> TranscriptDocument {
         #if canImport(FluidAudio)
+        guard TextNormalizationRuntimeSupport.supportsLanguage(transcript.languageHint) else { return transcript }
         let normalizer = TextNormalizationRuntimeSupport.prepare()
         guard normalizer.isNativeAvailable else { return transcript }
         return normalize(transcript, using: normalizer.normalizeSentence)

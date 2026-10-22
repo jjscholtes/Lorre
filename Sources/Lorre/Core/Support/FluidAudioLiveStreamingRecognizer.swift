@@ -903,11 +903,11 @@ actor FluidAudioLiveStreamingRecognizer {
 
     private static func ensureModelDirectory(
         for preset: LivePreset,
-        progressHandler: DownloadUtils.ProgressHandler?
+        progressHandler: ProgressHandler?
     ) async throws -> URL {
         let base = AsrModels.defaultCacheDirectory().deletingLastPathComponent()
         let repo = preset.repo
-        try await DownloadUtils.downloadRepo(repo, to: base, progressHandler: progressHandler)
+        try await ModelHub.download(repo, to: base, progressHandler: progressHandler)
         return base.appendingPathComponent(repo.folderName, isDirectory: true)
     }
 
