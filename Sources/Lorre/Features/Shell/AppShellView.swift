@@ -27,7 +27,7 @@ struct AppShellView: View {
                 .padding(.vertical, verticalPadding)
 
                 #if canImport(AppKit)
-                GlobalDictationPanelPresenter(viewModel: viewModel)
+                GlobalDictationPanelPresenter(viewModel: viewModel, isVisible: viewModel.isGlobalDictationOverlayVisible)
                     .frame(width: 0, height: 0)
                 #endif
             }
