@@ -41,7 +41,9 @@ final class AppViewModel: ObservableObject {
     @Published var expandedFolderIDs: Set<String> = [AppViewModel.unfiledFolderSelectionID]
     @Published private(set) var activeTranscript: TranscriptDocument?
     @Published private(set) var isLoading = true
-    @Published private(set) var isRecording = false
+    @Published private(set) var isRecording = false {
+        didSet { updateSystemActivity() }
+    }
     @Published private(set) var isStartingRecording = false
     @Published private(set) var isStoppingRecording = false
     @Published private(set) var recordingElapsedSeconds: Double = 0
@@ -120,6 +122,12 @@ final class AppViewModel: ObservableObject {
     private var currentProcessingTasks: [UUID: Task<Void, Never>] = [:]
     private var currentProcessingTaskTokens: [UUID: UUID] = [:]
     private let transcriptPersistenceQueue = TranscriptPersistenceQueue()
+    private let processingGate = ProcessingGate()
+    private var activeProcessingJobCount = 0 {
+        didSet { updateSystemActivity() }
+    }
+    private let systemActivity = SystemActivityGuard()
+    private var systemSleepObserver: NSObjectProtocol?
     private var transcriptPersistenceVersions: [UUID: Int] = [:]
     private var cachedFilteredSessions: [SessionManifest] = []
     private var cachedViewBrowserSessions: [ShelfFilter: [SessionManifest]] = [:]
@@ -169,6 +177,7 @@ final class AppViewModel: ObservableObject {
         await refreshLiveTranscriptionSupport(for: selectedRecordingSource)
         await restoreModelPreparationStateFromSettings()
         registerGlobalDictationHotKeyIfNeeded()
+        observeSystemSleep()
         startCallPromptNotificationActions()
         startCallWatcherIfNeeded()
         if callWatcherConfiguration.isEnabled {
@@ -182,6 +191,65 @@ final class AppViewModel: ObservableObject {
     }
 
     var filteredSessions: [SessionManifest] { cachedFilteredSessions }
+
+    // MARK: - Protecting long recordings
+
+    /// What is lost if Lorre quits now, or nil when quitting is safe.
+    var terminationWarning: TerminationWarning? {
+        if hasActiveRecording {
+            return .recording
+        }
+        if activeProcessingJobCount > 0 || !currentProcessingTasks.isEmpty {
+            return .processing
+        }
+        return nil
+    }
+
+    /// Stops an active recording the normal way so its audio is saved, then
+    /// returns. Gives up after `timeout` so quitting never hangs.
+    func stopRecordingForTermination(timeout: Duration = .seconds(10)) async {
+        if isRecording, !isStoppingRecording {
+            stopRecordingTapped()
+        }
+        let deadline = ContinuousClock.now + timeout
+        while hasActiveRecording, ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(100))
+        }
+    }
+
+    private func updateSystemActivity() {
+        systemActivity.update(isRecording: isRecording, isProcessing: activeProcessingJobCount > 0)
+    }
+
+    private func observeSystemSleep() {
+        #if canImport(AppKit)
+        guard systemSleepObserver == nil else { return }
+        systemSleepObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.willSleepNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.handleSystemWillSleep()
+            }
+        }
+        #endif
+    }
+
+    /// Closing the lid suspends the audio engine anyway. Stopping first saves the
+    /// recording cleanly instead of leaving a capture in an unknown state on wake.
+    private func handleSystemWillSleep() {
+        guard isRecording, !isStoppingRecording else { return }
+        stopRecordingTapped()
+        banner = AppBanner(
+            kind: .info,
+            title: "Recording stopped for sleep",
+            message: "Your Mac went to sleep, so Lorre stopped and saved the recording."
+        )
+        Task { [dependencies] in
+            await dependencies.metrics.log(name: "record_stopped_for_sleep")
+        }
+    }
 
     var modelRegistrySummaryLabel: String {
         currentModelRegistryConfiguration().summaryLabel
@@ -1493,7 +1561,7 @@ final class AppViewModel: ObservableObject {
                 await MainActor.run {
                     self.applyCurrentRuntimeConfiguration()
                 }
-                await self.dependencies.diarization.setDiarizationEngine(await MainActor.run { self.diarizationEngine })
+                await self.pushProcessingConfigurationIfIdle()
                 await self.pushKnownSpeakersToServices()
                 let includeDiarization = await MainActor.run { self.isSpeakerDiarizationEnabled }
                 try await self.dependencies.processingCoordinator.prepareModels(includeDiarization: includeDiarization) { [weak self] update in
@@ -1697,7 +1765,7 @@ final class AppViewModel: ObservableObject {
             guard let self else { return }
             do {
                 _ = try await self.dependencies.settings.setDiarizationEngine(engine)
-                await self.dependencies.diarization.setDiarizationEngine(engine)
+                await self.pushProcessingConfigurationIfIdle()
                 await self.dependencies.metrics.log(
                     name: "diarization_engine_changed",
                     attributes: ["engine": engine.rawValue]
@@ -1710,7 +1778,6 @@ final class AppViewModel: ObservableObject {
                     )
                 }
             } catch {
-                await self.dependencies.diarization.setDiarizationEngine(previous)
                 await MainActor.run {
                     self.diarizationEngine = previous
                     self.presentError(error, defaultTitle: "Could not save diarization engine")
@@ -1768,7 +1835,7 @@ final class AppViewModel: ObservableObject {
             do {
                 let configuration = await MainActor.run { self.currentVocabularyBoostingConfiguration() }
                 _ = try await self.dependencies.settings.saveVocabularyBoosting(configuration)
-                await self.dependencies.transcription.setVocabularyBoostingConfiguration(configuration)
+                await self.pushProcessingConfigurationIfIdle()
                 await self.dependencies.metrics.log(
                     name: "vocabulary_boosting_setting_changed",
                     attributes: ["enabled": isEnabled ? "true" : "false"]
@@ -1798,7 +1865,7 @@ final class AppViewModel: ObservableObject {
                 let configuration = await MainActor.run { self.currentVocabularyBoostingConfiguration() }
                 let lineCount = await MainActor.run { self.customVocabularyTermLineCount }
                 _ = try await self.dependencies.settings.saveVocabularyBoosting(configuration)
-                await self.dependencies.transcription.setVocabularyBoostingConfiguration(configuration)
+                await self.pushProcessingConfigurationIfIdle()
                 await self.dependencies.metrics.log(
                     name: "vocabulary_terms_saved",
                     attributes: [
@@ -1841,7 +1908,7 @@ final class AppViewModel: ObservableObject {
             guard let self else { return }
             do {
                 _ = try await self.dependencies.settings.setBatchTranscriptionConfiguration(updated)
-                await self.dependencies.transcription.setBatchTranscriptionConfiguration(updated)
+                await self.pushProcessingConfigurationIfIdle()
                 await self.dependencies.metrics.log(
                     name: "batch_transcription_mode_changed",
                     attributes: ["mode": updated.mode.rawValue]
@@ -1877,7 +1944,7 @@ final class AppViewModel: ObservableObject {
             guard let self else { return }
             do {
                 _ = try await self.dependencies.settings.setBatchTranscriptionConfiguration(updated)
-                await self.dependencies.transcription.setBatchTranscriptionConfiguration(updated)
+                await self.pushProcessingConfigurationIfIdle()
                 if fellBackFromEnglishOnlyMode {
                     await MainActor.run {
                         self.banner = AppBanner(
@@ -2818,14 +2885,38 @@ final class AppViewModel: ObservableObject {
         markSessionProcessingLocally(sessionID: sessionID)
         let taskToken = UUID()
         currentProcessingTaskTokens[sessionID] = taskToken
-        currentProcessingTasks[sessionID] = Task { [weak self] in
-            guard let self else { return }
+        currentProcessingTasks[sessionID] = Task { [weak self, processingGate] in
+            // One job at a time: the services are shared, so a second job would
+            // overwrite this job's configuration and compete for the Neural Engine.
+            // Until the gate opens the session keeps showing "Queued".
             do {
+                try await processingGate.acquire()
+            } catch {
+                // Cancelled while queued (deleted or restarted). Tidy up only if
+                // nothing replaced this task in the meantime.
+                guard let self, self.currentProcessingTaskTokens[sessionID] == taskToken else { return }
+                self.currentProcessingTasks[sessionID] = nil
+                self.currentProcessingTaskTokens[sessionID] = nil
+                await self.reloadSessions(selectMostRecentIfNeeded: false)
+                return
+            }
+            guard let self else {
+                await processingGate.release()
+                return
+            }
+            self.activeProcessingJobCount += 1
+            defer {
+                self.activeProcessingJobCount -= 1
+                Task { await processingGate.release() }
+            }
+            do {
+                try Task.checkCancellation()
                 await MainActor.run {
                     self.applyCurrentRuntimeConfiguration()
                 }
-                await self.dependencies.diarization.setDiarizationEngine(await MainActor.run { self.diarizationEngine })
-                await self.pushKnownSpeakersToServices()
+                // Settings changed while this job waited reach the services now,
+                // and stay fixed until the job finishes.
+                await self.pushProcessingConfigurationToServices()
                 let deleteAudioAfterTranscription = self.isDeleteAudioAfterTranscriptionEnabled
                 let transcript = try await self.dependencies.processingCoordinator.process(
                     sessionId: sessionID,
@@ -3972,6 +4063,25 @@ final class AppViewModel: ObservableObject {
     private func pushKnownSpeakersToServices() async {
         await dependencies.diarization.setKnownSpeakers(knownSpeakers)
         await dependencies.recorder.setKnownSpeakers(knownSpeakers)
+    }
+
+    /// Pushes the processing settings to the shared services. Called when a job
+    /// starts, so each job runs with the settings it started with.
+    private func pushProcessingConfigurationToServices() async {
+        let batch = batchTranscriptionConfiguration
+        let vocabulary = currentVocabularyBoostingConfiguration()
+        let engine = diarizationEngine
+        await dependencies.transcription.setBatchTranscriptionConfiguration(batch)
+        await dependencies.transcription.setVocabularyBoostingConfiguration(vocabulary)
+        await dependencies.diarization.setDiarizationEngine(engine)
+        await pushKnownSpeakersToServices()
+    }
+
+    /// Applies a settings change right away only when no job is running. A running
+    /// job keeps its settings; the next job picks the change up when it starts.
+    private func pushProcessingConfigurationIfIdle() async {
+        guard activeProcessingJobCount == 0 else { return }
+        await pushProcessingConfigurationToServices()
     }
 
     private func knownSpeakerLibrarySummary(for speakers: [KnownSpeaker]) -> String {

@@ -40,6 +40,42 @@ struct AppBanner: Identifiable {
     let message: String
 }
 
+/// Why quitting now would lose work, shown in the quit confirmation.
+enum TerminationWarning: Equatable {
+    case recording
+    case processing
+
+    var title: String {
+        switch self {
+        case .recording: return "A recording is in progress"
+        case .processing: return "A transcription is still running"
+        }
+    }
+
+    var message: String {
+        switch self {
+        case .recording:
+            return "Lorre stops and saves the recording before quitting. You can transcribe it later with Retry Processing."
+        case .processing:
+            return "If you quit now, the transcription stops. The audio is kept, so you can run it again later with Retry Processing."
+        }
+    }
+
+    var confirmButtonTitle: String {
+        switch self {
+        case .recording: return "Stop Recording and Quit"
+        case .processing: return "Quit Anyway"
+        }
+    }
+
+    var cancelButtonTitle: String {
+        switch self {
+        case .recording: return "Keep Recording"
+        case .processing: return "Keep Transcribing"
+        }
+    }
+}
+
 enum ModelPreparationState: Equatable {
     case unknown
     case idle
