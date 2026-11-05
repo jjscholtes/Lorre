@@ -148,9 +148,29 @@ actor FluidAudioTranscriptionService: TranscriptionService {
     private var initialized = false
     private var vocabularyBoostingConfiguration = VocabularyBoostingConfiguration()
     private var batchTranscriptionConfiguration = BatchTranscriptionConfiguration()
+    /// The model load in flight, so concurrent callers share it instead of loading twice.
+    private var preparationTask: Task<Void, any Error>?
+    /// Bumped whenever a configuration change invalidates the loaded models.
+    private var modelGeneration = 0
 
     func ensureModelsReady(
         onProgress: (@Sendable (ProcessingUpdate) async -> Void)? = nil
+    ) async throws {
+        // Actors are reentrant: without this, two callers could both see
+        // `initialized == false` and both download and load the ASR models.
+        while let inFlight = preparationTask {
+            _ = try? await inFlight.value
+        }
+        let task = Task {
+            defer { self.preparationTask = nil }
+            try await self.prepareModelsIfNeeded(onProgress: onProgress)
+        }
+        preparationTask = task
+        try await task.value
+    }
+
+    private func prepareModelsIfNeeded(
+        onProgress: (@Sendable (ProcessingUpdate) async -> Void)?
     ) async throws {
         if initialized {
             if let onProgress {
@@ -179,7 +199,9 @@ actor FluidAudioTranscriptionService: TranscriptionService {
         }
 
         let progressDispatcher = SerialProgressDispatcher()
-        let modelVersion = Self.asrModelVersion(for: batchTranscriptionConfiguration.mode)
+        let generation = modelGeneration
+        let loadConfiguration = batchTranscriptionConfiguration
+        let modelVersion = Self.asrModelVersion(for: loadConfiguration.mode)
         let models: AsrModels
         do {
             models = try await AsrModels.downloadAndLoad(
@@ -203,7 +225,7 @@ actor FluidAudioTranscriptionService: TranscriptionService {
         await progressDispatcher.drain()
         let manager = AsrManager(
             config: ASRConfig(
-                parallelChunkConcurrency: batchTranscriptionConfiguration.parallelChunkConcurrency,
+                parallelChunkConcurrency: loadConfiguration.parallelChunkConcurrency,
                 streamingEnabled: true
             )
         )
@@ -240,6 +262,11 @@ actor FluidAudioTranscriptionService: TranscriptionService {
         }
         await progressDispatcher.drain()
 
+        guard generation == modelGeneration else {
+            // The model or chunking changed while loading; load what is configured now.
+            try await prepareModelsIfNeeded(onProgress: onProgress)
+            return
+        }
         self.managerBox = AsrManagerBox(manager: manager)
         self.vadManagerBox = VadManagerBox(manager: vadManager)
         self.initialized = true
@@ -257,11 +284,23 @@ actor FluidAudioTranscriptionService: TranscriptionService {
         if concurrencyChanged || modelVersionChanged {
             managerBox = nil
             initialized = false
+            modelGeneration += 1
         }
     }
 
     func transcribe(url: URL, sessionTitle: String, source: RecordingSource) async throws -> TranscriptionResult {
         try await ensureModelsReady(onProgress: nil)
+        while managerBox == nil {
+            // A model switch landed after loading finished; load the new model.
+            try Task.checkCancellation()
+            try await ensureModelsReady(onProgress: nil)
+        }
+        // Snapshot everything this run depends on. The actor is reentrant, so a
+        // settings change can land between the awaits below; it must not change
+        // the language, quality pass or vocabulary of a run that already started.
+        let configuration = batchTranscriptionConfiguration
+        let vocabulary = vocabularyBoostingConfiguration
+        let vadManagerBox = self.vadManagerBox
         guard let managerBox else {
             throw LorreError.processingFailed("ASR manager is not initialized.")
         }
@@ -269,16 +308,16 @@ actor FluidAudioTranscriptionService: TranscriptionService {
         logger.debug("transcribing session=\"\(sessionTitle, privacy: .private)\" source=\(source.rawValue, privacy: .public)")
         var result = try await managerBox.transcribe(
             url,
-            language: parakeetLanguageHint(for: batchTranscriptionConfiguration)
+            language: parakeetLanguageHint(for: configuration)
         )
-        result = await applyVocabularyBoostingIfNeeded(to: result, audioURL: url)
-        let speechWindows = await loadSpeechWindowsIfAvailable(from: url)
+        result = await applyVocabularyBoostingIfNeeded(to: result, audioURL: url, configuration: vocabulary)
+        let speechWindows = await loadSpeechWindowsIfAvailable(from: url, using: vadManagerBox)
         let fallbackEndMs = audioDurationMilliseconds(for: url) ?? 1000
         let utterances = buildUtterances(from: result, speechWindows: speechWindows, fallbackEndMs: fallbackEndMs)
-        let alternatives = await makeAlternativesIfNeeded(for: url)
-        let languageCode = batchTranscriptionConfiguration.languageCode
+        let alternatives = await makeAlternativesIfNeeded(for: url, configuration: configuration)
+        let languageCode = configuration.languageCode
         let engineName = Self.engineName(
-            for: batchTranscriptionConfiguration.mode,
+            for: configuration.mode,
             hasVocabularyBoost: result.ctcAppliedTerms?.isEmpty == false
         )
 
@@ -303,9 +342,13 @@ actor FluidAudioTranscriptionService: TranscriptionService {
         )
     }
 
-    private func applyVocabularyBoostingIfNeeded(to result: ASRResult, audioURL: URL) async -> ASRResult {
-        guard vocabularyBoostingConfiguration.isEnabled else { return result }
-        let terms = vocabularyBoostingConfiguration.runtimeSimpleFormatTerms
+    private func applyVocabularyBoostingIfNeeded(
+        to result: ASRResult,
+        audioURL: URL,
+        configuration: VocabularyBoostingConfiguration
+    ) async -> ASRResult {
+        guard configuration.isEnabled else { return result }
+        let terms = configuration.runtimeSimpleFormatTerms
         guard !terms.isEmpty else { return result }
         guard let tokenTimings = result.tokenTimings, !tokenTimings.isEmpty else { return result }
 
@@ -358,14 +401,17 @@ actor FluidAudioTranscriptionService: TranscriptionService {
         return url
     }
 
-    private func makeAlternativesIfNeeded(for url: URL) async -> [TranscriptAlternative] {
-        guard batchTranscriptionConfiguration.mode == .parakeetV3WithCohereQualityPass else {
+    private func makeAlternativesIfNeeded(
+        for url: URL,
+        configuration: BatchTranscriptionConfiguration
+    ) async -> [TranscriptAlternative] {
+        guard configuration.mode == .parakeetV3WithCohereQualityPass else {
             return []
         }
-        guard Self.parakeetLanguage(for: batchTranscriptionConfiguration.languageCode) != nil else {
+        guard Self.parakeetLanguage(for: configuration.languageCode) != nil else {
             return []
         }
-        guard let language = Self.cohereLanguage(for: batchTranscriptionConfiguration.languageCode) else {
+        guard let language = Self.cohereLanguage(for: configuration.languageCode) else {
             return []
         }
         guard #available(macOS 14, iOS 17, *) else {
@@ -464,7 +510,10 @@ actor FluidAudioTranscriptionService: TranscriptionService {
         }
     }
 
-    private func loadSpeechWindowsIfAvailable(from url: URL) async -> [SpeechWindow]? {
+    private func loadSpeechWindowsIfAvailable(
+        from url: URL,
+        using vadManagerBox: VadManagerBox?
+    ) async -> [SpeechWindow]? {
         guard let vadManagerBox else { return nil }
 
         do {
