@@ -5,24 +5,29 @@ import AppKit
 #endif
 import UniformTypeIdentifiers
 
+/// `@Observable` instead of `ObservableObject`: a view now re-renders only when a
+/// property it actually reads changes. With `@Published`, every change (the
+/// recording meter alone fires 20 times a second) invalidated every view that
+/// held the view model, including the sidebar and the whole transcript.
 @MainActor
-final class AppViewModel: ObservableObject {
+@Observable
+final class AppViewModel {
     static let unfiledFolderSelectionID = "__UNFILED__"
 
-    @Published private(set) var sessions: [SessionManifest] = [] {
+    private(set) var sessions: [SessionManifest] = [] {
         didSet {
             rebuildDerivedSessionStateIfNeeded()
             refreshTranscriptSearch()
         }
     }
-    @Published private(set) var folders: [SessionFolder] = [] {
+    private(set) var folders: [SessionFolder] = [] {
         didSet { rebuildDerivedSessionStateIfNeeded() }
     }
-    @Published private(set) var transcriptSearchHits: [TranscriptSearchHit] = []
-    @Published private(set) var searchScrollTarget: TranscriptSearchHit?
+    private(set) var transcriptSearchHits: [TranscriptSearchHit] = []
+    private(set) var searchScrollTarget: TranscriptSearchHit?
     private let transcriptSearchIndex = TranscriptSearchIndex()
-    private var transcriptSearchTask: Task<Void, Never>?
-    @Published var searchQuery: String = "" {
+    @ObservationIgnored private var transcriptSearchTask: Task<Void, Never>?
+    var searchQuery: String = "" {
         didSet {
             guard searchQuery != oldValue else { return }
             transcriptSearchHits = []
@@ -30,85 +35,87 @@ final class AppViewModel: ObservableObject {
             refreshTranscriptSearch()
         }
     }
-    @Published var selectedFilter: ShelfFilter = .all {
+    var selectedFilter: ShelfFilter = .all {
         didSet { rebuildDerivedSessionStateIfNeeded() }
     }
-    @Published var selectedFolderID: String? {
+    var selectedFolderID: String? {
         didSet { rebuildDerivedSessionStateIfNeeded() }
     }
-    @Published var selectedSessionID: UUID?
-    @Published var expandedViewFilters: Set<ShelfFilter> = [.all]
-    @Published var expandedFolderIDs: Set<String> = [AppViewModel.unfiledFolderSelectionID]
-    @Published private(set) var activeTranscript: TranscriptDocument?
-    @Published private(set) var isLoading = true
-    @Published private(set) var isRecording = false
-    @Published private(set) var isStartingRecording = false
-    @Published private(set) var isStoppingRecording = false
-    @Published private(set) var recordingElapsedSeconds: Double = 0
-    @Published private(set) var liveMeterSamples: [Double] = Array(repeating: 0.08, count: 28)
-    @Published private(set) var recorderStatusText: String = "Ready to record"
-    @Published var banner: AppBanner?
-    @Published private(set) var exportMessage: String?
-    @Published private(set) var isAudioPlaying = false
-    @Published private(set) var playbackCurrentSeconds: Double = 0
-    @Published private(set) var playbackDurationSeconds: Double = 0
-    @Published private(set) var playbackRate: Double = 1.0
-    @Published private(set) var playbackWaveformBins: [Double] = []
-    @Published private(set) var isPlaybackWaveformLoading = false
-    @Published private(set) var activePlaybackSegmentID: UUID?
-    @Published private(set) var fluidAudioStatus: String
-    @Published private(set) var runtimeCapabilities: RuntimeCapabilities
-    @Published private(set) var modelPreparationState: ModelPreparationState = .unknown
-    @Published private(set) var modelPreparationStatusLine: String = "Models not prepared yet"
-    @Published private(set) var modelPreparationDetailLine: String = "Models may download on first transcription."
-    @Published private(set) var modelPreparationProgress: Double?
-    @Published private(set) var modelPreparationLastPreparedAt: Date?
-    @Published var modelRegistryCustomBaseURL: String = ""
-    @Published private(set) var isSpeakerDiarizationEnabled: Bool = true
-    @Published private(set) var diarizationEngine: DiarizationEngine = .offlineVbx
-    @Published private(set) var diarizationExpectedSpeakerCountHint: DiarizationSpeakerCountHint = .auto
-    @Published private(set) var isDiarizationDebugExportEnabled: Bool = false
-    @Published private(set) var isVocabularyBoostingEnabled: Bool = false
-    @Published var customVocabularySimpleFormatTerms: String = ""
-    @Published private(set) var batchTranscriptionConfiguration = BatchTranscriptionConfiguration()
-    @Published private(set) var liveTranscriptionPreset: LiveTranscriptionPreset = .balanced
-    @Published private(set) var selectedRecordingSource: RecordingSource = .microphone
-    @Published private(set) var isLiveTranscriptionSupported: Bool = false
-    @Published private(set) var isLiveTranscriptionEnabled: Bool = false
-    @Published private(set) var isDeleteAudioAfterTranscriptionEnabled: Bool = false
-    @Published private(set) var isTranscriptConfidenceVisible: Bool = false
-    @Published private(set) var automaticMarkdownExportConfiguration = AutomaticMarkdownExportConfiguration()
-    @Published var automaticMarkdownExportFileNameTemplate = AutomaticMarkdownExportConfiguration.defaultFileNameTemplate
-    @Published private(set) var callWatcherConfiguration = CallWatcherConfiguration()
-    @Published private(set) var callWatcherStatusLine: String = "Off"
-    @Published private(set) var callPromptCandidate: CallDetectionCandidate?
-    @Published private(set) var globalDictationConfiguration = GlobalDictationConfiguration()
-    @Published private(set) var globalDictationPhase: GlobalDictationPhase = .idle
-    @Published private(set) var globalDictationElapsedSeconds: Double = 0
-    @Published private(set) var globalDictationMeterSamples: [Double] = Array(repeating: 0.08, count: 28)
-    @Published private(set) var globalDictationTranscriptText: String = ""
-    @Published private(set) var globalDictationTargetLabel: String?
-    @Published private(set) var globalDictationStatusLine: String = "Ready"
-    @Published private(set) var globalDictationFailureCode: String?
-    @Published private(set) var liveTranscriptPreview: LiveTranscriptPreview?
-    @Published private(set) var knownSpeakers: [KnownSpeaker] = []
-    @Published var knownSpeakerDraftName: String = ""
-    @Published private(set) var knownSpeakerLibraryStatusLine: String = "No known speakers enrolled yet."
-    @Published private(set) var knownSpeakerOperationDescription: String?
-    @Published private(set) var isKnownSpeakerOperationInFlight = false
-    @Published private(set) var processingProgressSnapshots: [UUID: ProcessingSummary] = [:]
+    var selectedSessionID: UUID?
+    var expandedViewFilters: Set<ShelfFilter> = [.all]
+    var expandedFolderIDs: Set<String> = [AppViewModel.unfiledFolderSelectionID]
+    private(set) var activeTranscript: TranscriptDocument?
+    private(set) var isLoading = true
+    private(set) var isRecording = false {
+        didSet { updateSystemActivity() }
+    }
+    private(set) var isStartingRecording = false
+    private(set) var isStoppingRecording = false
+    private(set) var recordingElapsedSeconds: Double = 0
+    private(set) var liveMeterSamples: [Double] = Array(repeating: 0.08, count: 28)
+    private(set) var recorderStatusText: String = "Ready to record"
+    var banner: AppBanner?
+    private(set) var exportMessage: String?
+    private(set) var isAudioPlaying = false
+    private(set) var playbackCurrentSeconds: Double = 0
+    private(set) var playbackDurationSeconds: Double = 0
+    private(set) var playbackRate: Double = 1.0
+    private(set) var playbackWaveformBins: [Double] = []
+    private(set) var isPlaybackWaveformLoading = false
+    private(set) var activePlaybackSegmentID: UUID?
+    private(set) var fluidAudioStatus: String
+    private(set) var runtimeCapabilities: RuntimeCapabilities
+    private(set) var modelPreparationState: ModelPreparationState = .unknown
+    private(set) var modelPreparationStatusLine: String = "Models not prepared yet"
+    private(set) var modelPreparationDetailLine: String = "Models may download on first transcription."
+    private(set) var modelPreparationProgress: Double?
+    private(set) var modelPreparationLastPreparedAt: Date?
+    var modelRegistryCustomBaseURL: String = ""
+    private(set) var isSpeakerDiarizationEnabled: Bool = true
+    private(set) var diarizationEngine: DiarizationEngine = .offlineVbx
+    private(set) var diarizationExpectedSpeakerCountHint: DiarizationSpeakerCountHint = .auto
+    private(set) var isDiarizationDebugExportEnabled: Bool = false
+    private(set) var isVocabularyBoostingEnabled: Bool = false
+    var customVocabularySimpleFormatTerms: String = ""
+    private(set) var batchTranscriptionConfiguration = BatchTranscriptionConfiguration()
+    private(set) var liveTranscriptionPreset: LiveTranscriptionPreset = .balanced
+    private(set) var selectedRecordingSource: RecordingSource = .microphone
+    private(set) var isLiveTranscriptionSupported: Bool = false
+    private(set) var isLiveTranscriptionEnabled: Bool = false
+    private(set) var isDeleteAudioAfterTranscriptionEnabled: Bool = false
+    private(set) var isTranscriptConfidenceVisible: Bool = false
+    private(set) var automaticMarkdownExportConfiguration = AutomaticMarkdownExportConfiguration()
+    var automaticMarkdownExportFileNameTemplate = AutomaticMarkdownExportConfiguration.defaultFileNameTemplate
+    private(set) var callWatcherConfiguration = CallWatcherConfiguration()
+    private(set) var callWatcherStatusLine: String = "Off"
+    private(set) var callPromptCandidate: CallDetectionCandidate?
+    private(set) var globalDictationConfiguration = GlobalDictationConfiguration()
+    private(set) var globalDictationPhase: GlobalDictationPhase = .idle
+    private(set) var globalDictationElapsedSeconds: Double = 0
+    private(set) var globalDictationMeterSamples: [Double] = Array(repeating: 0.08, count: 28)
+    private(set) var globalDictationTranscriptText: String = ""
+    private(set) var globalDictationTargetLabel: String?
+    private(set) var globalDictationStatusLine: String = "Ready"
+    private(set) var globalDictationFailureCode: String?
+    private(set) var liveTranscriptPreview: LiveTranscriptPreview?
+    private(set) var knownSpeakers: [KnownSpeaker] = []
+    var knownSpeakerDraftName: String = ""
+    private(set) var knownSpeakerLibraryStatusLine: String = "No known speakers enrolled yet."
+    private(set) var knownSpeakerOperationDescription: String?
+    private(set) var isKnownSpeakerOperationInFlight = false
+    private(set) var processingProgressSnapshots: [UUID: ProcessingSummary] = [:]
 
     private let dependencies: AppDependencies
-    private var started = false
-    private var recordingClockTask: Task<Void, Never>?
-    private var liveMeterTask: Task<Void, Never>?
-    private var callWatcherTask: Task<Void, Never>?
-    private var callPromptNotificationTask: Task<Void, Never>?
-    private var globalDictationClockTask: Task<Void, Never>?
-    private var globalDictationMeterTask: Task<Void, Never>?
-    private var playbackMonitorTask: Task<Void, Never>?
-    private var waveformLoadTask: Task<Void, Never>?
-    private var recordingSourceChangeTask: Task<Void, Never>?
+    @ObservationIgnored private var started = false
+    @ObservationIgnored private var recordingClockTask: Task<Void, Never>?
+    @ObservationIgnored private var liveMeterTask: Task<Void, Never>?
+    @ObservationIgnored private var callWatcherTask: Task<Void, Never>?
+    @ObservationIgnored private var callPromptNotificationTask: Task<Void, Never>?
+    @ObservationIgnored private var globalDictationClockTask: Task<Void, Never>?
+    @ObservationIgnored private var globalDictationMeterTask: Task<Void, Never>?
+    @ObservationIgnored private var playbackMonitorTask: Task<Void, Never>?
+    @ObservationIgnored private var waveformLoadTask: Task<Void, Never>?
+    @ObservationIgnored private var recordingSourceChangeTask: Task<Void, Never>?
     private var currentRecordingStartedAt: Date?
     private var recordingSession: SessionManifest?
     private var missingRecoveryAudio: Set<UUID> = []
@@ -117,17 +124,23 @@ final class AppViewModel: ObservableObject {
     private var currentGlobalDictationTarget: GlobalTextInsertionTarget?
     private var callPromptCandidatesByFingerprint: [String: CallDetectionCandidate] = [:]
     private var handledCallPromptActionFingerprints: Set<String> = []
-    private var currentProcessingTasks: [UUID: Task<Void, Never>] = [:]
-    private var currentProcessingTaskTokens: [UUID: UUID] = [:]
+    @ObservationIgnored private var currentProcessingTasks: [UUID: Task<Void, Never>] = [:]
+    @ObservationIgnored private var currentProcessingTaskTokens: [UUID: UUID] = [:]
     private let transcriptPersistenceQueue = TranscriptPersistenceQueue()
-    private var transcriptPersistenceVersions: [UUID: Int] = [:]
+    private let processingGate = ProcessingGate()
+    private var activeProcessingJobCount = 0 {
+        didSet { updateSystemActivity() }
+    }
+    private let systemActivity = SystemActivityGuard()
+    @ObservationIgnored private var systemSleepObserver: NSObjectProtocol?
+    @ObservationIgnored private var transcriptPersistenceVersions: [UUID: Int] = [:]
     private var cachedFilteredSessions: [SessionManifest] = []
     private var cachedViewBrowserSessions: [ShelfFilter: [SessionManifest]] = [:]
     private var cachedFolderBrowserSessions: [String: [SessionManifest]] = [:]
     private var cachedAllFolderBrowserSessions: [SessionManifest] = []
     private var cachedViewCounts: [ShelfFilter: Int] = [:]
-    private var sidebarExpansionSaveTask: Task<Void, Never>?
-    private var waveformCache: [UUID: [Double]] = [:]
+    @ObservationIgnored private var sidebarExpansionSaveTask: Task<Void, Never>?
+    @ObservationIgnored private var waveformCache: [UUID: [Double]] = [:]
     private var isBatchingDerivedSessionState = false
 
     init(dependencies: AppDependencies) {
@@ -169,6 +182,7 @@ final class AppViewModel: ObservableObject {
         await refreshLiveTranscriptionSupport(for: selectedRecordingSource)
         await restoreModelPreparationStateFromSettings()
         registerGlobalDictationHotKeyIfNeeded()
+        observeSystemSleep()
         startCallPromptNotificationActions()
         startCallWatcherIfNeeded()
         if callWatcherConfiguration.isEnabled {
@@ -182,6 +196,65 @@ final class AppViewModel: ObservableObject {
     }
 
     var filteredSessions: [SessionManifest] { cachedFilteredSessions }
+
+    // MARK: - Protecting long recordings
+
+    /// What is lost if Lorre quits now, or nil when quitting is safe.
+    var terminationWarning: TerminationWarning? {
+        if hasActiveRecording {
+            return .recording
+        }
+        if activeProcessingJobCount > 0 || !currentProcessingTasks.isEmpty {
+            return .processing
+        }
+        return nil
+    }
+
+    /// Stops an active recording the normal way so its audio is saved, then
+    /// returns. Gives up after `timeout` so quitting never hangs.
+    func stopRecordingForTermination(timeout: Duration = .seconds(10)) async {
+        if isRecording, !isStoppingRecording {
+            stopRecordingTapped()
+        }
+        let deadline = ContinuousClock.now + timeout
+        while hasActiveRecording, ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(100))
+        }
+    }
+
+    private func updateSystemActivity() {
+        systemActivity.update(isRecording: isRecording, isProcessing: activeProcessingJobCount > 0)
+    }
+
+    private func observeSystemSleep() {
+        #if canImport(AppKit)
+        guard systemSleepObserver == nil else { return }
+        systemSleepObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.willSleepNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.handleSystemWillSleep()
+            }
+        }
+        #endif
+    }
+
+    /// Closing the lid suspends the audio engine anyway. Stopping first saves the
+    /// recording cleanly instead of leaving a capture in an unknown state on wake.
+    private func handleSystemWillSleep() {
+        guard isRecording, !isStoppingRecording else { return }
+        stopRecordingTapped()
+        banner = AppBanner(
+            kind: .info,
+            title: "Recording stopped for sleep",
+            message: "Your Mac went to sleep, so Lorre stopped and saved the recording."
+        )
+        Task { [dependencies] in
+            await dependencies.metrics.log(name: "record_stopped_for_sleep")
+        }
+    }
 
     var modelRegistrySummaryLabel: String {
         currentModelRegistryConfiguration().summaryLabel
@@ -1493,7 +1566,7 @@ final class AppViewModel: ObservableObject {
                 await MainActor.run {
                     self.applyCurrentRuntimeConfiguration()
                 }
-                await self.dependencies.diarization.setDiarizationEngine(await MainActor.run { self.diarizationEngine })
+                await self.pushProcessingConfigurationIfIdle()
                 await self.pushKnownSpeakersToServices()
                 let includeDiarization = await MainActor.run { self.isSpeakerDiarizationEnabled }
                 try await self.dependencies.processingCoordinator.prepareModels(includeDiarization: includeDiarization) { [weak self] update in
@@ -1697,7 +1770,7 @@ final class AppViewModel: ObservableObject {
             guard let self else { return }
             do {
                 _ = try await self.dependencies.settings.setDiarizationEngine(engine)
-                await self.dependencies.diarization.setDiarizationEngine(engine)
+                await self.pushProcessingConfigurationIfIdle()
                 await self.dependencies.metrics.log(
                     name: "diarization_engine_changed",
                     attributes: ["engine": engine.rawValue]
@@ -1710,7 +1783,6 @@ final class AppViewModel: ObservableObject {
                     )
                 }
             } catch {
-                await self.dependencies.diarization.setDiarizationEngine(previous)
                 await MainActor.run {
                     self.diarizationEngine = previous
                     self.presentError(error, defaultTitle: "Could not save diarization engine")
@@ -1768,7 +1840,7 @@ final class AppViewModel: ObservableObject {
             do {
                 let configuration = await MainActor.run { self.currentVocabularyBoostingConfiguration() }
                 _ = try await self.dependencies.settings.saveVocabularyBoosting(configuration)
-                await self.dependencies.transcription.setVocabularyBoostingConfiguration(configuration)
+                await self.pushProcessingConfigurationIfIdle()
                 await self.dependencies.metrics.log(
                     name: "vocabulary_boosting_setting_changed",
                     attributes: ["enabled": isEnabled ? "true" : "false"]
@@ -1798,7 +1870,7 @@ final class AppViewModel: ObservableObject {
                 let configuration = await MainActor.run { self.currentVocabularyBoostingConfiguration() }
                 let lineCount = await MainActor.run { self.customVocabularyTermLineCount }
                 _ = try await self.dependencies.settings.saveVocabularyBoosting(configuration)
-                await self.dependencies.transcription.setVocabularyBoostingConfiguration(configuration)
+                await self.pushProcessingConfigurationIfIdle()
                 await self.dependencies.metrics.log(
                     name: "vocabulary_terms_saved",
                     attributes: [
@@ -1841,7 +1913,7 @@ final class AppViewModel: ObservableObject {
             guard let self else { return }
             do {
                 _ = try await self.dependencies.settings.setBatchTranscriptionConfiguration(updated)
-                await self.dependencies.transcription.setBatchTranscriptionConfiguration(updated)
+                await self.pushProcessingConfigurationIfIdle()
                 await self.dependencies.metrics.log(
                     name: "batch_transcription_mode_changed",
                     attributes: ["mode": updated.mode.rawValue]
@@ -1877,7 +1949,7 @@ final class AppViewModel: ObservableObject {
             guard let self else { return }
             do {
                 _ = try await self.dependencies.settings.setBatchTranscriptionConfiguration(updated)
-                await self.dependencies.transcription.setBatchTranscriptionConfiguration(updated)
+                await self.pushProcessingConfigurationIfIdle()
                 if fellBackFromEnglishOnlyMode {
                     await MainActor.run {
                         self.banner = AppBanner(
@@ -2818,14 +2890,38 @@ final class AppViewModel: ObservableObject {
         markSessionProcessingLocally(sessionID: sessionID)
         let taskToken = UUID()
         currentProcessingTaskTokens[sessionID] = taskToken
-        currentProcessingTasks[sessionID] = Task { [weak self] in
-            guard let self else { return }
+        currentProcessingTasks[sessionID] = Task { [weak self, processingGate] in
+            // One job at a time: the services are shared, so a second job would
+            // overwrite this job's configuration and compete for the Neural Engine.
+            // Until the gate opens the session keeps showing "Queued".
             do {
+                try await processingGate.acquire()
+            } catch {
+                // Cancelled while queued (deleted or restarted). Tidy up only if
+                // nothing replaced this task in the meantime.
+                guard let self, self.currentProcessingTaskTokens[sessionID] == taskToken else { return }
+                self.currentProcessingTasks[sessionID] = nil
+                self.currentProcessingTaskTokens[sessionID] = nil
+                await self.reloadSessions(selectMostRecentIfNeeded: false)
+                return
+            }
+            guard let self else {
+                await processingGate.release()
+                return
+            }
+            self.activeProcessingJobCount += 1
+            defer {
+                self.activeProcessingJobCount -= 1
+                Task { await processingGate.release() }
+            }
+            do {
+                try Task.checkCancellation()
                 await MainActor.run {
                     self.applyCurrentRuntimeConfiguration()
                 }
-                await self.dependencies.diarization.setDiarizationEngine(await MainActor.run { self.diarizationEngine })
-                await self.pushKnownSpeakersToServices()
+                // Settings changed while this job waited reach the services now,
+                // and stay fixed until the job finishes.
+                await self.pushProcessingConfigurationToServices()
                 let deleteAudioAfterTranscription = self.isDeleteAudioAfterTranscriptionEnabled
                 let transcript = try await self.dependencies.processingCoordinator.process(
                     sessionId: sessionID,
@@ -3225,23 +3321,31 @@ final class AppViewModel: ObservableObject {
         refreshPlaybackState()
     }
 
+    /// Runs every 120 ms during playback. Only assign what changed: every
+    /// assignment notifies the views that read the property, and the transcript
+    /// list reads `activePlaybackSegmentID`.
     private func refreshPlaybackState() {
-        isAudioPlaying = dependencies.playback.isPlaying
-        playbackCurrentSeconds = dependencies.playback.currentTimeSeconds
-        playbackDurationSeconds = dependencies.playback.durationSeconds
-        playbackRate = dependencies.playback.playbackRate
+        let playback = dependencies.playback
+        if isAudioPlaying != playback.isPlaying { isAudioPlaying = playback.isPlaying }
+        if playbackCurrentSeconds != playback.currentTimeSeconds { playbackCurrentSeconds = playback.currentTimeSeconds }
+        if playbackDurationSeconds != playback.durationSeconds { playbackDurationSeconds = playback.durationSeconds }
+        if playbackRate != playback.playbackRate { playbackRate = playback.playbackRate }
         updateActivePlaybackSegment()
     }
 
     private func updateActivePlaybackSegment() {
-        guard let transcript = activeTranscript else {
-            activePlaybackSegmentID = nil
-            return
+        let activeID: UUID?
+        if let transcript = activeTranscript {
+            let currentMs = Int((playbackCurrentSeconds * 1000).rounded())
+            activeID = transcript.segments.first { segment in
+                currentMs >= segment.startMs && currentMs < max(segment.startMs + 1, segment.endMs)
+            }?.id
+        } else {
+            activeID = nil
         }
-        let currentMs = Int((playbackCurrentSeconds * 1000).rounded())
-        activePlaybackSegmentID = transcript.segments.first { segment in
-            currentMs >= segment.startMs && currentMs < max(segment.startMs + 1, segment.endMs)
-        }?.id
+        if activePlaybackSegmentID != activeID {
+            activePlaybackSegmentID = activeID
+        }
     }
 
     private func startPlaybackMonitor(sessionID: UUID) {
@@ -3972,6 +4076,25 @@ final class AppViewModel: ObservableObject {
     private func pushKnownSpeakersToServices() async {
         await dependencies.diarization.setKnownSpeakers(knownSpeakers)
         await dependencies.recorder.setKnownSpeakers(knownSpeakers)
+    }
+
+    /// Pushes the processing settings to the shared services. Called when a job
+    /// starts, so each job runs with the settings it started with.
+    private func pushProcessingConfigurationToServices() async {
+        let batch = batchTranscriptionConfiguration
+        let vocabulary = currentVocabularyBoostingConfiguration()
+        let engine = diarizationEngine
+        await dependencies.transcription.setBatchTranscriptionConfiguration(batch)
+        await dependencies.transcription.setVocabularyBoostingConfiguration(vocabulary)
+        await dependencies.diarization.setDiarizationEngine(engine)
+        await pushKnownSpeakersToServices()
+    }
+
+    /// Applies a settings change right away only when no job is running. A running
+    /// job keeps its settings; the next job picks the change up when it starts.
+    private func pushProcessingConfigurationIfIdle() async {
+        guard activeProcessingJobCount == 0 else { return }
+        await pushProcessingConfigurationToServices()
     }
 
     private func knownSpeakerLibrarySummary(for speakers: [KnownSpeaker]) -> String {

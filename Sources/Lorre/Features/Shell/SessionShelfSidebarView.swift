@@ -4,7 +4,7 @@ import UniformTypeIdentifiers
 struct SessionShelfView: View {
     private static let compactViewFilters: [ShelfFilter] = [.processing, .errors]
 
-    @ObservedObject var viewModel: AppViewModel
+    var viewModel: AppViewModel
     @State private var isPresentingImportPicker = false
     @State private var isShowingCreateFolderAlert = false
     @State private var newFolderName = ""
@@ -373,7 +373,7 @@ struct SessionShelfView: View {
 }
 
 private struct ActiveRecordingShelfCard: View {
-    @ObservedObject var viewModel: AppViewModel
+    var viewModel: AppViewModel
 
     var body: some View {
         VStack(alignment: .leading, spacing: DS.Space.x2) {
@@ -422,7 +422,7 @@ private struct ActiveRecordingShelfCard: View {
                 }
             }
 
-            IndexRailView(mode: .live(viewModel.liveMeterSamples), height: 10)
+            LiveMeterRailView(viewModel: viewModel, height: 10)
                 .frame(maxWidth: .infinity)
         }
         .padding(DS.Space.x3)

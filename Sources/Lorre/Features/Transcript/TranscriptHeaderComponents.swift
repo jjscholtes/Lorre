@@ -115,7 +115,7 @@ private struct TranscriptKeyboardShortcutBridge: NSViewRepresentable {
 #endif
 
 struct TranscriptHeaderView: View {
-    @ObservedObject var viewModel: AppViewModel
+    var viewModel: AppViewModel
     let session: SessionManifest
     let transcript: TranscriptDocument?
     @State private var isShowingRenameAlert = false
@@ -697,7 +697,7 @@ private struct WaveformStripView: View {
 }
 
 struct TranscriptErrorStateView: View {
-    @ObservedObject var viewModel: AppViewModel
+    var viewModel: AppViewModel
     let session: SessionManifest
     @State private var isShowingDeleteConfirmation = false
 

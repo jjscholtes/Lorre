@@ -156,8 +156,30 @@ actor ProcessingCoordinator {
                 try await deleteAudioArtifacts(for: session, in: sessionDir)
             }
 
+            // Re-encode the uncompressed recordings losslessly now that ASR and
+            // diarization are done. Best effort: a failure keeps the original files.
+            var compaction = AudioStorageCompactor.Outcome()
+            if !deleteAudioAfterTranscription {
+                await onProgress(ProcessingUpdate(phase: .saving, label: "Compacting audio", fraction: 0.97))
+                compaction = AudioStorageCompactor.encode(
+                    fileNames: [session.audioFileName, session.microphoneStemFileName, session.systemAudioStemFileName]
+                        .compactMap { $0 },
+                    in: sessionDir
+                )
+            }
+            let renamedFiles = compaction.renamedFiles
+
             let audioDeletedAt = deleteAudioAfterTranscription ? Date() : nil
             session = try await store.updateSession(id: session.id) { session in
+                if let compacted = renamedFiles[session.audioFileName] {
+                    session.audioFileName = compacted
+                }
+                if let name = session.microphoneStemFileName, let compacted = renamedFiles[name] {
+                    session.microphoneStemFileName = compacted
+                }
+                if let name = session.systemAudioStemFileName, let compacted = renamedFiles[name] {
+                    session.systemAudioStemFileName = compacted
+                }
                 session.status = .ready
                 session.transcriptFileName = "transcript.json"
                 session.audioDeletedAt = audioDeletedAt
@@ -172,6 +194,8 @@ actor ProcessingCoordinator {
                     progressFraction: 1
                 )
             }
+            // The manifest now names the compacted files, so the originals can go.
+            AudioStorageCompactor.removeOriginals(of: compaction, in: sessionDir)
             await onProgress(ProcessingUpdate(phase: .saving, label: "Ready", fraction: 1))
             return transcript
         } catch let error as CancellationError {

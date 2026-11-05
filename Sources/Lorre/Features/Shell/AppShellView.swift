@@ -1,7 +1,7 @@
 import SwiftUI
 
 struct AppShellView: View {
-    @ObservedObject var viewModel: AppViewModel
+    var viewModel: AppViewModel
 
     var body: some View {
         GeometryReader { geometry in
@@ -27,7 +27,7 @@ struct AppShellView: View {
                 .padding(.vertical, verticalPadding)
 
                 #if canImport(AppKit)
-                GlobalDictationPanelPresenter(viewModel: viewModel)
+                GlobalDictationPanelPresenter(viewModel: viewModel, isVisible: viewModel.isGlobalDictationOverlayVisible)
                     .frame(width: 0, height: 0)
                 #endif
             }
@@ -36,7 +36,7 @@ struct AppShellView: View {
 }
 
 private struct WorkStageContainerView: View {
-    @ObservedObject var viewModel: AppViewModel
+    var viewModel: AppViewModel
 
     var body: some View {
         VStack(alignment: .leading, spacing: DS.Space.x4) {
@@ -76,7 +76,7 @@ private struct WorkStageContainerView: View {
 }
 
 private struct CallRecordingPromptView: View {
-    @ObservedObject var viewModel: AppViewModel
+    var viewModel: AppViewModel
 
     var body: some View {
         HStack(alignment: .top, spacing: DS.Space.x3) {
@@ -126,7 +126,7 @@ private struct CallRecordingPromptView: View {
 }
 
 private struct ActiveRecordingWorkspaceView: View {
-    @ObservedObject var viewModel: AppViewModel
+    var viewModel: AppViewModel
 
     var body: some View {
         VStack(alignment: .leading, spacing: DS.Space.x3) {
@@ -160,7 +160,7 @@ private struct ActiveRecordingWorkspaceView: View {
                 }
             }
 
-            IndexRailView(mode: .live(viewModel.liveMeterSamples), height: 12)
+            LiveMeterRailView(viewModel: viewModel, height: 12)
                 .frame(maxWidth: .infinity)
 
             if viewModel.isLiveTranscriptionSupported && viewModel.isLiveTranscriptionEnabled {

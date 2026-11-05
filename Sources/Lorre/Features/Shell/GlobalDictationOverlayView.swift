@@ -1,7 +1,7 @@
 import SwiftUI
 
 struct GlobalDictationOverlayCard: View {
-    @ObservedObject var viewModel: AppViewModel
+    var viewModel: AppViewModel
 
     var body: some View {
         VStack(alignment: .leading, spacing: DS.Space.x3) {
@@ -174,7 +174,11 @@ struct GlobalDictationOverlayCard: View {
 import AppKit
 
 struct GlobalDictationPanelPresenter: NSViewRepresentable {
-    @ObservedObject var viewModel: AppViewModel
+    var viewModel: AppViewModel
+    /// Passed in from the parent's body so SwiftUI calls `updateNSView` whenever
+    /// the overlay should appear or hide. With `@Observable`, the representable is
+    /// no longer refreshed on every unrelated view-model change.
+    var isVisible: Bool
 
     func makeCoordinator() -> Coordinator {
         Coordinator()
@@ -185,15 +189,15 @@ struct GlobalDictationPanelPresenter: NSViewRepresentable {
     }
 
     func updateNSView(_ nsView: NSView, context: Context) {
-        context.coordinator.update(viewModel: viewModel)
+        context.coordinator.update(viewModel: viewModel, isVisible: isVisible)
     }
 
     final class Coordinator {
         private var panel: NSPanel?
 
         @MainActor
-        func update(viewModel: AppViewModel) {
-            guard viewModel.isGlobalDictationOverlayVisible else {
+        func update(viewModel: AppViewModel, isVisible: Bool) {
+            guard isVisible else {
                 panel?.orderOut(nil)
                 return
             }

@@ -1,7 +1,7 @@
 import SwiftUI
 
 struct SpeakerRecognitionQuickAccessView: View {
-    @ObservedObject var viewModel: AppViewModel
+    var viewModel: AppViewModel
     let scopeNote: String
 
     var body: some View {
@@ -109,7 +109,7 @@ struct SpeakerRecognitionQuickAccessView: View {
 }
 
 struct KnownSpeakerLibraryQuickAccessView: View {
-    @ObservedObject var viewModel: AppViewModel
+    var viewModel: AppViewModel
     @State private var draftName = ""
 
     var body: some View {
