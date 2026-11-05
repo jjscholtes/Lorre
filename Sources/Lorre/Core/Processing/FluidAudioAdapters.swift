@@ -180,20 +180,27 @@ actor FluidAudioTranscriptionService: TranscriptionService {
 
         let progressDispatcher = SerialProgressDispatcher()
         let modelVersion = Self.asrModelVersion(for: batchTranscriptionConfiguration.mode)
-        let models = try await AsrModels.downloadAndLoad(
-            version: modelVersion,
-            progressHandler: { progress in
-                guard let onProgress else { return }
-                let update = FluidAudioProgressSupport.makeUpdate(
-                    phase: .preparing,
-                    component: .asr,
-                    label: "Preparing ASR models",
-                    progress: progress
-                )
-                let scaled = FluidAudioProgressSupport.scale(update, into: 0.0...0.78)
-                progressDispatcher.submit(scaled, to: onProgress)
-            }
-        )
+        let models: AsrModels
+        do {
+            models = try await AsrModels.downloadAndLoad(
+                version: modelVersion,
+                progressHandler: { progress in
+                    guard let onProgress else { return }
+                    let update = FluidAudioProgressSupport.makeUpdate(
+                        phase: .preparing,
+                        component: .asr,
+                        label: "Preparing ASR models",
+                        progress: progress
+                    )
+                    let scaled = FluidAudioProgressSupport.scale(update, into: 0.0...0.78)
+                    progressDispatcher.submit(scaled, to: onProgress)
+                }
+            )
+        } catch {
+            await progressDispatcher.drain()
+            throw error
+        }
+        await progressDispatcher.drain()
         let manager = AsrManager(
             config: ASRConfig(
                 parallelChunkConcurrency: batchTranscriptionConfiguration.parallelChunkConcurrency,
@@ -212,19 +219,25 @@ actor FluidAudioTranscriptionService: TranscriptionService {
                 )
             )
         }
-        let vadManager = try await VadManager(
-            progressHandler: { progress in
-                guard let onProgress else { return }
-                let update = FluidAudioProgressSupport.makeUpdate(
-                    phase: .preparing,
-                    component: .vad,
-                    label: "Preparing VAD model",
-                    progress: progress
-                )
-                let scaled = FluidAudioProgressSupport.scale(update, into: 0.78...1.0)
-                progressDispatcher.submit(scaled, to: onProgress)
-            }
-        )
+        let vadManager: VadManager
+        do {
+            vadManager = try await VadManager(
+                progressHandler: { progress in
+                    guard let onProgress else { return }
+                    let update = FluidAudioProgressSupport.makeUpdate(
+                        phase: .preparing,
+                        component: .vad,
+                        label: "Preparing VAD model",
+                        progress: progress
+                    )
+                    let scaled = FluidAudioProgressSupport.scale(update, into: 0.78...1.0)
+                    progressDispatcher.submit(scaled, to: onProgress)
+                }
+            )
+        } catch {
+            await progressDispatcher.drain()
+            throw error
+        }
         await progressDispatcher.drain()
 
         self.managerBox = AsrManagerBox(manager: manager)
@@ -985,19 +998,25 @@ actor FluidAudioDiarizationService: SpeakerDiarizationService {
 
         let manager = OfflineDiarizerManager(config: qualityTunedConfig(expectedSpeakers: normalizedHint))
         let progressDispatcher = SerialProgressDispatcher()
-        let models = try await OfflineDiarizerModels.load(
-            progressHandler: { progress in
-                guard let onProgress else { return }
-                let update = FluidAudioProgressSupport.makeUpdate(
-                    phase: .preparing,
-                    component: .diarization,
-                    label: "Preparing diarization models",
-                    progress: progress
-                )
-                let scaled = FluidAudioProgressSupport.scale(update, into: 0.0...0.94)
-                progressDispatcher.submit(scaled, to: onProgress)
-            }
-        )
+        let models: OfflineDiarizerModels
+        do {
+            models = try await OfflineDiarizerModels.load(
+                progressHandler: { progress in
+                    guard let onProgress else { return }
+                    let update = FluidAudioProgressSupport.makeUpdate(
+                        phase: .preparing,
+                        component: .diarization,
+                        label: "Preparing diarization models",
+                        progress: progress
+                    )
+                    let scaled = FluidAudioProgressSupport.scale(update, into: 0.0...0.94)
+                    progressDispatcher.submit(scaled, to: onProgress)
+                }
+            )
+        } catch {
+            await progressDispatcher.drain()
+            throw error
+        }
         await progressDispatcher.drain()
         manager.initialize(models: models)
         if let onProgress {
@@ -1063,19 +1082,24 @@ actor FluidAudioDiarizationService: SpeakerDiarizationService {
 
         if sortformerModels == nil {
             let progressDispatcher = SerialProgressDispatcher()
-            sortformerModels = try await SortformerModels.loadFromHuggingFace(
-                config: Self.sortformerConfig,
-                progressHandler: { progress in
-                    guard let onProgress else { return }
-                    let update = FluidAudioProgressSupport.makeUpdate(
-                        phase: .preparing,
-                        component: .diarization,
-                        label: "Preparing diarization models",
-                        progress: progress
-                    )
-                    progressDispatcher.submit(update, to: onProgress)
-                }
-            )
+            do {
+                sortformerModels = try await SortformerModels.loadFromHuggingFace(
+                    config: Self.sortformerConfig,
+                    progressHandler: { progress in
+                        guard let onProgress else { return }
+                        let update = FluidAudioProgressSupport.makeUpdate(
+                            phase: .preparing,
+                            component: .diarization,
+                            label: "Preparing diarization models",
+                            progress: progress
+                        )
+                        progressDispatcher.submit(update, to: onProgress)
+                    }
+                )
+            } catch {
+                await progressDispatcher.drain()
+                throw error
+            }
             await progressDispatcher.drain()
         }
 
@@ -1130,19 +1154,24 @@ actor FluidAudioDiarizationService: SpeakerDiarizationService {
 
         if lsEendModel == nil {
             let progressDispatcher = SerialProgressDispatcher()
-            lsEendModel = try await LSEENDModel.loadFromHuggingFace(
-                variant: .dihard3,
-                progressHandler: { progress in
-                    guard let onProgress else { return }
-                    let update = FluidAudioProgressSupport.makeUpdate(
-                        phase: .preparing,
-                        component: .diarization,
-                        label: "Preparing diarization models",
-                        progress: progress
-                    )
-                    progressDispatcher.submit(update, to: onProgress)
-                }
-            )
+            do {
+                lsEendModel = try await LSEENDModel.loadFromHuggingFace(
+                    variant: .dihard3,
+                    progressHandler: { progress in
+                        guard let onProgress else { return }
+                        let update = FluidAudioProgressSupport.makeUpdate(
+                            phase: .preparing,
+                            component: .diarization,
+                            label: "Preparing diarization models",
+                            progress: progress
+                        )
+                        progressDispatcher.submit(update, to: onProgress)
+                    }
+                )
+            } catch {
+                await progressDispatcher.drain()
+                throw error
+            }
             await progressDispatcher.drain()
         }
 

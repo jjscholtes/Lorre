@@ -193,7 +193,10 @@ struct TranscriptSegmentRowView: View {
 
     private func commitIfNeeded() {
         let normalized = draftText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard normalized != segment.text else { return }
+        let baseline = (focusedOriginalText ?? segment.text).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard normalized != baseline, normalized != segment.text else { return }
+        focusedOriginalText = normalized
+        hasLocalTextEdits = false
         onCommitText(normalized)
     }
 

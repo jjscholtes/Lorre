@@ -171,15 +171,15 @@ actor KnownSpeakerStore {
     }
 
     private func deleteReferenceClipIfPresent(_ referenceClip: KnownSpeakerReferenceClip?) throws {
-        guard let referenceClip else { return }
-        let fileURL = try safeReferenceClipURL(for: referenceClip.storedFileName)
+        guard let referenceClip,
+              let fileURL = try? safeReferenceClipURL(for: referenceClip.storedFileName) else { return }
         guard FileManager.default.fileExists(atPath: fileURL.path(percentEncoded: false)) else { return }
         try FileManager.default.removeItem(at: fileURL)
     }
 
     private func safeReferenceClipURL(for storedFileName: String) throws -> URL {
         let trimmed = storedFileName.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty,
+        guard !trimmed.isEmpty, trimmed != ".",
               trimmed == (trimmed as NSString).lastPathComponent,
               !trimmed.contains(".."),
               !trimmed.contains("/"),
@@ -191,7 +191,7 @@ actor KnownSpeakerStore {
         let candidate = base.appendingPathComponent(trimmed, isDirectory: false).standardizedFileURL
         let basePath = Self.normalizedDirectoryPath(base.path(percentEncoded: false))
         let candidatePath = candidate.path(percentEncoded: false)
-        guard candidatePath == basePath || candidatePath.hasPrefix(basePath + "/") else {
+        guard candidatePath.hasPrefix(basePath + "/") else {
             throw LorreError.persistenceFailed("Known speaker reference clip is outside the samples directory.")
         }
         return candidate
