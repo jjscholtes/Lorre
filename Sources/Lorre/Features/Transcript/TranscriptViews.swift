@@ -76,6 +76,11 @@ struct TranscriptStageView: View {
                         }
                         .padding(DS.Space.x4)
                     }
+                    .onChange(of: viewModel.searchScrollTarget, initial: true) { _, hit in
+                        guard let hit, hit.sessionID == transcript.sessionId else { return }
+                        proxy.scrollTo(hit.segmentID, anchor: .center)
+                        viewModel.didScrollToSearchHit(hit)
+                    }
                     .onChange(of: viewModel.activePlaybackSegmentID) { _, activeID in
                         guard let activeID else { return }
                         withAnimation(.easeOut(duration: 0.18)) {

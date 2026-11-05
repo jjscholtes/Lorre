@@ -38,7 +38,7 @@ struct SessionShelfView: View {
                         .minimumScaleFactor(0.9)
                 }
 
-                SearchFieldView(label: "Sessions", text: $searchText)
+                SearchFieldView(label: "Sessions and transcripts", text: $searchText)
                     .onChange(of: searchText) { _, newValue in
                         searchDebounceTask?.cancel()
                         searchDebounceTask = Task { @MainActor in
@@ -47,6 +47,23 @@ struct SessionShelfView: View {
                             viewModel.searchQuery = newValue
                         }
                     }
+
+                if !viewModel.transcriptSearchHits.isEmpty {
+                    CapsLabel(text: "Transcript matches")
+                    ForEach(viewModel.transcriptSearchHits) { hit in
+                        Button {
+                            viewModel.openSearchHit(hit)
+                        } label: {
+                            VStack(alignment: .leading, spacing: DS.Space.x1) {
+                                Text("\(Formatters.timestamp(ms: hit.startMs)) · \(hit.sessionTitle)")
+                                    .font(DS.FontStyle.helper)
+                                Text(hit.text).lineLimit(2)
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
 
                 HStack(spacing: DS.Space.x2) {
                     Button {

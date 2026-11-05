@@ -318,6 +318,18 @@ enum RecorderAudioUtilities {
         try file.write(from: buffer)
     }
 
+    static func publishMix(microphone: URL, system: URL, destination: URL) throws {
+        let partial = destination.deletingLastPathComponent()
+            .appendingPathComponent(".mix-\(UUID().uuidString).caf")
+        defer { try? FileManager.default.removeItem(at: partial) }
+        try mixToCanonicalFile(microphoneURL: microphone, systemAudioURL: system, destinationURL: partial)
+        if FileManager.default.fileExists(atPath: destination.path) {
+            _ = try FileManager.default.replaceItemAt(destination, withItemAt: partial)
+        } else {
+            try FileManager.default.moveItem(at: partial, to: destination)
+        }
+    }
+
     static func mixToCanonicalFile(
         microphoneURL: URL,
         systemAudioURL: URL,

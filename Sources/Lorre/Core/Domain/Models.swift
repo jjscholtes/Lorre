@@ -666,7 +666,10 @@ struct RecordingRequest: Sendable {
     var source: RecordingSource
     var liveTranscriptionEnabled: Bool
 
-    init(source: RecordingSource, liveTranscriptionEnabled: Bool = false) {
+    var sessionDirectory: URL?
+
+    init(source: RecordingSource, liveTranscriptionEnabled: Bool = false, sessionDirectory: URL? = nil) {
+        self.sessionDirectory = sessionDirectory
         self.source = source
         self.liveTranscriptionEnabled = liveTranscriptionEnabled
     }
@@ -1069,6 +1072,7 @@ enum LiveTranscriptionPreset: String, Codable, CaseIterable, Equatable, Sendable
     case highAccuracy
     case nemotronBalanced
     case nemotronHighAccuracy
+    case dutchUnified
 
     var label: String {
         switch self {
@@ -1082,6 +1086,8 @@ enum LiveTranscriptionPreset: String, Codable, CaseIterable, Equatable, Sendable
             return "Nemotron balanced"
         case .nemotronHighAccuracy:
             return "Nemotron high accuracy"
+        case .dutchUnified:
+            return "Nederlands"
         }
     }
 
@@ -1097,6 +1103,8 @@ enum LiveTranscriptionPreset: String, Codable, CaseIterable, Equatable, Sendable
             return "Nemotron English streaming with 560 ms chunks; higher live quality with more compute."
         case .nemotronHighAccuracy:
             return "Nemotron English streaming with 1120 ms chunks; steadiest live text with more delay."
+        case .dutchUnified:
+            return "Dutch live transcription with Nemotron Unified. First download is about 1.1 GB."
         }
     }
 }

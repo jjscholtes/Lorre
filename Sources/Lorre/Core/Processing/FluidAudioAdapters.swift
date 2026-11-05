@@ -138,7 +138,7 @@ actor FluidAudioTranscriptionService: TranscriptionService {
         }
     }
 
-    private struct SpeechWindow: Sendable {
+    struct SpeechWindow: Sendable {
         var start: Double
         var end: Double
     }
@@ -476,12 +476,12 @@ actor FluidAudioTranscriptionService: TranscriptionService {
         }
     }
 
-    private func buildUtterances(
+    func buildUtterances(
         from result: ASRResult,
         speechWindows: [SpeechWindow]?,
         fallbackEndMs: Int
     ) -> [TranscriptionUtterance] {
-        let tokenTimings = result.tokenTimings ?? []
+        let tokenTimings = VocabularyAlignment.tokens(for: result)
         if tokenTimings.isEmpty {
             let text = result.text.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
             guard !text.isEmpty else { return [] }

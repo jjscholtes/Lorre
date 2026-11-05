@@ -179,6 +179,7 @@ actor ControlledRecorderService: RecorderService {
     enum StopBehavior: Sendable {
         case succeed
         case failure(String)
+        case finalize(@Sendable (URL) throws -> Void)
     }
 
     private let startDelay: Duration
@@ -231,6 +232,9 @@ actor ControlledRecorderService: RecorderService {
         switch stopBehavior {
         case let .failure(message):
             throw LorreError.recordingStopFailed(message)
+        case let .finalize(writeCapture):
+            try writeCapture(directoryURL.appendingPathComponent(fileLayout.audioFileName))
+            return RecordingCapture(startedAt: startedAt, endedAt: Date(), durationSeconds: 1)
         case .succeed:
             let endedAt = Date()
             let duration = max(0.5, endedAt.timeIntervalSince(startedAt))

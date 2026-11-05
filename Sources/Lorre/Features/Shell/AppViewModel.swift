@@ -10,13 +10,25 @@ final class AppViewModel: ObservableObject {
     static let unfiledFolderSelectionID = "__UNFILED__"
 
     @Published private(set) var sessions: [SessionManifest] = [] {
-        didSet { rebuildDerivedSessionStateIfNeeded() }
+        didSet {
+            rebuildDerivedSessionStateIfNeeded()
+            refreshTranscriptSearch()
+        }
     }
     @Published private(set) var folders: [SessionFolder] = [] {
         didSet { rebuildDerivedSessionStateIfNeeded() }
     }
+    @Published private(set) var transcriptSearchHits: [TranscriptSearchHit] = []
+    @Published private(set) var searchScrollTarget: TranscriptSearchHit?
+    private let transcriptSearchIndex = TranscriptSearchIndex()
+    private var transcriptSearchTask: Task<Void, Never>?
     @Published var searchQuery: String = "" {
-        didSet { rebuildDerivedSessionStateIfNeeded() }
+        didSet {
+            guard searchQuery != oldValue else { return }
+            transcriptSearchHits = []
+            rebuildDerivedSessionStateIfNeeded()
+            refreshTranscriptSearch()
+        }
     }
     @Published var selectedFilter: ShelfFilter = .all {
         didSet { rebuildDerivedSessionStateIfNeeded() }
@@ -98,6 +110,8 @@ final class AppViewModel: ObservableObject {
     private var waveformLoadTask: Task<Void, Never>?
     private var recordingSourceChangeTask: Task<Void, Never>?
     private var currentRecordingStartedAt: Date?
+    private var recordingSession: SessionManifest?
+    private var missingRecoveryAudio: Set<UUID> = []
     private var activeRecordingSource: RecordingSource?
     private var currentGlobalDictationStartedAt: Date?
     private var currentGlobalDictationTarget: GlobalTextInsertionTarget?
@@ -129,6 +143,7 @@ final class AppViewModel: ObservableObject {
     }
 
     deinit {
+        transcriptSearchTask?.cancel()
         recordingClockTask?.cancel()
         liveMeterTask?.cancel()
         callWatcherTask?.cancel()
@@ -145,6 +160,7 @@ final class AppViewModel: ObservableObject {
     func start() async {
         guard !started else { return }
         started = true
+        await recoverInterruptedSessions()
         dependencies.playback.onPlaybackFinished = { [weak self] in
             Task { @MainActor in
                 self?.handlePlaybackFinished()
@@ -518,6 +534,9 @@ final class AppViewModel: ObservableObject {
             guard session.hasRetainedAudio else {
                 return SessionActionState(action: action, isEnabled: false, disabledReason: "Source audio was deleted for this session.")
             }
+            if missingRecoveryAudio.contains(session.id) {
+                return SessionActionState(action: action, isEnabled: false, disabledReason: "Source audio is missing. Inspect the session files.")
+            }
             return SessionActionState(action: action, isEnabled: true, disabledReason: nil)
         case .exportTranscript:
             guard session.status == .ready else {
@@ -683,7 +702,34 @@ final class AppViewModel: ObservableObject {
         }
     }
 
+    func openSearchHit(_ hit: TranscriptSearchHit) {
+        guard let session = sessions.first(where: { $0.id == hit.sessionID }) else { return }
+        selectSession(session)
+        searchScrollTarget = hit
+        if canControlPlayback {
+            seekSelectedSessionPlayback(to: hit.startMs, autoplay: false)
+        }
+    }
+
+    func didScrollToSearchHit(_ hit: TranscriptSearchHit) {
+        if searchScrollTarget == hit { searchScrollTarget = nil }
+    }
+
+    private func refreshTranscriptSearch() {
+        transcriptSearchTask?.cancel()
+        let query = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return }
+        transcriptSearchTask = Task { [weak self, transcriptSearchIndex, sessions, dependencies] in
+            let hits = await transcriptSearchIndex.search(query, sessions: sessions, store: dependencies.store)
+            guard !Task.isCancelled, let self else { return }
+            self.transcriptSearchHits = hits
+            self.rebuildDerivedSessionStateIfNeeded()
+        }
+    }
+
     func selectSession(_ session: SessionManifest?) {
+        searchScrollTarget = nil
+        if session?.id != selectedSessionID { activeTranscript = nil }
         stopPlaybackAndResetState()
         liveTranscriptPreview = nil
         selectedSessionID = session?.id
@@ -772,8 +818,25 @@ final class AppViewModel: ObservableObject {
                 }
                 await self.pushKnownSpeakersToServices()
                 await self.dependencies.recorder.setLiveTranscriptionEnabled(enableLiveTranscript)
+                let now = Date()
+                let fileLayout = await self.dependencies.recorder.recordingFileLayout(for: source)
+                let title = "Session \(now.formatted(date: .abbreviated, time: .shortened))"
+                let draft = NewSessionDraft(
+                    title: title,
+                    folderId: self.currentDraftFolderID(),
+                    status: .recording,
+                    durationSeconds: nil,
+                    recordingSource: source,
+                    audioFileName: fileLayout.audioFileName,
+                    microphoneStemFileName: fileLayout.microphoneStemFileName,
+                    systemAudioStemFileName: fileLayout.systemAudioStemFileName,
+                    recordedAt: now
+                )
+                let session = try await self.dependencies.store.createSession(draft)
+                self.recordingSession = session
+                let sessionDirectory = await self.dependencies.store.sessionDirectoryURL(for: session.id)
                 try await self.dependencies.recorder.startRecording(
-                    RecordingRequest(source: source, liveTranscriptionEnabled: enableLiveTranscript)
+                    RecordingRequest(source: source, liveTranscriptionEnabled: enableLiveTranscript, sessionDirectory: sessionDirectory)
                 )
                 await self.dependencies.metrics.log(
                     name: "record_started",
@@ -788,6 +851,17 @@ final class AppViewModel: ObservableObject {
                 self.recorderStatusText = "Recording live"
                 self.startRecordingTimers()
             } catch {
+                if let draft = self.recordingSession {
+                    let directory = await self.dependencies.store.sessionDirectoryURL(for: draft.id)
+                    let contents = try? FileManager.default.contentsOfDirectory(atPath: directory.path)
+                    if contents == ["session.json"] {
+                        try? await self.dependencies.store.deleteSession(id: draft.id)
+                    } else {
+                        await self.markInterrupted(draft, message: error.localizedDescription)
+                    }
+                    self.recordingSession = nil
+                    await self.reloadSessions(selectMostRecentIfNeeded: false)
+                }
                 if let lorreError = error as? LorreError {
                     if case .recordingSourceSelectionCancelled = lorreError {
                         self.isStartingRecording = false
@@ -825,6 +899,10 @@ final class AppViewModel: ObservableObject {
             guard let self else { return }
             do {
                 try await self.dependencies.recorder.cancelRecording()
+                if let draft = self.recordingSession {
+                    try await self.dependencies.store.deleteSession(id: draft.id)
+                    self.recordingSession = nil
+                }
                 await self.dependencies.metrics.log(name: "record_cancelled")
 
                 self.isRecording = false
@@ -842,6 +920,11 @@ final class AppViewModel: ObservableObject {
                     message: "The in-progress session was deleted and the recording was discarded."
                 )
             } catch {
+                if let draft = self.recordingSession {
+                    await self.markInterrupted(draft, message: error.localizedDescription)
+                    self.recordingSession = nil
+                }
+                await self.reloadSessions(selectMostRecentIfNeeded: false)
                 self.isRecording = false
                 self.isStoppingRecording = false
                 self.currentRecordingStartedAt = nil
@@ -859,7 +942,7 @@ final class AppViewModel: ObservableObject {
     }
 
     func stopRecordingTapped() {
-        guard isRecording, !isStoppingRecording else { return }
+        guard isRecording, !isStoppingRecording, let recordingSession else { return }
         isStoppingRecording = true
         recorderStatusText = "Stopping capture…"
         if var preview = liveTranscriptPreview, isLiveTranscriptionEnabled {
@@ -870,31 +953,16 @@ final class AppViewModel: ObservableObject {
 
         Task { [weak self] in
             guard let self else { return }
-            var createdSessionID: UUID?
             do {
                 let source = self.activeRecordingSource ?? self.selectedRecordingSource
-                let now = Date()
                 let fileLayout = await self.dependencies.recorder.recordingFileLayout(for: source)
-                let title = "Session \(now.formatted(date: .abbreviated, time: .shortened))"
-                let draft = NewSessionDraft(
-                    title: title,
-                    folderId: self.currentDraftFolderID(),
-                    status: .processing,
-                    durationSeconds: self.recordingElapsedSeconds,
-                    recordingSource: source,
-                    audioFileName: fileLayout.audioFileName,
-                    microphoneStemFileName: fileLayout.microphoneStemFileName,
-                    systemAudioStemFileName: fileLayout.systemAudioStemFileName,
-                    recordedAt: now
-                )
-                var session = try await self.dependencies.store.createSession(draft)
-                createdSessionID = session.id
-                let sessionDirectory = await self.dependencies.store.sessionDirectoryURL(for: session.id)
+                let sessionDirectory = await self.dependencies.store.sessionDirectoryURL(for: recordingSession.id)
                 let capture = try await self.dependencies.recorder.stopRecording(
                     in: sessionDirectory,
                     fileLayout: fileLayout
                 )
-                session = try await self.dependencies.store.updateSession(id: session.id) { session in
+                let session = try await self.dependencies.store.updateSession(id: recordingSession.id) { session in
+                    session.status = .processing
                     session.durationSeconds = capture.durationSeconds
                     session.recordedAt = capture.endedAt
                     session.updatedAt = Date()
@@ -913,16 +981,17 @@ final class AppViewModel: ObservableObject {
                 self.currentRecordingStartedAt = nil
                 self.activeRecordingSource = nil
                 self.liveTranscriptPreview = nil
+                self.recordingSession = nil
                 self.recorderStatusText = "Processing recording"
                 await self.reloadSessions(selectMostRecentIfNeeded: false)
                 self.selectedSessionID = session.id
                 await self.loadTranscriptForSelectedSession()
                 self.launchProcessing(for: session.id)
             } catch {
-                if let createdSessionID {
-                    try? await self.dependencies.store.deleteSession(id: createdSessionID)
-                    await self.reloadSessions(selectMostRecentIfNeeded: false)
-                }
+                await self.markInterrupted(recordingSession, message: error.localizedDescription)
+                self.recordingSession = nil
+                await self.reloadSessions(selectMostRecentIfNeeded: false)
+                self.selectedSessionID = recordingSession.id
                 self.isRecording = false
                 self.isStoppingRecording = false
                 self.currentRecordingStartedAt = nil
@@ -1036,6 +1105,8 @@ final class AppViewModel: ObservableObject {
                     self.startPlaybackMonitor(sessionID: session.id)
                     await self.dependencies.metrics.log(name: "playback_started", sessionId: session.id)
                 }
+            } catch is CancellationError {
+                return
             } catch {
                 self.presentError(error, defaultTitle: "Playback unavailable")
                 await self.dependencies.metrics.log(
@@ -1069,6 +1140,7 @@ final class AppViewModel: ObservableObject {
             guard let self else { return }
             do {
                 try await self.preparePlaybackIfNeeded(for: session)
+                guard self.selectedSessionID == session.id else { return }
                 self.dependencies.playback.seek(to: Double(startMs) / 1000)
                 self.refreshPlaybackState()
                 if autoplay {
@@ -1081,6 +1153,8 @@ final class AppViewModel: ObservableObject {
                     sessionId: session.id,
                     attributes: ["start_ms": "\(startMs)", "autoplay": autoplay ? "true" : "false"]
                 )
+            } catch is CancellationError {
+                return
             } catch {
                 self.presentError(error, defaultTitle: "Playback unavailable")
             }
@@ -1108,6 +1182,8 @@ final class AppViewModel: ObservableObject {
                     self.refreshPlaybackState()
                     self.startPlaybackMonitor(sessionID: session.id)
                 }
+            } catch is CancellationError {
+                return
             } catch {
                 self.presentError(error, defaultTitle: "Playback unavailable")
             }
@@ -2954,10 +3030,54 @@ final class AppViewModel: ObservableObject {
         }
     }
 
+    private func recoverInterruptedSessions() async {
+        do {
+            for session in try await dependencies.store.loadSessions() {
+                guard session.id != recordingSession?.id, currentProcessingTasks[session.id] == nil else { continue }
+                switch session.status {
+                case .processing, .recording:
+                    await markInterrupted(session, message: "Lorre closed before this session finished.")
+                case .error:
+                    await checkRecoveryAudio(session)
+                default:
+                    break
+                }
+            }
+        } catch {
+            presentError(error, defaultTitle: "Could not check interrupted sessions")
+        }
+    }
+
+    private func checkRecoveryAudio(_ session: SessionManifest) async {
+        let directory = await dependencies.store.sessionDirectoryURL(for: session.id)
+        if RecordingRecovery.hasSource(for: session, in: directory) {
+            missingRecoveryAudio.remove(session.id)
+        } else {
+            missingRecoveryAudio.insert(session.id)
+        }
+    }
+
+    private func markInterrupted(_ session: SessionManifest, message: String) async {
+        await checkRecoveryAudio(session)
+        let guidance = missingRecoveryAudio.contains(session.id)
+            ? "Inspect the session folder for partial recordings."
+            : "Use Retry Processing to recover the recording."
+        do {
+            _ = try await dependencies.store.updateSession(id: session.id) {
+                $0.status = .error
+                $0.lastErrorMessage = "\(message) \(guidance)"
+                $0.processing.progressLabel = "Interrupted"
+                $0.updatedAt = Date()
+            }
+        } catch {
+            presentError(error, defaultTitle: "Could not save recovery status")
+        }
+    }
+
     private func reloadSessions(selectMostRecentIfNeeded: Bool) async {
         do {
             let loaded = try await dependencies.store.loadSessions()
-            sessions = loaded
+            sessions = loaded.filter { $0.id != recordingSession?.id }
             let processingIDs = Set(loaded.filter { $0.status == .processing }.map(\.id))
             processingProgressSnapshots = processingProgressSnapshots.filter { processingIDs.contains($0.key) }
 
@@ -3067,14 +3187,17 @@ final class AppViewModel: ObservableObject {
                 guard self.transcriptPersistenceVersions[sessionID] == version else {
                     return
                 }
-                if let index = self.sessions.firstIndex(where: { $0.id == sessionID }) {
+                await self.transcriptSearchIndex.invalidate(sessionID)
+                if self.sessions.contains(where: { $0.id == sessionID }) {
                     let updated = try await self.dependencies.store.updateSession(id: sessionID) { session in
                         session.dirtyFlags.transcriptEdited = false
                         session.dirtyFlags.speakerEdited = false
                         session.transcriptFileName = "transcript.json"
                         session.updatedAt = Date()
                     }
-                    self.sessions[index] = updated
+                    if let index = self.sessions.firstIndex(where: { $0.id == updated.id }) {
+                        self.sessions[index] = updated
+                    }
                 }
             } catch {
                 await MainActor.run {
@@ -3089,6 +3212,7 @@ final class AppViewModel: ObservableObject {
             throw LorreError.playbackFailed("This session deleted its source audio after transcription for privacy.")
         }
         let sessionDirectory = await dependencies.store.sessionDirectoryURL(for: session.id)
+        guard selectedSessionID == session.id else { throw CancellationError() }
         let audioURL = try SafeSessionFileResolver.fileURL(named: session.audioFileName, in: sessionDirectory)
         guard FileManager.default.fileExists(atPath: audioURL.path(percentEncoded: false)) else {
             throw LorreError.playbackFailed("Audio file is missing for this session.")
@@ -4033,14 +4157,16 @@ final class AppViewModel: ObservableObject {
         if query.isEmpty {
             searchMatched = allSessions
         } else {
+            let contentMatches = Set(transcriptSearchHits.map(\.sessionID))
             searchMatched = allSessions.filter { session in
                 let haystack = [
                     session.displayTitle,
                     session.status.label,
+                    session.normalizedNotes,
                     folderName(for: session.folderId),
                     session.lastErrorMessage ?? ""
                 ].joined(separator: " ").lowercased()
-                return haystack.contains(query)
+                return haystack.contains(query) || contentMatches.contains(session.id)
             }
         }
 

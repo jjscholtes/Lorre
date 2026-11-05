@@ -58,6 +58,56 @@ struct LorreCoreTests {
         XCTAssertLessThanOrEqual(abs((peakIndex ?? 0) - expectedImpulseIndex), 4)
     }
 
+    @MainActor @Test
+    func metadataWriteFailureAfterCaptureKeepsPlayableSessionForRestart() async throws {
+        let root = makeTemporaryRoot(named: "CaptureMetadataFailure")
+        let store = FileSessionStore(baseURL: root)
+        let recorder = ControlledRecorderService(stopBehavior: .finalize { audio in
+            try writeImpulseAudio(to: audio, sampleRate: 16_000, durationSeconds: 1, impulseSeconds: 0.2)
+            // Make the manifest unavailable between finalizing audio and updating duration.
+            let manifest = audio.deletingLastPathComponent().appendingPathComponent("session.json")
+            try FileManager.default.moveItem(at: manifest, to: manifest.appendingPathExtension("backup"))
+        })
+        let dependencies = makeTestDependencies(root: root, store: store, recorder: recorder)
+        let model = AppViewModel(dependencies: dependencies)
+        model.startRecordingTapped()
+        try await waitUntil { await model.isRecording }
+        model.stopRecordingTapped()
+        try await waitUntil { await !model.isStoppingRecording }
+        let directory = try #require(await recorder.lastStartRequest?.sessionDirectory)
+        #expect(try AVAudioFile(forReading: directory.appendingPathComponent("audio.caf")).length == 16_000)
+        let manifest = directory.appendingPathComponent("session.json")
+        try FileManager.default.moveItem(at: manifest.appendingPathExtension("backup"), to: manifest)
+        let reopened = AppViewModel(dependencies: dependencies)
+        await reopened.start()
+        let interrupted = try #require(reopened.sessions.first)
+        #expect(interrupted.status == .error)
+        #expect(reopened.canPerformSessionAction(.retryProcessing, for: interrupted))
+    }
+
+    @Test func interruptedMixRebuildsFromPlayableStems() throws {
+        let directory = makeTemporaryRoot(named: "RecoverMixedAudio")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let session = SessionManifest(title: "Call", status: .error, recordingSource: .microphoneAndSystemAudio,
+            audioFileName: "audio.caf", microphoneStemFileName: "mic.caf", systemAudioStemFileName: "system.caf")
+        let mic = directory.appendingPathComponent("mic.caf")
+        let system = directory.appendingPathComponent("system.caf")
+        let mixed = directory.appendingPathComponent("audio.caf")
+        try writeImpulseAudio(to: mic, sampleRate: 16_000, durationSeconds: 1, impulseSeconds: 0.2)
+        #expect(RecordingRecovery.hasSource(for: session, in: directory))
+        try RecordingRecovery.restoreAudioIfNeeded(for: session, in: directory)
+        #expect(try AVAudioFile(forReading: mixed).length == 16_000)
+        try FileManager.default.removeItem(at: mixed)
+        try Data("damaged".utf8).write(to: system)
+        #expect(throws: (any Error).self) { try RecordingRecovery.restoreAudioIfNeeded(for: session, in: directory) }
+        #expect(!FileManager.default.fileExists(atPath: mixed.path))
+        #expect(try AVAudioFile(forReading: mic).length == 16_000)
+        try writeImpulseAudio(to: system, sampleRate: 16_000, durationSeconds: 1, impulseSeconds: 0.5)
+        try RecordingRecovery.restoreAudioIfNeeded(for: session, in: directory)
+        #expect(try AVAudioFile(forReading: mixed).length == 16_000)
+        #expect(try AVAudioFile(forReading: system).length == 16_000)
+    }
+
     private func writeImpulseAudio(
         to url: URL,
         sampleRate: Double,
@@ -574,6 +624,8 @@ struct LorreCoreTests {
                 recordedAt: nil
             )
         )
+        let retryDirectory = await store.sessionDirectoryURL(for: retryableError.id)
+        try Data("audio".utf8).write(to: retryDirectory.appendingPathComponent(retryableError.audioFileName))
         var transcriptOnlyError = try await store.createSession(
             NewSessionDraft(
                 title: "Transcript Only",
@@ -1579,6 +1631,10 @@ struct LorreCoreTests {
         _ = try await store.setLiveTranscriptionPreset(.nemotronBalanced)
         let loaded = try await store.load()
         XCTAssertEqual(loaded.liveTranscriptionPreset, .nemotronBalanced)
+
+        _ = try await store.setLiveTranscriptionPreset(.dutchUnified)
+        let reopened = try await AppSettingsStore(baseURL: root).load()
+        XCTAssertEqual(reopened.liveTranscriptionPreset, .dutchUnified)
     }
 
 
@@ -1835,6 +1891,8 @@ struct LorreCoreTests {
             FluidAudioLiveStreamingRecognizer.livePreviewModelFolderName(for: .nemotronHighAccuracy),
             "nemotron-streaming/1120ms"
         )
+        XCTAssertEqual(FluidAudioLiveStreamingRecognizer.livePreviewModelFolderName(for: .dutchUnified),
+                       "nemotron-labs-unified-asr/coreml")
         XCTAssertEqual(FluidAudioLiveStreamingRecognizer.livePreviewDebounceMilliseconds(for: .balanced), 1280)
         XCTAssertEqual(FluidAudioLiveStreamingRecognizer.livePreviewDebounceMilliseconds(for: .nemotronBalanced), 0)
     }
@@ -2458,7 +2516,7 @@ struct LorreCoreTests {
 
 
     @Test
-    func testAppViewModelStopRecordingDeletesDraftSessionWhenRecorderStopFails() async throws {
+    func testStopFailurePreservesPlayableAudioAndOffersRetry() async throws {
         let root = makeTemporaryRoot(named: "LorreStopFailureCleanupTests")
         let store = FileSessionStore(baseURL: root)
         let recorder = ControlledRecorderService(
@@ -2476,6 +2534,11 @@ struct LorreCoreTests {
             await MainActor.run { viewModel.isRecording }
         }
 
+        let request = try #require(await recorder.lastStartRequest)
+        let directory = try #require(request.sessionDirectory)
+        let recorded = directory.appendingPathComponent("audio.caf")
+        try writeImpulseAudio(to: recorded, sampleRate: 16_000, durationSeconds: 1, impulseSeconds: 0.5)
+
         await MainActor.run {
             viewModel.stopRecordingTapped()
         }
@@ -2484,7 +2547,10 @@ struct LorreCoreTests {
         }
 
         let sessions = try await store.loadSessions()
-        XCTAssertTrue(sessions.isEmpty)
+        let failed = try #require(sessions.first)
+        #expect(failed.status == .error)
+        #expect(try AVAudioFile(forReading: recorded).length == 16_000)
+        #expect(await viewModel.canPerformSessionAction(.retryProcessing, for: failed))
         await MainActor.run {
             XCTAssertFalse(viewModel.isRecording)
             XCTAssertFalse(viewModel.isStartingRecording)

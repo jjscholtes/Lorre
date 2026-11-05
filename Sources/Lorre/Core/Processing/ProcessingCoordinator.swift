@@ -53,6 +53,7 @@ actor ProcessingCoordinator {
             try Task.checkCancellation()
 
             let sessionDir = await store.sessionDirectoryURL(for: sessionId)
+            try RecordingRecovery.restoreAudioIfNeeded(for: session, in: sessionDir)
             let audioURL = try SafeSessionFileResolver.fileURL(named: session.audioFileName, in: sessionDir)
 
             try await updateSession(&session, status: .processing, phase: .transcribing, label: "Transcribing audio", fraction: 0.3)

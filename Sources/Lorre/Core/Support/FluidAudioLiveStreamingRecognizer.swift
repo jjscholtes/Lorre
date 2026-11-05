@@ -46,106 +46,53 @@ final class LiveTranscriptionPCMBufferBox: @unchecked Sendable {
     }
 }
 
-actor FluidAudioLiveStreamingRecognizer {
-    private enum LiveEngine: Equatable {
-        case parakeetEou
-        case nemotron
+private extension LiveTranscriptionPreset {
+    var modelRepository: Repo {
+        switch self {
+        case .lowLatency: .parakeetEou160
+        case .balanced: .parakeetEou320
+        case .highAccuracy: .parakeetEou1280
+        case .nemotronBalanced: .nemotronStreaming560
+        case .nemotronHighAccuracy: .nemotronStreaming1120
+        case .dutchUnified: .nemotronUnified
+        }
     }
 
-    private enum LivePreset: CaseIterable {
-        case lowLatency
-        case balanced
-        case highAccuracy
-        case nemotronBalanced
-        case nemotronHighAccuracy
-
-        var engine: LiveEngine {
-            switch self {
-            case .lowLatency, .balanced, .highAccuracy:
-                return .parakeetEou
-            case .nemotronBalanced, .nemotronHighAccuracy:
-                return .nemotron
-            }
+    var eouSettings: (chunkSize: StreamingChunkSize, debounceMs: Int)? {
+        switch self {
+        case .lowLatency: (.ms160, 1120)
+        case .balanced: (.ms320, 1280)
+        case .highAccuracy: (.ms1280, 1920)
+        default: nil
         }
+    }
+}
 
-        var engineLabel: String {
-            switch engine {
-            case .parakeetEou:
-                return "Parakeet"
-            case .nemotron:
-                return "Nemotron"
-            }
-        }
-
-        var parakeetChunkSize: StreamingChunkSize? {
-            switch self {
-            case .lowLatency: return .ms160
-            case .balanced: return .ms320
-            case .highAccuracy: return .ms1280
-            case .nemotronBalanced, .nemotronHighAccuracy:
-                return nil
-            }
-        }
-
-        var eouDebounceMs: Int? {
-            switch self {
-            case .lowLatency: return 1120
-            case .balanced: return 1280
-            case .highAccuracy: return 1920
-            case .nemotronBalanced, .nemotronHighAccuracy:
-                return nil
-            }
-        }
-
-        var nemotronChunkSize: NemotronChunkSize? {
-            switch self {
-            case .lowLatency, .balanced, .highAccuracy:
-                return nil
-            case .nemotronBalanced:
-                return .ms560
-            case .nemotronHighAccuracy:
-                return .ms1120
-            }
-        }
-
-        var repo: Repo {
-            switch self {
-            case .lowLatency: return .parakeetEou160
-            case .balanced: return .parakeetEou320
-            case .highAccuracy: return .parakeetEou1280
-            case .nemotronBalanced: return .nemotronStreaming560
-            case .nemotronHighAccuracy: return .nemotronStreaming1120
-            }
-        }
-
-        init(_ preset: LiveTranscriptionPreset) {
-            switch preset {
-            case .lowLatency:
-                self = .lowLatency
-            case .balanced:
-                self = .balanced
-            case .highAccuracy:
-                self = .highAccuracy
-            case .nemotronBalanced:
-                self = .nemotronBalanced
-            case .nemotronHighAccuracy:
-                self = .nemotronHighAccuracy
-            }
-        }
+actor FluidAudioLiveStreamingRecognizer {
+    private enum StreamingUpdate {
+        case listening
+        case endOfUtterance
+        case cumulative(String)
     }
 
     private enum StreamingASRManager {
         case parakeet(StreamingEouAsrManager)
         case nemotron(StreamingNemotronAsrManager)
+        case unified(StreamingUnifiedAsrManager)
 
-        func process(audioBuffer: AVAudioPCMBuffer) async throws -> Bool {
+        func process(audioBuffer: AVAudioPCMBuffer) async throws -> StreamingUpdate {
             switch self {
             case .parakeet(let manager):
                 _ = try await manager.process(audioBuffer: audioBuffer)
-                return await manager.eouDetected
+                return await manager.eouDetected ? .endOfUtterance : .listening
             case .nemotron(let manager):
                 _ = try await manager.process(audioBuffer: audioBuffer)
-                return false
+                return .listening
+            case .unified(let manager):
+                try await manager.appendAudio(audioBuffer)
+                try await manager.processBufferedAudio()
+                guard await !manager.consumeTokenTimings().isEmpty else { return .listening }
+                return .cumulative(await manager.getPartialTranscript())
             }
         }
 
@@ -155,15 +102,19 @@ actor FluidAudioLiveStreamingRecognizer {
                 return try await manager.finish()
             case .nemotron(let manager):
                 return try await manager.finish()
+            case .unified(let manager):
+                return try await manager.finish()
             }
         }
 
-        func reset() async {
+        func reset() async throws {
             switch self {
             case .parakeet(let manager):
                 await manager.reset()
             case .nemotron(let manager):
                 await manager.reset()
+            case .unified(let manager):
+                try await manager.reset()
             }
         }
     }
@@ -180,8 +131,8 @@ actor FluidAudioLiveStreamingRecognizer {
 
     private var streamingManager: StreamingASRManager?
     private var vadManager: VadManager?
-    private var requestedPreset: LivePreset
-    private var preparedPreset: LivePreset?
+    private var requestedPreset: LiveTranscriptionPreset
+    private var preparedPreset: LiveTranscriptionPreset?
     private var preview = LiveTranscriptPreview()
     private var previewHandler: (@Sendable (LiveTranscriptPreview) -> Void)?
     private var isStreaming = false
@@ -207,15 +158,15 @@ actor FluidAudioLiveStreamingRecognizer {
     ) {
         self.speakerEnrollmentService = speakerEnrollmentService
         self.knownSpeakerReferenceAudioProvider = knownSpeakerReferenceAudioProvider
-        self.requestedPreset = LivePreset(preset)
+        self.requestedPreset = preset
     }
 
     static func livePreviewModelFolderName(for preset: LiveTranscriptionPreset) -> String {
-        LivePreset(preset).repo.folderName
+        preset.modelRepository.folderName
     }
 
     static func livePreviewDebounceMilliseconds(for preset: LiveTranscriptionPreset) -> Int {
-        LivePreset(preset).eouDebounceMs ?? 0
+        preset.eouSettings?.debounceMs ?? 0
     }
 
     static func normalizedLiveSpeakerActivity(_ activity: Float) -> Float {
@@ -223,10 +174,9 @@ actor FluidAudioLiveStreamingRecognizer {
     }
 
     func setPreset(_ preset: LiveTranscriptionPreset) async {
-        let nextPreset = LivePreset(preset)
-        guard requestedPreset != nextPreset else { return }
-        requestedPreset = nextPreset
-        guard preparedPreset != nextPreset else { return }
+        guard requestedPreset != preset else { return }
+        requestedPreset = preset
+        guard preparedPreset != preset else { return }
         if isStreaming {
             return
         }
@@ -256,6 +206,7 @@ actor FluidAudioLiveStreamingRecognizer {
 
     func start(onPreview: @escaping @Sendable (LiveTranscriptPreview) -> Void) async throws {
         try await ensureManagersPrepared(onProgress: nil)
+        try await streamingManager?.reset()
         previewHandler = onPreview
         preview = LiveTranscriptPreview(
             confirmedText: "",
@@ -279,9 +230,6 @@ actor FluidAudioLiveStreamingRecognizer {
         await punctuationCommitLayer.setUpdateCallback { [weak self] update in
             Task { await self?.handleCommitLayerUpdate(update) }
         }
-        if let streamingManager {
-            await streamingManager.reset()
-        }
         await punctuationCommitLayer.reset()
         emitPreview()
     }
@@ -298,9 +246,16 @@ actor FluidAudioLiveStreamingRecognizer {
                 return
             }
 
-            let shouldFinalizeUtterance = try await streamingManager.process(audioBuffer: bufferBox.buffer)
-            if shouldFinalizeUtterance {
+            switch try await streamingManager.process(audioBuffer: bufferBox.buffer) {
+            case .listening:
+                break
+            case .endOfUtterance:
                 try await finalizeDetectedUtterance(using: streamingManager)
+            case .cumulative(let text):
+                guard text != preview.partialText else { return }
+                preview.partialText = text
+                preview.updatedAt = Date()
+                emitPreview()
             }
         } catch is CancellationError {
             return
@@ -345,14 +300,20 @@ actor FluidAudioLiveStreamingRecognizer {
         do {
             let finalChunk = try await streamingManager.finish()
             let trimmedFinalChunk = finalChunk.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !trimmedFinalChunk.isEmpty {
-                _ = await punctuationCommitLayer.processPartialText(trimmedFinalChunk)
+            if case .unified = streamingManager {
+                // Unified returns the entire recording, including text already previewed.
+                preview.confirmedText = trimmedFinalChunk
+                preview.partialText = ""
+            } else {
+                if !trimmedFinalChunk.isEmpty {
+                    _ = await punctuationCommitLayer.processPartialText(trimmedFinalChunk)
+                }
+                let update = await punctuationCommitLayer.processEOU()
+                applyCommitLayerUpdate(update, at: Date())
             }
-            let update = await punctuationCommitLayer.processEOU()
-            applyCommitLayerUpdate(update, at: Date())
             preview.isFinalizing = false
             preview.errorMessage = nil
-            await streamingManager.reset()
+            try await streamingManager.reset()
             if let vadManager {
                 vadStreamState = await vadManager.makeStreamState()
             } else {
@@ -376,9 +337,7 @@ actor FluidAudioLiveStreamingRecognizer {
         gateSpeechSeenForCurrentUtterance = false
         resetSpeakerHintTracking()
         clearSpeakerHintIfNeeded()
-        if let streamingManager {
-            await streamingManager.reset()
-        }
+        try? await streamingManager?.reset()
         await punctuationCommitLayer.reset()
         if let vadManager {
             vadStreamState = await vadManager.makeStreamState()
@@ -433,41 +392,28 @@ actor FluidAudioLiveStreamingRecognizer {
                         phase: .preparing,
                         component: .livePreview,
                         label: "Preparing live preview",
-                        detail: "Checking \(selectedPreset.engineLabel) streaming models…",
+                        detail: "Checking \(selectedPreset.label) streaming models…",
                         fraction: 0.02
                     )
                 )
             }
 
             let progressDispatcher = LiveSerialProgressDispatcher()
-            let modelDir = try await Self.ensureModelDirectory(
-                for: selectedPreset,
-                progressHandler: { progress in
-                    guard let onProgress else { return }
-                    let update = FluidAudioProgressSupport.makeUpdate(
-                        phase: .preparing,
-                        component: .livePreview,
-                        label: "Preparing live preview",
-                        progress: progress
-                    )
-                    let scaled = FluidAudioProgressSupport.scale(update, into: 0.0...0.46)
-                    progressDispatcher.submit(scaled, to: onProgress)
-                }
-            )
-            await progressDispatcher.drain()
-
-            if let onProgress {
-                await onProgress(
-                    ProcessingUpdate(
-                        phase: .preparing,
-                        component: .livePreview,
-                        label: "Loading live preview models",
-                        detail: "Opening streaming ASR models from disk…",
-                        fraction: 0.52
-                    )
+            let manager = try await makeStreamingManager(for: selectedPreset) { progress in
+                guard let onProgress else { return }
+                let update = FluidAudioProgressSupport.makeUpdate(
+                    phase: .preparing,
+                    component: .livePreview,
+                    label: "Preparing live preview",
+                    progress: progress
                 )
+                let scaled = FluidAudioProgressSupport.scale(update, into: 0.0...0.52)
+                progressDispatcher.submit(scaled, to: onProgress)
             }
-            streamingManager = try await makeStreamingManager(for: selectedPreset, modelDir: modelDir)
+            await progressDispatcher.drain()
+            try Task.checkCancellation()
+            guard requestedPreset == selectedPreset else { throw CancellationError() }
+            streamingManager = manager
             preparedPreset = selectedPreset
         }
 
@@ -647,6 +593,7 @@ actor FluidAudioLiveStreamingRecognizer {
     }
 
     private func handlePartialCallbackText(_ text: String) async {
+        guard isStreaming, preparedPreset != .dutchUnified else { return }
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
             preview.partialText = ""
@@ -664,6 +611,7 @@ actor FluidAudioLiveStreamingRecognizer {
     }
 
     private func handleCommitLayerUpdate(_ update: CommitLayerUpdate) async {
+        guard isStreaming, preparedPreset != .dutchUnified else { return }
         applyCommitLayerUpdate(update, at: update.timestamp)
         preview.isFinalizing = false
         preview.errorMessage = nil
@@ -851,7 +799,7 @@ actor FluidAudioLiveStreamingRecognizer {
         preview.isFinalizing = false
         preview.errorMessage = nil
         emitPreview()
-        await streamingManager.reset()
+        try await streamingManager.reset()
         gateSpeechSeenForCurrentUtterance = false
         activeSpeakerSlot = nil
         recentSlotSamples.removeAll(keepingCapacity: false)
@@ -870,45 +818,39 @@ actor FluidAudioLiveStreamingRecognizer {
     }
 
     private func makeStreamingManager(
-        for preset: LivePreset,
-        modelDir: URL
+        for preset: LiveTranscriptionPreset,
+        progressHandler: @escaping ProgressHandler
     ) async throws -> StreamingASRManager {
-        switch preset.engine {
-        case .parakeetEou:
-            guard let chunkSize = preset.parakeetChunkSize,
-                  let eouDebounceMs = preset.eouDebounceMs else {
-                throw LorreError.processingFailed("Parakeet live preset is missing its streaming configuration.")
-            }
+        let base = AsrModels.defaultCacheDirectory().deletingLastPathComponent()
+        if preset == .dutchUnified {
+            let config = UnifiedConfig(chunkFrames: 7, rightFrames: 7, family: .nemotronMultilingual(.nl))
+            let manager = StreamingUnifiedAsrManager(config: config, encoderPrecision: .fp16)
+            try await manager.loadModels(to: base, progressHandler: progressHandler)
+            return .unified(manager)
+        }
+
+        let repo = preset.modelRepository
+        try await ModelHub.download(repo, to: base, progressHandler: progressHandler)
+        let modelDir = base.appendingPathComponent(repo.folderName, isDirectory: true)
+        if let settings = preset.eouSettings {
             let manager = StreamingEouAsrManager(
-                chunkSize: chunkSize,
-                eouDebounceMs: eouDebounceMs
+                chunkSize: settings.chunkSize,
+                eouDebounceMs: settings.debounceMs
             )
             try await manager.loadModels(from: modelDir)
             await manager.setPartialCallback { [weak self] partial in
                 Task { await self?.handlePartialCallbackText(partial) }
             }
             return .parakeet(manager)
-        case .nemotron:
-            guard let chunkSize = preset.nemotronChunkSize else {
-                throw LorreError.processingFailed("Nemotron live preset is missing its streaming configuration.")
-            }
-            let manager = StreamingNemotronAsrManager(requestedChunkSize: chunkSize)
-            try await manager.loadModels(from: modelDir)
-            await manager.setPartialCallback { [weak self] partial in
-                Task { await self?.handlePartialCallbackText(partial) }
-            }
-            return .nemotron(manager)
         }
-    }
 
-    private static func ensureModelDirectory(
-        for preset: LivePreset,
-        progressHandler: ProgressHandler?
-    ) async throws -> URL {
-        let base = AsrModels.defaultCacheDirectory().deletingLastPathComponent()
-        let repo = preset.repo
-        try await ModelHub.download(repo, to: base, progressHandler: progressHandler)
-        return base.appendingPathComponent(repo.folderName, isDirectory: true)
+        let chunkSize: NemotronChunkSize = preset == .nemotronBalanced ? .ms560 : .ms1120
+        let manager = StreamingNemotronAsrManager(requestedChunkSize: chunkSize)
+        try await manager.loadModels(from: modelDir)
+        await manager.setPartialCallback { [weak self] partial in
+            Task { await self?.handlePartialCallbackText(partial) }
+        }
+        return .nemotron(manager)
     }
 
     private static func trimSpeakerSamples(_ samples: [Float]) -> [Float] {

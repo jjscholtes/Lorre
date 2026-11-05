@@ -568,7 +568,7 @@ private struct RecorderLivePreviewQuickAccessView: View {
             return "Live Preview is not available in this build. Your recording will still be transcribed after you stop."
         }
         if viewModel.isLiveTranscriptionEnabled {
-            return "Shows a live transcript while recording. After you stop, Lorre runs the selected final transcript pass."
+            return "Uses \(viewModel.liveTranscriptionPreset.label) during recording. The final transcript uses the selected batch ASR mode."
         }
         return "Live Preview is off. Lorre will transcribe the audio after you stop."
     }

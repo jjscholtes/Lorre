@@ -5,18 +5,22 @@ Lorre is a macOS transcription workspace for capturing or importing audio, proce
 ## Key features
 
 - Capture any conversation your way with `Microphone`, `System audio`, or `Microphone + system audio`.
-- See live transcription as you record, with selectable `Parakeet EOU` or `Nemotron` streaming previews for supported live workflows.
+- See live transcription as you record, with selectable English previews or live Dutch transcription with `Nemotron Unified` for supported live workflows.
 - Powered by selectable `Parakeet TDT 0.6B v3` multilingual batch ASR and `Parakeet TDT 0.6B v2` for English-only batch transcripts, running on Apple's `Neural Engine` right on your Mac.
 - Supports multilingual `Parakeet v3` transcription, with explicit batch language hints for `English`, `French`, `German`, `Spanish`, `Italian`, `Portuguese`, `Dutch`, and `Polish`.
 - Built on `FluidAudio` for local speech recognition, voice activity detection, and speaker diarization.
 - Keep your recordings and transcripts on your Mac for a private local workflow.
 - Enable `Privacy Mode` to automatically delete source audio after the transcript is saved.
+- Recover an interrupted recording from its session using `Retry Processing`. Mixed recordings retain their individual source tracks so Lorre can rebuild the mix or transcribe the surviving track.
+- Search session notes and transcript text in the sidebar. Select a quoted match to jump to its timestamp, including in transcripts whose audio was removed by Privacy Mode.
 - Import existing audio files and run them through the same transcription pipeline.
 - Review transcripts with speaker labels, playback, speaker reassignment, and inline text editing.
 - Use `Global Dictation` from any app to record a short microphone snippet, transcribe it locally, and insert the result into the focused text field.
 - Let `Call Watcher` detect likely calls in apps such as FaceTime, Zoom, Microsoft Teams, Slack, Discord, Webex, and supported browser calls. Lorre always asks before recording and can show the prompt as a macOS notification or inside the app.
 - Automatically write a Markdown copy after processing, with a configurable destination and filename template based on the transcript, date, source, language, duration, and speaker count.
 - Export finished sessions as `Markdown`, `plain text`, or `JSON`.
+
+For Dutch live text, choose **Nederlands** under **Model & App Settings → Live Engine** and switch on **Live Preview** in the recorder. Use **Prepare Models** before your first recording to download the Dutch model. The final transcript uses the separate batch language setting.
 
 ## What is FluidAudio?
 
@@ -73,7 +77,7 @@ Lorre keeps app preferences in `~/Library/Application Support/Lorre/settings.jso
 | --- | --- | --- | --- |
 | Capture mode | `Microphone`, `System audio`, `Microphone + system audio` | `Microphone` | System-audio modes require Screen and System Audio Recording permission. When system audio is included, Lorre opens the native macOS picker so you can choose the app, window, or display audio to capture. |
 | Live transcript preview | On or off | On when supported | Shows streaming text while recording. The final transcript is still produced by the selected batch transcription mode after recording stops. |
-| Live engine | `Parakeet low latency`, `Parakeet balanced`, `Parakeet high accuracy`, `Nemotron balanced`, `Nemotron high accuracy` | `Parakeet balanced` | Controls the streaming preview model and latency/quality balance. Live-engine changes are locked while a recording is active. |
+| Live engine | `Parakeet low latency`, `Parakeet balanced`, `Parakeet high accuracy`, `Nemotron balanced`, `Nemotron high accuracy`, `Nederlands` | `Parakeet balanced` | Controls the streaming preview model and latency/quality balance. Live-engine changes are locked while a recording is active. |
 | Retention | `Keep Audio`, `Delete After Transcript` | `Keep Audio` | `Delete After Transcript` is privacy mode: Lorre deletes the source audio after the transcript is saved and keeps transcript data and exports. Playback and waveform review require retained audio. |
 
 ### Automation and system integration

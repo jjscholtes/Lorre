@@ -341,7 +341,7 @@ actor AVFoundationRecorderService: RecorderService {
             lock.unlock()
         }
 
-        private func currentRecognizer() -> FluidAudioLiveStreamingRecognizer? {
+        func currentRecognizer() -> FluidAudioLiveStreamingRecognizer? {
             lock.lock()
             defer { lock.unlock() }
             return recognizer
@@ -725,6 +725,7 @@ actor AVFoundationRecorderService: RecorderService {
     private var liveMonitorBridge: LiveMonitorBridgeBox?
     private var combinedMeterBox: CombinedMeterBox?
     private var previewMixer: MixedPreviewMixerBox?
+    private var writesToSessionDirectory = false
     private var temporaryCanonicalURL: URL?
     private var temporaryMicrophoneURL: URL?
     private var temporarySystemAudioURL: URL?
@@ -764,10 +765,19 @@ actor AVFoundationRecorderService: RecorderService {
         }
         #endif
 
-        let tempDir = FileManager.default.temporaryDirectory
+        writesToSessionDirectory = request.sessionDirectory != nil
+        let tempDir = request.sessionDirectory ?? FileManager.default.temporaryDirectory
             .appendingPathComponent("Lorre", isDirectory: true)
             .appendingPathComponent("recording-tmp", isDirectory: true)
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+
+        let layout = await recordingFileLayout(for: request.source)
+        func captureURL(named name: String) -> URL {
+            if let directory = request.sessionDirectory {
+                return directory.appendingPathComponent(name)
+            }
+            return tempDir.appendingPathComponent(UUID().uuidString).appendingPathExtension("caf")
+        }
 
         let monitorBridge = LiveMonitorBridgeBox()
         let combinedMeter = request.source == .microphoneAndSystemAudio ? CombinedMeterBox() : nil
@@ -789,12 +799,16 @@ actor AVFoundationRecorderService: RecorderService {
             let micStart: MicrophoneCaptureStartResult?
             if request.source.includesMicrophone {
                 micStart = try startMicrophoneCapture(
-                    in: tempDir,
+                    at: captureURL(named: layout.microphoneStemFileName ?? layout.audioFileName),
                     combinedMeter: combinedMeter,
                     previewBridge: monitorBridge,
                     previewMixer: previewMixer,
                     source: request.source
                 )
+                microphoneEngine = micStart?.engine
+                microphoneWriter = micStart?.writer
+                microphoneConfigurationObserver = micStart?.configurationObserver
+                temporaryMicrophoneURL = micStart?.tempURL
             } else {
                 micStart = nil
             }
@@ -804,7 +818,7 @@ actor AVFoundationRecorderService: RecorderService {
             if request.source.includesSystemAudio, let filter = selectedFilter {
                 systemStart = try await startSystemAudioCapture(
                     filter: filter,
-                    in: tempDir,
+                    at: captureURL(named: layout.systemAudioStemFileName ?? layout.audioFileName),
                     combinedMeter: combinedMeter,
                     previewBridge: monitorBridge,
                     previewMixer: previewMixer,
@@ -819,9 +833,6 @@ actor AVFoundationRecorderService: RecorderService {
             self.liveMonitorBridge = monitorBridge
             self.combinedMeterBox = combinedMeter
             self.previewMixer = previewMixer
-            self.microphoneEngine = micStart?.engine
-            self.microphoneWriter = micStart?.writer
-            self.microphoneConfigurationObserver = micStart?.configurationObserver
             #if canImport(ScreenCaptureKit)
             self.systemCapture = systemStart?.capture
             #endif
@@ -860,7 +871,7 @@ actor AVFoundationRecorderService: RecorderService {
                 livePreviewFallback = nil
             }
         } catch {
-            try? await cleanupPartialRecordingState()
+            try? await cleanupPartialRecordingState(removeTemporaryFiles: !writesToSessionDirectory)
             throw error
         }
     }
@@ -925,24 +936,18 @@ actor AVFoundationRecorderService: RecorderService {
                     throw LorreError.recordingStopFailed("Recording file layout is missing stem destinations.")
                 }
 
-                try RecorderAudioUtilities.mixToCanonicalFile(
-                    microphoneURL: microphoneTempURL,
-                    systemAudioURL: systemAudioTempURL,
-                    destinationURL: canonicalDestinationURL
-                )
-                try moveRecordingFile(
-                    from: microphoneTempURL,
-                    to: directoryURL.appendingPathComponent(microphoneStemFileName)
-                )
-                try moveRecordingFile(
-                    from: systemAudioTempURL,
-                    to: directoryURL.appendingPathComponent(systemAudioStemFileName)
-                )
+                let mic = directoryURL.appendingPathComponent(microphoneStemFileName)
+                let system = directoryURL.appendingPathComponent(systemAudioStemFileName)
+                try moveRecordingFile(from: microphoneTempURL, to: mic)
+                try moveRecordingFile(from: systemAudioTempURL, to: system)
+                try RecorderAudioUtilities.publishMix(microphone: mic, system: system, destination: canonicalDestinationURL)
             }
         } catch {
             await stopLiveStreamingCaptureIfNeeded()
             clearActiveRecordingState()
-            removeTemporaryRecordingFiles([canonicalTempURL, microphoneTempURL, systemAudioTempURL])
+            if !writesToSessionDirectory {
+                removeTemporaryRecordingFiles([canonicalTempURL, microphoneTempURL, systemAudioTempURL])
+            }
             if let error = error as? LorreError {
                 throw error
             }
@@ -1126,13 +1131,12 @@ actor AVFoundationRecorderService: RecorderService {
     #endif
 
     private func startMicrophoneCapture(
-        in tempDir: URL,
+        at tempURL: URL,
         combinedMeter: CombinedMeterBox?,
         previewBridge: LiveMonitorBridgeBox,
         previewMixer: MixedPreviewMixerBox?,
         source: RecordingSource
     ) throws -> MicrophoneCaptureStartResult {
-        let tempURL = tempDir.appendingPathComponent(UUID().uuidString).appendingPathExtension("caf")
         let engine = AVAudioEngine()
         let inputNode = engine.inputNode
         let inputFormat = inputNode.inputFormat(forBus: 0)
@@ -1183,13 +1187,12 @@ actor AVFoundationRecorderService: RecorderService {
     #if canImport(ScreenCaptureKit)
     private func startSystemAudioCapture(
         filter: SCContentFilter,
-        in tempDir: URL,
+        at tempURL: URL,
         combinedMeter: CombinedMeterBox?,
         previewBridge: LiveMonitorBridgeBox,
         previewMixer: MixedPreviewMixerBox?,
         source: RecordingSource
     ) async throws -> SystemCaptureStartResult {
-        let tempURL = tempDir.appendingPathComponent(UUID().uuidString).appendingPathExtension("caf")
         let capture = try SystemAudioCaptureBox(
             filter: filter,
             outputURL: tempURL,
@@ -1296,7 +1299,9 @@ actor AVFoundationRecorderService: RecorderService {
         liveMonitorBridge?.setMeterLevel(0.05)
 
         #if canImport(FluidAudio)
-        guard let liveRecognizer else {
+        // A prewarmed recognizer may still be starting. Only drain a queue with an attached consumer.
+        guard let liveRecognizer = liveMonitorBridge?.currentRecognizer() else {
+            self.liveRecognizer = nil
             await liveMonitorBridge?.discardRecognitionWork()
             liveMonitorBridge?.finishMonitoring()
             return
@@ -1413,6 +1418,12 @@ actor AVFoundationRecorderService: RecorderService {
     }
 
     private func moveRecordingFile(from sourceURL: URL, to destinationURL: URL) throws {
+        if sourceURL.standardizedFileURL == destinationURL.standardizedFileURL {
+            guard FileManager.default.fileExists(atPath: sourceURL.path) else {
+                throw LorreError.recordingStopFailed("The recorded audio file is missing.")
+            }
+            return
+        }
         try FileManager.default.createDirectory(at: destinationURL.deletingLastPathComponent(), withIntermediateDirectories: true)
         if FileManager.default.fileExists(atPath: destinationURL.path(percentEncoded: false)) {
             try FileManager.default.removeItem(at: destinationURL)
