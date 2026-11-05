@@ -14,6 +14,7 @@ Lorre is a macOS transcription workspace for capturing or importing audio, proce
 - Recover an interrupted recording from its session using `Retry Processing`. Mixed recordings retain their individual source tracks so Lorre can rebuild the mix or transcribe the surviving track.
 - Search session notes and transcript text in the sidebar. Select a quoted match to jump to its timestamp, including in transcripts whose audio was removed by Privacy Mode.
 - Import existing audio files and run them through the same transcription pipeline.
+- `Re-transcribe` a finished session with the current model settings, for example after switching to `Parakeet Ultra`. The previous transcript, including your edits, is kept in the session's `transcript-history` folder.
 - Review transcripts with speaker labels, playback, speaker reassignment, and inline text editing.
 - Use `Global Dictation` from any app to record a short microphone snippet, transcribe it locally, and insert the result into the focused text field.
 - Let `Call Watcher` detect likely calls in apps such as FaceTime, Zoom, Microsoft Teams, Slack, Discord, Webex, and supported browser calls. Lorre always asks before recording and can show the prompt as a macOS notification or inside the app.
