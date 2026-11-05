@@ -981,6 +981,7 @@ struct VocabularyBoostingEntry: Equatable, Sendable {
 enum BatchTranscriptionMode: String, Codable, CaseIterable, Equatable, Sendable {
     case parakeetV2English
     case parakeetV3
+    case parakeetUltra
     case parakeetV3WithCohereQualityPass
 
     var label: String {
@@ -989,6 +990,8 @@ enum BatchTranscriptionMode: String, Codable, CaseIterable, Equatable, Sendable 
             return "Parakeet v2 English"
         case .parakeetV3:
             return "Parakeet v3 multilingual"
+        case .parakeetUltra:
+            return "Parakeet Ultra multilingual"
         case .parakeetV3WithCohereQualityPass:
             return "Parakeet + Cohere"
         }
@@ -1000,6 +1003,8 @@ enum BatchTranscriptionMode: String, Codable, CaseIterable, Equatable, Sendable 
             return "English-only Parakeet path with tighter vocabulary recall."
         case .parakeetV3:
             return "Default timed transcript path with token timings and speaker alignment."
+        case .parakeetUltra:
+            return "Higher-accuracy v3 successor for the same languages; one-time ~630 MB download."
         case .parakeetV3WithCohereQualityPass:
             return "Adds a lazy Cohere alternate draft; timed rows still use Parakeet."
         }
@@ -1009,7 +1014,7 @@ enum BatchTranscriptionMode: String, Codable, CaseIterable, Equatable, Sendable 
         switch self {
         case .parakeetV2English:
             return true
-        case .parakeetV3, .parakeetV3WithCohereQualityPass:
+        case .parakeetV3, .parakeetUltra, .parakeetV3WithCohereQualityPass:
             return false
         }
     }

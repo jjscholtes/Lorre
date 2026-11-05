@@ -572,13 +572,23 @@ final class AppViewModel {
         let actions: [SessionAction]
         switch surface {
         case .shelfContextMenu:
-            actions = session.status == .error
-                ? [.revealFiles, .retryProcessing, .rename, .moveToFolder, .delete]
-                : [.revealFiles, .rename, .moveToFolder, .delete]
+            switch session.status {
+            case .error:
+                actions = [.revealFiles, .retryProcessing, .rename, .moveToFolder, .delete]
+            case .ready:
+                actions = [.revealFiles, .retranscribe, .rename, .moveToFolder, .delete]
+            default:
+                actions = [.revealFiles, .rename, .moveToFolder, .delete]
+            }
         case .transcriptHeader:
-            actions = session.status == .error
-                ? [.moveToFolder, .revealFiles, .retryProcessing, .rename, .delete, .exportTranscript]
-                : [.moveToFolder, .revealFiles, .rename, .delete, .exportTranscript]
+            switch session.status {
+            case .error:
+                actions = [.moveToFolder, .revealFiles, .retryProcessing, .rename, .delete, .exportTranscript]
+            case .ready:
+                actions = [.moveToFolder, .revealFiles, .retranscribe, .rename, .delete, .exportTranscript]
+            default:
+                actions = [.moveToFolder, .revealFiles, .rename, .delete, .exportTranscript]
+            }
         case .processingStage:
             actions = [.revealFiles]
         case .errorState:
@@ -611,6 +621,17 @@ final class AppViewModel {
                 return SessionActionState(action: action, isEnabled: false, disabledReason: "Source audio is missing. Inspect the session files.")
             }
             return SessionActionState(action: action, isEnabled: true, disabledReason: nil)
+        case .retranscribe:
+            guard session.status == .ready else {
+                return SessionActionState(action: action, isEnabled: false, disabledReason: "Only finished sessions can be re-transcribed.")
+            }
+            guard session.hasRetainedAudio else {
+                return SessionActionState(action: action, isEnabled: false, disabledReason: "Source audio was deleted for this session.")
+            }
+            guard currentProcessingTasks[session.id] == nil else {
+                return SessionActionState(action: action, isEnabled: false, disabledReason: "This session is already being processed.")
+            }
+            return SessionActionState(action: action, isEnabled: true, disabledReason: nil)
         case .exportTranscript:
             guard session.status == .ready else {
                 return SessionActionState(action: action, isEnabled: false, disabledReason: "Export is available after processing completes.")
@@ -640,6 +661,8 @@ final class AppViewModel {
             revealFiles(for: sessionID)
         case .retryProcessing:
             retryProcessing(sessionID)
+        case .retranscribe:
+            retranscribe(sessionID)
         case .delete:
             deleteSession(sessionID)
         case .exportTranscript:
@@ -1699,6 +1722,45 @@ final class AppViewModel {
             return
         }
         launchProcessing(for: session.id)
+    }
+
+    /// Processes a finished session again with the current model settings.
+    /// The existing transcript, including manual edits, is copied to the session's
+    /// transcript history first so a newer model never silently replaces it.
+    func retranscribe(_ sessionID: UUID) {
+        guard let session = sessions.first(where: { $0.id == sessionID }) else { return }
+        guard canPerformSessionAction(.retranscribe, for: session) else {
+            let reason = sessionActionState(.retranscribe, for: session).disabledReason ?? "This session cannot be re-transcribed."
+            banner = AppBanner(kind: .error, title: "Re-transcribe unavailable", message: reason)
+            return
+        }
+
+        Task { [weak self] in
+            guard let self else { return }
+            await self.transcriptPersistenceQueue.waitForPendingSaves(sessionID: sessionID)
+            let directory = await self.dependencies.store.sessionDirectoryURL(for: sessionID)
+            guard RecordingRecovery.hasSource(for: session, in: directory) else {
+                self.banner = AppBanner(kind: .error, title: "Re-transcribe unavailable", message: "Source audio is missing. Inspect the session files.")
+                return
+            }
+            do {
+                let archived = try TranscriptHistory.archiveCurrentTranscript(in: directory)
+                await self.dependencies.metrics.log(
+                    name: "retranscribe_started",
+                    sessionId: sessionID,
+                    attributes: [
+                        "mode": self.batchTranscriptionConfiguration.mode.rawValue,
+                        "archived_previous": archived == nil ? "false" : "true"
+                    ]
+                )
+            } catch {
+                self.presentError(error, defaultTitle: "Could not save the current transcript version")
+                return
+            }
+            guard let current = self.sessions.first(where: { $0.id == sessionID }),
+                  self.canPerformSessionAction(.retranscribe, for: current) else { return }
+            self.launchProcessing(for: sessionID)
+        }
     }
 
     func setSpeakerDiarizationEnabled(_ isEnabled: Bool) {

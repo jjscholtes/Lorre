@@ -101,6 +101,7 @@ enum SessionAction: String, CaseIterable, Identifiable, Sendable {
     case revealFiles
     case rename
     case retryProcessing
+    case retranscribe
     case exportTranscript
     case delete
 
@@ -116,6 +117,8 @@ enum SessionAction: String, CaseIterable, Identifiable, Sendable {
             return "Rename"
         case .retryProcessing:
             return "Retry Processing"
+        case .retranscribe:
+            return "Re-transcribe"
         case .exportTranscript:
             return "Export"
         case .delete:
@@ -168,5 +171,10 @@ actor TranscriptPersistenceQueue {
             }
             throw error
         }
+    }
+
+    /// Waits until queued saves for a session have reached disk, so a snapshot taken afterwards includes them.
+    func waitForPendingSaves(sessionID: UUID) async {
+        _ = try? await tails[sessionID]?.task.value
     }
 }

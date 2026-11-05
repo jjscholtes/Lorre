@@ -279,7 +279,7 @@ actor FluidAudioTranscriptionService: TranscriptionService {
     func setBatchTranscriptionConfiguration(_ configuration: BatchTranscriptionConfiguration) async {
         let normalized = configuration.normalized
         let concurrencyChanged = normalized.parallelChunkConcurrency != batchTranscriptionConfiguration.parallelChunkConcurrency
-        let modelVersionChanged = Self.usesParakeetV2(normalized.mode) != Self.usesParakeetV2(batchTranscriptionConfiguration.mode)
+        let modelVersionChanged = Self.asrModelVersion(for: normalized.mode) != Self.asrModelVersion(for: batchTranscriptionConfiguration.mode)
         batchTranscriptionConfiguration = normalized
         if concurrencyChanged || modelVersionChanged {
             managerBox = nil
@@ -454,26 +454,32 @@ actor FluidAudioTranscriptionService: TranscriptionService {
         return modelsBaseDirectory.appendingPathComponent(Repo.cohereTranscribeCoreml.folderName, isDirectory: true)
     }
 
-    private static func asrModelVersion(for mode: BatchTranscriptionMode) -> AsrModelVersion {
-        usesParakeetV2(mode) ? .v2 : .v3
+    static func asrModelVersion(for mode: BatchTranscriptionMode) -> AsrModelVersion {
+        switch mode {
+        case .parakeetV2English:
+            return .v2
+        case .parakeetV3, .parakeetV3WithCohereQualityPass:
+            return .v3
+        case .parakeetUltra:
+            // Same v3 contract and languages; ships for macOS 14+, unlike Redux/Phonon-2.
+            return .ultra
+        }
     }
 
     private static func usesParakeetV2(_ mode: BatchTranscriptionMode) -> Bool {
-        switch mode {
-        case .parakeetV2English:
-            return true
-        case .parakeetV3, .parakeetV3WithCohereQualityPass:
-            return false
-        }
+        asrModelVersion(for: mode) == .v2
     }
 
     private static func engineName(
         for mode: BatchTranscriptionMode,
         hasVocabularyBoost: Bool
     ) -> String {
-        let baseName = usesParakeetV2(mode)
-            ? "FluidAudio-AsrManager-v2"
-            : "FluidAudio-AsrManager-v3"
+        let baseName: String
+        switch asrModelVersion(for: mode) {
+        case .v2: baseName = "FluidAudio-AsrManager-v2"
+        case .ultra: baseName = "FluidAudio-AsrManager-Ultra"
+        default: baseName = "FluidAudio-AsrManager-v3"
+        }
         return hasVocabularyBoost ? "\(baseName)+Vocabulary" : baseName
     }
 

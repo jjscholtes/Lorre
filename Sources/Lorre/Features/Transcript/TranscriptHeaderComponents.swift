@@ -120,6 +120,7 @@ struct TranscriptHeaderView: View {
     let transcript: TranscriptDocument?
     @State private var isShowingRenameAlert = false
     @State private var isShowingDeleteConfirmation = false
+    @State private var isShowingRetranscribeConfirmation = false
     @State private var isShowingNotesSheet = false
     @State private var renameDraft = ""
     @State private var notesDraft = ""
@@ -181,6 +182,18 @@ struct TranscriptHeaderView: View {
             Button("Cancel", role: .cancel) {}
         } message: {
             Text("Choose a clearer session name for the transcript and exports.")
+        }
+        .confirmationDialog(
+            "Re-transcribe this session?",
+            isPresented: $isShowingRetranscribeConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button("Re-transcribe with \(viewModel.batchTranscriptionConfiguration.mode.label)") {
+                viewModel.performSessionAction(.retranscribe, for: session.id)
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Lorre replaces the transcript with a new run using the current model settings. The current version, including your edits, is kept in the session's transcript history.")
         }
         .confirmationDialog("Delete this session?", isPresented: $isShowingDeleteConfirmation, titleVisibility: .visible) {
             Button("Delete Session", role: .destructive) {
@@ -321,6 +334,9 @@ struct TranscriptHeaderView: View {
             if shouldShowRetryControl {
                 retryProcessingControl
             }
+            if shouldShowRetranscribeControl {
+                retranscribeControl
+            }
             renameControl
             deleteControl
             if !viewModel.canControlPlayback {
@@ -344,6 +360,9 @@ struct TranscriptHeaderView: View {
                 revealFilesControl
                 if shouldShowRetryControl {
                     retryProcessingControl
+                }
+                if shouldShowRetranscribeControl {
+                    retranscribeControl
                 }
                 renameControl
                 deleteControl
@@ -473,6 +492,16 @@ struct TranscriptHeaderView: View {
         .disabled(!actionState(.retryProcessing).isEnabled)
     }
 
+    private var retranscribeControl: some View {
+        let state = actionState(.retranscribe)
+        return Button(SessionAction.retranscribe.title) {
+            isShowingRetranscribeConfirmation = true
+        }
+        .buttonStyle(SecondaryControlButtonStyle())
+        .disabled(!state.isEnabled)
+        .help(state.disabledReason ?? "Process this session again with the current model settings.")
+    }
+
     private var noteIconControl: some View {
         Button {
             syncNotesDraftFromSession()
@@ -540,6 +569,11 @@ struct TranscriptHeaderView: View {
         .disabled(!actionState(.exportTranscript).isEnabled)
     }
 
+    private var shouldShowRetranscribeControl: Bool {
+        viewModel.sessionActions(for: .transcriptHeader, session: session, transcript: transcript)
+            .contains(where: { $0.action == .retranscribe })
+    }
+
     private var shouldShowRetryControl: Bool {
         viewModel.sessionActions(for: .transcriptHeader, session: session, transcript: transcript)
             .contains(where: { $0.action == .retryProcessing })
@@ -572,7 +606,7 @@ struct TranscriptHeaderView: View {
     }
 
     private func handleKeyboardShortcut(_ action: TranscriptKeyboardAction) {
-        guard !isShowingRenameAlert, !isShowingDeleteConfirmation, !isShowingNotesSheet else { return }
+        guard !isShowingRenameAlert, !isShowingDeleteConfirmation, !isShowingRetranscribeConfirmation, !isShowingNotesSheet else { return }
         switch action {
         case .togglePlayPause:
             viewModel.toggleSelectedSessionPlayback()

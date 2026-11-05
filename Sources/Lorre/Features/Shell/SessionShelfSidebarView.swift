@@ -542,7 +542,14 @@ private struct FolderContentsListView: View {
                             .disabled(!retryState.isEnabled)
                         }
 
-                        if actionStates[.retryProcessing] != nil {
+                        if let retranscribeState = actionStates[.retranscribe] {
+                            Button(retranscribeState.action.title) {
+                                onPerformSessionAction(.retranscribe, session)
+                            }
+                            .disabled(!retranscribeState.isEnabled)
+                        }
+
+                        if actionStates[.retryProcessing] != nil || actionStates[.retranscribe] != nil {
                             Divider()
                         }
 

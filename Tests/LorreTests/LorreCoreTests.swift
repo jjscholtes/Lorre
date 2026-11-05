@@ -1708,6 +1708,29 @@ struct LorreCoreTests {
 
 
     @Test
+    func testParakeetUltraIsAvailableForEveryLanguageAndPersists() async throws {
+        for code in BatchTranscriptionConfiguration.supportedLanguageCodes {
+            XCTAssertTrue(
+                BatchTranscriptionConfiguration.availableModes(forLanguageCode: code)
+                    .contains(.parakeetUltra)
+            )
+        }
+
+        let normalized = BatchTranscriptionConfiguration(mode: .parakeetUltra, languageCode: "nl")
+        XCTAssertEqual(normalized.mode, .parakeetUltra)
+        XCTAssertFalse(BatchTranscriptionMode.parakeetUltra.isEnglishOnly)
+
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("LorreParakeetUltraTests-\(UUID().uuidString)", isDirectory: true)
+        let store = AppSettingsStore(baseURL: root)
+        _ = try await store.setBatchTranscriptionConfiguration(normalized)
+
+        let loaded = try await store.load()
+        XCTAssertEqual(loaded.batchTranscription.mode, .parakeetUltra)
+        XCTAssertEqual(loaded.batchTranscription.languageCode, "nl")
+    }
+
+    @Test
     func testParakeetV2BatchModeIsEnglishOnly() async throws {
         XCTAssertTrue(
             BatchTranscriptionConfiguration.availableModes(forLanguageCode: "EN")
