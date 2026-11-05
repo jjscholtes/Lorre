@@ -6,7 +6,7 @@ Lorre is a macOS transcription workspace for capturing or importing audio, proce
 
 - Capture any conversation your way with `Microphone`, `System audio`, or `Microphone + system audio`.
 - See live transcription as you record, with selectable English previews or live Dutch transcription with `Nemotron Unified` for supported live workflows.
-- Powered by selectable `Parakeet TDT 0.6B v3` multilingual batch ASR and `Parakeet TDT 0.6B v2` for English-only batch transcripts, running on Apple's `Neural Engine` right on your Mac.
+- Powered by selectable `Parakeet TDT 0.6B v3` multilingual batch ASR, the higher-accuracy `Parakeet Ultra` for the same languages, and `Parakeet TDT 0.6B v2` for English-only batch transcripts, running on Apple's `Neural Engine` right on your Mac.
 - Supports multilingual `Parakeet v3` transcription, with explicit batch language hints for `English`, `French`, `German`, `Spanish`, `Italian`, `Portuguese`, `Dutch`, and `Polish`.
 - Built on `FluidAudio` for local speech recognition, voice activity detection, and speaker diarization.
 - Keep your recordings and transcripts on your Mac for a private local workflow.
@@ -26,7 +26,7 @@ For Dutch live text, choose **Nederlands** under **Model & App Settings → Live
 
 [`FluidAudio`](https://github.com/FluidInference/FluidAudio) is the on-device speech engine behind Lorre. It is a Swift library for Apple devices that combines speech-to-text, voice activity detection, and speaker diarization in one local pipeline.
 
-Lorre defaults to FluidAudio's `Parakeet TDT 0.6B v3` model for final transcription, and English-only workflows can choose `Parakeet TDT 0.6B v2` as a batch option. In simple terms, Parakeet is the ASR model that listens to your recording and turns spoken words into text. FluidAudio's v3 model supports 25 European languages; Lorre exposes explicit batch language hints for English, French, German, Spanish, Italian, Portuguese, Dutch, and Polish. Lorre can also use FluidAudio's faster `Parakeet EOU` or `Nemotron` streaming models to show a live preview while you are still recording.
+Lorre defaults to FluidAudio's `Parakeet TDT 0.6B v3` model for final transcription, `Parakeet Ultra` is a full-precision post-training of v3 with the same languages and timed output, and English-only workflows can choose `Parakeet TDT 0.6B v2` as a batch option. In simple terms, Parakeet is the ASR model that listens to your recording and turns spoken words into text. FluidAudio's v3 model supports 25 European languages; Lorre exposes explicit batch language hints for English, French, German, Spanish, Italian, Portuguese, Dutch, and Polish. Lorre can also use FluidAudio's faster `Parakeet EOU` or `Nemotron` streaming models to show a live preview while you are still recording.
 
 `ANE-optimized` means FluidAudio is tuned to run efficiently on Apple's Neural Engine, the part of Apple silicon designed for AI workloads. For a user, that usually means faster transcription, lower power use, and less pressure on the CPU and GPU.
 
@@ -95,7 +95,7 @@ Lorre keeps app preferences in `~/Library/Application Support/Lorre/settings.jso
 
 | Option | Values | Default | Notes |
 | --- | --- | --- | --- |
-| ASR mode | `Parakeet v3 multilingual`, `Parakeet v2 English`, `Parakeet + Cohere` | `Parakeet v3 multilingual` | `Parakeet v3 multilingual` is the default timed transcript path. `Parakeet v2 English` is English-only. `Parakeet + Cohere` adds an alternate draft while timed transcript rows still come from Parakeet. |
+| ASR mode | `Parakeet v3 multilingual`, `Parakeet Ultra multilingual`, `Parakeet v2 English`, `Parakeet + Cohere` | `Parakeet v3 multilingual` | `Parakeet v3 multilingual` is the default timed transcript path. `Parakeet Ultra multilingual` uses the same languages and pipeline with a more accurate model; it needs a one-time download of about 630 MB. `Parakeet v2 English` is English-only. `Parakeet + Cohere` adds an alternate draft while timed transcript rows still come from Parakeet. |
 | Batch language | `EN`, `FR`, `DE`, `ES`, `IT`, `PT`, `NL`, `PL` | `EN` | Changing language away from English automatically falls back from the English-only v2 path to the multilingual v3 path. |
 | Speaker recognition | On or off | On | Enables diarization during processing so Lorre can assign speaker labels automatically. Turning it off keeps speakers manual unless you retry processing later. |
 | Diarization engine | `Offline VBx`, `Sortformer`, `LS-EEND` | `Offline VBx` | `Offline VBx` favors full-recording offline clustering. `Sortformer` targets stable identity continuity for up to 4 speakers. `LS-EEND` is overlap-friendly and supports up to 10 speakers. |
