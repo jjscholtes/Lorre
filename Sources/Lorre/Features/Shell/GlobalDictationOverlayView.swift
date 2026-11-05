@@ -1,7 +1,7 @@
 import SwiftUI
 
 struct GlobalDictationOverlayCard: View {
-    @ObservedObject var viewModel: AppViewModel
+    var viewModel: AppViewModel
 
     var body: some View {
         VStack(alignment: .leading, spacing: DS.Space.x3) {
@@ -174,7 +174,7 @@ struct GlobalDictationOverlayCard: View {
 import AppKit
 
 struct GlobalDictationPanelPresenter: NSViewRepresentable {
-    @ObservedObject var viewModel: AppViewModel
+    var viewModel: AppViewModel
 
     func makeCoordinator() -> Coordinator {
         Coordinator()

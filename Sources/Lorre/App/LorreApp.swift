@@ -5,7 +5,7 @@ struct LorreApp: App {
     #if canImport(AppKit)
     @NSApplicationDelegateAdaptor(LorreAppDelegate.self) private var appDelegate
     #endif
-    @StateObject private var viewModel = AppViewModel(dependencies: .live())
+    @State private var viewModel = AppViewModel(dependencies: .live())
 
     var body: some Scene {
         WindowGroup("Lorre") {

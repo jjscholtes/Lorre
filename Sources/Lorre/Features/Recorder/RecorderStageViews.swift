@@ -1,7 +1,7 @@
 import SwiftUI
 
 struct RecorderConsoleView: View {
-    @ObservedObject var viewModel: AppViewModel
+    var viewModel: AppViewModel
     @State private var isShowingCancelRecordingConfirmation = false
     @State private var isShowingKnownSpeakerLibrary = false
 
@@ -60,7 +60,7 @@ struct RecorderConsoleView: View {
                     .foregroundStyle(DS.ColorToken.fgSecondary)
             }
 
-            IndexRailView(mode: .live(viewModel.liveMeterSamples), height: 24)
+            LiveMeterRailView(viewModel: viewModel, height: 24)
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, DS.Space.x2)
 
@@ -158,7 +158,7 @@ private struct RecorderSectionDivider: View {
 }
 
 private struct RecorderStartDockView: View {
-    @ObservedObject var viewModel: AppViewModel
+    var viewModel: AppViewModel
     let onStart: () -> Void
 
     var body: some View {
@@ -233,7 +233,7 @@ private struct RecorderSummaryBadge: View {
 }
 
 private struct RecorderSourceQuickAccessView: View {
-    @ObservedObject var viewModel: AppViewModel
+    var viewModel: AppViewModel
 
     var body: some View {
         VStack(alignment: .leading, spacing: DS.Space.x2) {
@@ -415,7 +415,7 @@ private struct RecorderStartActionButtonStyle: ButtonStyle {
 }
 
 struct LiveTranscriptPreviewCard: View {
-    @ObservedObject var viewModel: AppViewModel
+    var viewModel: AppViewModel
 
     var body: some View {
         VStack(alignment: .leading, spacing: DS.Space.x2) {
@@ -487,7 +487,7 @@ struct LiveTranscriptPreviewCard: View {
 }
 
 private struct RecorderLivePreviewQuickAccessView: View {
-    @ObservedObject var viewModel: AppViewModel
+    var viewModel: AppViewModel
 
     var body: some View {
         VStack(alignment: .leading, spacing: DS.Space.x2) {
@@ -575,7 +575,7 @@ private struct RecorderLivePreviewQuickAccessView: View {
 }
 
 private struct RecorderPrivacyQuickAccessView: View {
-    @ObservedObject var viewModel: AppViewModel
+    var viewModel: AppViewModel
 
     var body: some View {
         VStack(alignment: .leading, spacing: DS.Space.x2) {
@@ -700,7 +700,7 @@ private struct RecorderPrivacyQuickAccessView: View {
 }
 
 private struct RecorderProcessingProfileView: View {
-    @ObservedObject var viewModel: AppViewModel
+    var viewModel: AppViewModel
     @Binding var isShowingKnownSpeakerLibrary: Bool
 
     var body: some View {
@@ -903,7 +903,7 @@ private struct RecorderProcessingProfileView: View {
 }
 
 struct ProcessingPipelineView: View {
-    @ObservedObject var viewModel: AppViewModel
+    var viewModel: AppViewModel
     let session: SessionManifest
 
     var body: some View {
@@ -1038,5 +1038,16 @@ struct StageHeaderCard<TrailingActions: View>: View {
         default:
             return 8
         }
+    }
+}
+
+/// The recording meter on its own, so its 20 Hz updates re-render only this
+/// view and not the card around it.
+struct LiveMeterRailView: View {
+    var viewModel: AppViewModel
+    var height: CGFloat
+
+    var body: some View {
+        IndexRailView(mode: .live(viewModel.liveMeterSamples), height: height)
     }
 }

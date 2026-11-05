@@ -1,7 +1,7 @@
 import SwiftUI
 
 struct TranscriptStageView: View {
-    @ObservedObject var viewModel: AppViewModel
+    var viewModel: AppViewModel
     let session: SessionManifest
     let transcript: TranscriptDocument?
 

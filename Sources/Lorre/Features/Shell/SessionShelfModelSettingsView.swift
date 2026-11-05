@@ -1,7 +1,7 @@
 import SwiftUI
 
 struct ModelStatusCompactPanelView: View {
-    @ObservedObject var viewModel: AppViewModel
+    @Bindable var viewModel: AppViewModel
     @Binding var isShowingSettings: Bool
 
     var body: some View {
@@ -167,7 +167,7 @@ struct ModelStatusCompactPanelView: View {
 }
 
 struct ModelStatusPanelView: View {
-    @ObservedObject var viewModel: AppViewModel
+    @Bindable var viewModel: AppViewModel
     @State private var activeTooltipRowID: String?
     @State private var vocabularyDraft = ""
 

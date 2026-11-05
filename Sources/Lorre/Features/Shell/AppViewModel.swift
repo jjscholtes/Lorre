@@ -5,24 +5,29 @@ import AppKit
 #endif
 import UniformTypeIdentifiers
 
+/// `@Observable` instead of `ObservableObject`: a view now re-renders only when a
+/// property it actually reads changes. With `@Published`, every change (the
+/// recording meter alone fires 20 times a second) invalidated every view that
+/// held the view model, including the sidebar and the whole transcript.
 @MainActor
-final class AppViewModel: ObservableObject {
+@Observable
+final class AppViewModel {
     static let unfiledFolderSelectionID = "__UNFILED__"
 
-    @Published private(set) var sessions: [SessionManifest] = [] {
+    private(set) var sessions: [SessionManifest] = [] {
         didSet {
             rebuildDerivedSessionStateIfNeeded()
             refreshTranscriptSearch()
         }
     }
-    @Published private(set) var folders: [SessionFolder] = [] {
+    private(set) var folders: [SessionFolder] = [] {
         didSet { rebuildDerivedSessionStateIfNeeded() }
     }
-    @Published private(set) var transcriptSearchHits: [TranscriptSearchHit] = []
-    @Published private(set) var searchScrollTarget: TranscriptSearchHit?
+    private(set) var transcriptSearchHits: [TranscriptSearchHit] = []
+    private(set) var searchScrollTarget: TranscriptSearchHit?
     private let transcriptSearchIndex = TranscriptSearchIndex()
-    private var transcriptSearchTask: Task<Void, Never>?
-    @Published var searchQuery: String = "" {
+    @ObservationIgnored private var transcriptSearchTask: Task<Void, Never>?
+    var searchQuery: String = "" {
         didSet {
             guard searchQuery != oldValue else { return }
             transcriptSearchHits = []
@@ -30,87 +35,87 @@ final class AppViewModel: ObservableObject {
             refreshTranscriptSearch()
         }
     }
-    @Published var selectedFilter: ShelfFilter = .all {
+    var selectedFilter: ShelfFilter = .all {
         didSet { rebuildDerivedSessionStateIfNeeded() }
     }
-    @Published var selectedFolderID: String? {
+    var selectedFolderID: String? {
         didSet { rebuildDerivedSessionStateIfNeeded() }
     }
-    @Published var selectedSessionID: UUID?
-    @Published var expandedViewFilters: Set<ShelfFilter> = [.all]
-    @Published var expandedFolderIDs: Set<String> = [AppViewModel.unfiledFolderSelectionID]
-    @Published private(set) var activeTranscript: TranscriptDocument?
-    @Published private(set) var isLoading = true
-    @Published private(set) var isRecording = false {
+    var selectedSessionID: UUID?
+    var expandedViewFilters: Set<ShelfFilter> = [.all]
+    var expandedFolderIDs: Set<String> = [AppViewModel.unfiledFolderSelectionID]
+    private(set) var activeTranscript: TranscriptDocument?
+    private(set) var isLoading = true
+    private(set) var isRecording = false {
         didSet { updateSystemActivity() }
     }
-    @Published private(set) var isStartingRecording = false
-    @Published private(set) var isStoppingRecording = false
-    @Published private(set) var recordingElapsedSeconds: Double = 0
-    @Published private(set) var liveMeterSamples: [Double] = Array(repeating: 0.08, count: 28)
-    @Published private(set) var recorderStatusText: String = "Ready to record"
-    @Published var banner: AppBanner?
-    @Published private(set) var exportMessage: String?
-    @Published private(set) var isAudioPlaying = false
-    @Published private(set) var playbackCurrentSeconds: Double = 0
-    @Published private(set) var playbackDurationSeconds: Double = 0
-    @Published private(set) var playbackRate: Double = 1.0
-    @Published private(set) var playbackWaveformBins: [Double] = []
-    @Published private(set) var isPlaybackWaveformLoading = false
-    @Published private(set) var activePlaybackSegmentID: UUID?
-    @Published private(set) var fluidAudioStatus: String
-    @Published private(set) var runtimeCapabilities: RuntimeCapabilities
-    @Published private(set) var modelPreparationState: ModelPreparationState = .unknown
-    @Published private(set) var modelPreparationStatusLine: String = "Models not prepared yet"
-    @Published private(set) var modelPreparationDetailLine: String = "Models may download on first transcription."
-    @Published private(set) var modelPreparationProgress: Double?
-    @Published private(set) var modelPreparationLastPreparedAt: Date?
-    @Published var modelRegistryCustomBaseURL: String = ""
-    @Published private(set) var isSpeakerDiarizationEnabled: Bool = true
-    @Published private(set) var diarizationEngine: DiarizationEngine = .offlineVbx
-    @Published private(set) var diarizationExpectedSpeakerCountHint: DiarizationSpeakerCountHint = .auto
-    @Published private(set) var isDiarizationDebugExportEnabled: Bool = false
-    @Published private(set) var isVocabularyBoostingEnabled: Bool = false
-    @Published var customVocabularySimpleFormatTerms: String = ""
-    @Published private(set) var batchTranscriptionConfiguration = BatchTranscriptionConfiguration()
-    @Published private(set) var liveTranscriptionPreset: LiveTranscriptionPreset = .balanced
-    @Published private(set) var selectedRecordingSource: RecordingSource = .microphone
-    @Published private(set) var isLiveTranscriptionSupported: Bool = false
-    @Published private(set) var isLiveTranscriptionEnabled: Bool = false
-    @Published private(set) var isDeleteAudioAfterTranscriptionEnabled: Bool = false
-    @Published private(set) var isTranscriptConfidenceVisible: Bool = false
-    @Published private(set) var automaticMarkdownExportConfiguration = AutomaticMarkdownExportConfiguration()
-    @Published var automaticMarkdownExportFileNameTemplate = AutomaticMarkdownExportConfiguration.defaultFileNameTemplate
-    @Published private(set) var callWatcherConfiguration = CallWatcherConfiguration()
-    @Published private(set) var callWatcherStatusLine: String = "Off"
-    @Published private(set) var callPromptCandidate: CallDetectionCandidate?
-    @Published private(set) var globalDictationConfiguration = GlobalDictationConfiguration()
-    @Published private(set) var globalDictationPhase: GlobalDictationPhase = .idle
-    @Published private(set) var globalDictationElapsedSeconds: Double = 0
-    @Published private(set) var globalDictationMeterSamples: [Double] = Array(repeating: 0.08, count: 28)
-    @Published private(set) var globalDictationTranscriptText: String = ""
-    @Published private(set) var globalDictationTargetLabel: String?
-    @Published private(set) var globalDictationStatusLine: String = "Ready"
-    @Published private(set) var globalDictationFailureCode: String?
-    @Published private(set) var liveTranscriptPreview: LiveTranscriptPreview?
-    @Published private(set) var knownSpeakers: [KnownSpeaker] = []
-    @Published var knownSpeakerDraftName: String = ""
-    @Published private(set) var knownSpeakerLibraryStatusLine: String = "No known speakers enrolled yet."
-    @Published private(set) var knownSpeakerOperationDescription: String?
-    @Published private(set) var isKnownSpeakerOperationInFlight = false
-    @Published private(set) var processingProgressSnapshots: [UUID: ProcessingSummary] = [:]
+    private(set) var isStartingRecording = false
+    private(set) var isStoppingRecording = false
+    private(set) var recordingElapsedSeconds: Double = 0
+    private(set) var liveMeterSamples: [Double] = Array(repeating: 0.08, count: 28)
+    private(set) var recorderStatusText: String = "Ready to record"
+    var banner: AppBanner?
+    private(set) var exportMessage: String?
+    private(set) var isAudioPlaying = false
+    private(set) var playbackCurrentSeconds: Double = 0
+    private(set) var playbackDurationSeconds: Double = 0
+    private(set) var playbackRate: Double = 1.0
+    private(set) var playbackWaveformBins: [Double] = []
+    private(set) var isPlaybackWaveformLoading = false
+    private(set) var activePlaybackSegmentID: UUID?
+    private(set) var fluidAudioStatus: String
+    private(set) var runtimeCapabilities: RuntimeCapabilities
+    private(set) var modelPreparationState: ModelPreparationState = .unknown
+    private(set) var modelPreparationStatusLine: String = "Models not prepared yet"
+    private(set) var modelPreparationDetailLine: String = "Models may download on first transcription."
+    private(set) var modelPreparationProgress: Double?
+    private(set) var modelPreparationLastPreparedAt: Date?
+    var modelRegistryCustomBaseURL: String = ""
+    private(set) var isSpeakerDiarizationEnabled: Bool = true
+    private(set) var diarizationEngine: DiarizationEngine = .offlineVbx
+    private(set) var diarizationExpectedSpeakerCountHint: DiarizationSpeakerCountHint = .auto
+    private(set) var isDiarizationDebugExportEnabled: Bool = false
+    private(set) var isVocabularyBoostingEnabled: Bool = false
+    var customVocabularySimpleFormatTerms: String = ""
+    private(set) var batchTranscriptionConfiguration = BatchTranscriptionConfiguration()
+    private(set) var liveTranscriptionPreset: LiveTranscriptionPreset = .balanced
+    private(set) var selectedRecordingSource: RecordingSource = .microphone
+    private(set) var isLiveTranscriptionSupported: Bool = false
+    private(set) var isLiveTranscriptionEnabled: Bool = false
+    private(set) var isDeleteAudioAfterTranscriptionEnabled: Bool = false
+    private(set) var isTranscriptConfidenceVisible: Bool = false
+    private(set) var automaticMarkdownExportConfiguration = AutomaticMarkdownExportConfiguration()
+    var automaticMarkdownExportFileNameTemplate = AutomaticMarkdownExportConfiguration.defaultFileNameTemplate
+    private(set) var callWatcherConfiguration = CallWatcherConfiguration()
+    private(set) var callWatcherStatusLine: String = "Off"
+    private(set) var callPromptCandidate: CallDetectionCandidate?
+    private(set) var globalDictationConfiguration = GlobalDictationConfiguration()
+    private(set) var globalDictationPhase: GlobalDictationPhase = .idle
+    private(set) var globalDictationElapsedSeconds: Double = 0
+    private(set) var globalDictationMeterSamples: [Double] = Array(repeating: 0.08, count: 28)
+    private(set) var globalDictationTranscriptText: String = ""
+    private(set) var globalDictationTargetLabel: String?
+    private(set) var globalDictationStatusLine: String = "Ready"
+    private(set) var globalDictationFailureCode: String?
+    private(set) var liveTranscriptPreview: LiveTranscriptPreview?
+    private(set) var knownSpeakers: [KnownSpeaker] = []
+    var knownSpeakerDraftName: String = ""
+    private(set) var knownSpeakerLibraryStatusLine: String = "No known speakers enrolled yet."
+    private(set) var knownSpeakerOperationDescription: String?
+    private(set) var isKnownSpeakerOperationInFlight = false
+    private(set) var processingProgressSnapshots: [UUID: ProcessingSummary] = [:]
 
     private let dependencies: AppDependencies
-    private var started = false
-    private var recordingClockTask: Task<Void, Never>?
-    private var liveMeterTask: Task<Void, Never>?
-    private var callWatcherTask: Task<Void, Never>?
-    private var callPromptNotificationTask: Task<Void, Never>?
-    private var globalDictationClockTask: Task<Void, Never>?
-    private var globalDictationMeterTask: Task<Void, Never>?
-    private var playbackMonitorTask: Task<Void, Never>?
-    private var waveformLoadTask: Task<Void, Never>?
-    private var recordingSourceChangeTask: Task<Void, Never>?
+    @ObservationIgnored private var started = false
+    @ObservationIgnored private var recordingClockTask: Task<Void, Never>?
+    @ObservationIgnored private var liveMeterTask: Task<Void, Never>?
+    @ObservationIgnored private var callWatcherTask: Task<Void, Never>?
+    @ObservationIgnored private var callPromptNotificationTask: Task<Void, Never>?
+    @ObservationIgnored private var globalDictationClockTask: Task<Void, Never>?
+    @ObservationIgnored private var globalDictationMeterTask: Task<Void, Never>?
+    @ObservationIgnored private var playbackMonitorTask: Task<Void, Never>?
+    @ObservationIgnored private var waveformLoadTask: Task<Void, Never>?
+    @ObservationIgnored private var recordingSourceChangeTask: Task<Void, Never>?
     private var currentRecordingStartedAt: Date?
     private var recordingSession: SessionManifest?
     private var missingRecoveryAudio: Set<UUID> = []
@@ -119,23 +124,23 @@ final class AppViewModel: ObservableObject {
     private var currentGlobalDictationTarget: GlobalTextInsertionTarget?
     private var callPromptCandidatesByFingerprint: [String: CallDetectionCandidate] = [:]
     private var handledCallPromptActionFingerprints: Set<String> = []
-    private var currentProcessingTasks: [UUID: Task<Void, Never>] = [:]
-    private var currentProcessingTaskTokens: [UUID: UUID] = [:]
+    @ObservationIgnored private var currentProcessingTasks: [UUID: Task<Void, Never>] = [:]
+    @ObservationIgnored private var currentProcessingTaskTokens: [UUID: UUID] = [:]
     private let transcriptPersistenceQueue = TranscriptPersistenceQueue()
     private let processingGate = ProcessingGate()
     private var activeProcessingJobCount = 0 {
         didSet { updateSystemActivity() }
     }
     private let systemActivity = SystemActivityGuard()
-    private var systemSleepObserver: NSObjectProtocol?
-    private var transcriptPersistenceVersions: [UUID: Int] = [:]
+    @ObservationIgnored private var systemSleepObserver: NSObjectProtocol?
+    @ObservationIgnored private var transcriptPersistenceVersions: [UUID: Int] = [:]
     private var cachedFilteredSessions: [SessionManifest] = []
     private var cachedViewBrowserSessions: [ShelfFilter: [SessionManifest]] = [:]
     private var cachedFolderBrowserSessions: [String: [SessionManifest]] = [:]
     private var cachedAllFolderBrowserSessions: [SessionManifest] = []
     private var cachedViewCounts: [ShelfFilter: Int] = [:]
-    private var sidebarExpansionSaveTask: Task<Void, Never>?
-    private var waveformCache: [UUID: [Double]] = [:]
+    @ObservationIgnored private var sidebarExpansionSaveTask: Task<Void, Never>?
+    @ObservationIgnored private var waveformCache: [UUID: [Double]] = [:]
     private var isBatchingDerivedSessionState = false
 
     init(dependencies: AppDependencies) {
@@ -3316,23 +3321,31 @@ final class AppViewModel: ObservableObject {
         refreshPlaybackState()
     }
 
+    /// Runs every 120 ms during playback. Only assign what changed: every
+    /// assignment notifies the views that read the property, and the transcript
+    /// list reads `activePlaybackSegmentID`.
     private func refreshPlaybackState() {
-        isAudioPlaying = dependencies.playback.isPlaying
-        playbackCurrentSeconds = dependencies.playback.currentTimeSeconds
-        playbackDurationSeconds = dependencies.playback.durationSeconds
-        playbackRate = dependencies.playback.playbackRate
+        let playback = dependencies.playback
+        if isAudioPlaying != playback.isPlaying { isAudioPlaying = playback.isPlaying }
+        if playbackCurrentSeconds != playback.currentTimeSeconds { playbackCurrentSeconds = playback.currentTimeSeconds }
+        if playbackDurationSeconds != playback.durationSeconds { playbackDurationSeconds = playback.durationSeconds }
+        if playbackRate != playback.playbackRate { playbackRate = playback.playbackRate }
         updateActivePlaybackSegment()
     }
 
     private func updateActivePlaybackSegment() {
-        guard let transcript = activeTranscript else {
-            activePlaybackSegmentID = nil
-            return
+        let activeID: UUID?
+        if let transcript = activeTranscript {
+            let currentMs = Int((playbackCurrentSeconds * 1000).rounded())
+            activeID = transcript.segments.first { segment in
+                currentMs >= segment.startMs && currentMs < max(segment.startMs + 1, segment.endMs)
+            }?.id
+        } else {
+            activeID = nil
         }
-        let currentMs = Int((playbackCurrentSeconds * 1000).rounded())
-        activePlaybackSegmentID = transcript.segments.first { segment in
-            currentMs >= segment.startMs && currentMs < max(segment.startMs + 1, segment.endMs)
-        }?.id
+        if activePlaybackSegmentID != activeID {
+            activePlaybackSegmentID = activeID
+        }
     }
 
     private func startPlaybackMonitor(sessionID: UUID) {
