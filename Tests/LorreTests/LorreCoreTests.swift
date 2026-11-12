@@ -2363,7 +2363,9 @@ struct LorreCoreTests {
 
         XCTAssertEqual(config.segmentationStepRatio, 0.1)
         XCTAssertEqual(config.minSegmentDuration, 0.45)
-        XCTAssertEqual(config.clusteringThreshold, 0.54)
+        XCTAssertEqual(config.clusteringThreshold, FluidAudioDiarizationService.qualityTunedClusteringThreshold)
+        XCTAssertGreaterThanOrEqual(config.clusteringThreshold, 0.6)
+        XCTAssertTrue(config.zeroVoteReembed.enabled)
         XCTAssertEqual(config.minGapDuration, 0.18)
 
         switch config.embeddingSkipStrategy {

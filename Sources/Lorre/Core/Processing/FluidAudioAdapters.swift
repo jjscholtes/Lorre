@@ -883,6 +883,7 @@ actor FluidAudioTranscriptionService: TranscriptionService {
 
 actor FluidAudioDiarizationService: SpeakerDiarizationService {
     static let qualityTunedEmbeddingSkipThreshold: Float = 0.95
+    static let qualityTunedClusteringThreshold: Double = 0.6
 
     private final class OfflineDiarizerManagerBox: @unchecked Sendable {
         let manager: OfflineDiarizerManager
@@ -987,9 +988,13 @@ actor FluidAudioDiarizationService: SpeakerDiarizationService {
         // embeddings without sacrificing transcript-level speaker readability.
         config.embeddingSkipStrategy = .maskSimilarity(threshold: qualityTunedEmbeddingSkipThreshold)
         config.minSegmentDuration = 0.45
-        // Slightly lower the clustering threshold so one speaker is less likely to be split into
-        // multiple synthetic speaker IDs across neighboring sentences.
-        config.clusteringThreshold = 0.54
+        // The threshold is the AHC cut distance: embeddings closer than it merge, so a LOWER value
+        // yields MORE speakers. The previous 0.54 split one person into several speaker IDs.
+        // Keep the pyannote community-1 value that the VBx parameters were tuned with.
+        config.clusteringThreshold = qualityTunedClusteringThreshold
+        // Frames that received no clustering vote were silently given to cluster 0, which absorbed
+        // whole turns of one speaker into another. Re-embed those spans and pick the closest speaker.
+        config.zeroVoteReembed = OfflineDiarizerConfig.ZeroVoteReembed(enabled: true, minDurationSeconds: 0.4)
         // Stitch brief pauses back together so sentence-level rows stay intact more often.
         config.minGapDuration = 0.18
         return config
